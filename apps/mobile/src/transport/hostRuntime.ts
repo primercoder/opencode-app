@@ -298,7 +298,7 @@ export class HostRuntime {
       }
     }
 
-    const failure = errors.at(-1) ?? new HostError("network", "could not connect to host")
+    const failure = errors[errors.length - 1] ?? new HostError("network", "could not connect to host")
     this.lastErrorValue = failure
     if (this.manualClose) throw failure
     this.setState("error")

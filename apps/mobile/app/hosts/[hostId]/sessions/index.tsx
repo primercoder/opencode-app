@@ -260,7 +260,7 @@ export default function SessionsScreen() {
 
 function basename(path: string): string {
   const parts = path.split("/").filter(Boolean)
-  return parts.at(-1) ?? path
+  return parts[parts.length - 1] ?? path
 }
 
 function relativeTime(timestamp: number): string {

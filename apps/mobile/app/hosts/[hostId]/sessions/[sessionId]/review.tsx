@@ -322,7 +322,7 @@ function sortEntries(entries: FsEntry[]): FsEntry[] {
 
 function basename(path: string): string {
   const parts = path.split("/").filter(Boolean)
-  return parts.at(-1) ?? path
+  return parts[parts.length - 1] ?? path
 }
 
 const mono = { fontFamily: "monospace" as const }
