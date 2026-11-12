@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base64UrlEncode, type PairingOffer } from "@ocremote/protocol"
 import { startHost } from "../../host/src/server.ts"
+import { HostEventStream } from "../src/transport/hostEvents.ts"
 import { HostRuntime } from "../src/transport/hostRuntime.ts"
 
 const cleanups: Array<() => Promise<void> | void> = []
@@ -220,6 +221,32 @@ describe("HostRuntime", () => {
 
     await expect(runtime.connect()).rejects.toMatchObject({ code: "PAIR_CODE_INVALID" })
     expect(runtime.state).toBe("error")
+  })
+
+  test("fans out opencode SSE events", async () => {
+    const env = await setup()
+    const code = await env.host.issuePairCode()
+    const runtime = new HostRuntime({
+      hostId: env.host.identity.hostId,
+      hostPublicKey: env.publicKey,
+      candidates: [env.wsUrl],
+      pairCode: code,
+      autoReconnect: false,
+    })
+    cleanups.push(() => runtime.disconnect())
+    await runtime.connect()
+
+    const events: string[] = []
+    const stream = new HostEventStream(runtime)
+    cleanups.push(() => stream.stop())
+    stream.subscribe((event) => {
+      if (typeof event.type === "string") events.push(event.type)
+    })
+    stream.start()
+
+    for (let attempt = 0; attempt < 50 && events.length < 2; attempt += 1) await Bun.sleep(50)
+    expect(events).toContain("server.connected")
+    expect(events).toContain("session.updated")
   })
 
   test("builds a host record from a pairing offer", async () => {

@@ -18,11 +18,12 @@ import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 import {
   OpencodeClient,
+  toMillis,
   type AssistantContent,
   type SessionInfo,
   type SessionMessage,
 } from "@/opencode/client"
-import { ensureConnection } from "@/transport/runtimes"
+import { ensureConnection, subscribeHostEvents } from "@/transport/runtimes"
 import { colors, radius, spacing } from "@/theme"
 
 export default function ChatScreen() {
@@ -39,6 +40,8 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [draft, setDraft] = useState("")
+  const [olderCursor, setOlderCursor] = useState<string | undefined>(undefined)
+  const [loadingOlder, setLoadingOlder] = useState(false)
   const scrollRef = useRef<ScrollView>(null)
   const loadedRef = useRef(false)
 
@@ -55,10 +58,13 @@ export default function ChatScreen() {
         const client = new OpencodeClient(runtime)
         const [detail, page] = await Promise.all([
           client.getSession(sessionId),
-          client.listMessages(sessionId, { limit: 50, order: "asc" }),
+          client.listMessages(sessionId, { limit: 50, order: "desc" }),
         ])
         setSession(detail)
-        setMessages(page.data)
+        const latest = [...page.data].reverse()
+        setMessages((current) => mergeMessages(latest, (current ?? []).filter((message) => !message.id.startsWith("local_"))))
+        if (!options.silent) setOlderCursor(page.cursor)
+        else setOlderCursor((current) => current ?? page.cursor)
         if (!options.silent) loadedRef.current = true
         requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: false }))
       } catch (cause) {
@@ -75,9 +81,53 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (connection?.status !== "ready") return
-    const timer = setInterval(() => void load({ silent: true }), 5_000)
-    return () => clearInterval(timer)
-  }, [connection?.status, load])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unsubscribe = subscribeHostEvents(hostId, () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => void load({ silent: true }), 250)
+    })
+    return () => {
+      unsubscribe()
+      if (timer) clearTimeout(timer)
+    }
+  }, [connection?.status, hostId, load])
+
+  useEffect(() => {
+    let active = true
+    let unsubscribe: (() => void) | undefined
+    void ensureConnection(hostId)
+      .then((runtime) => {
+        if (!active) return
+        unsubscribe = runtime.onStateChange((state) => {
+          if (state === "ready") void load({ silent: true })
+        })
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+      unsubscribe?.()
+    }
+  }, [hostId, load])
+
+  const loadOlder = async () => {
+    if (!olderCursor || loadingOlder) return
+    setLoadingOlder(true)
+    try {
+      const runtime = await ensureConnection(hostId)
+      const page = await new OpencodeClient(runtime).listMessages(sessionId, {
+        limit: 50,
+        order: "desc",
+        cursor: olderCursor,
+      })
+      const older = [...page.data].reverse()
+      setMessages((current) => mergeMessages(older, current ?? []))
+      setOlderCursor(page.cursor)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加载更早消息失败")
+    } finally {
+      setLoadingOlder(false)
+    }
+  }
 
   const send = async () => {
     const text = draft.trim()
@@ -142,7 +192,7 @@ export default function ChatScreen() {
         contentContainerStyle={styles.messages}
         keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} tintColor={colors.text} />}
-        onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
       >
         {!ready && connection?.status === "error" ? (
           <View style={styles.notice}>
@@ -155,6 +205,11 @@ export default function ChatScreen() {
         ) : null}
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
+        {olderCursor ? (
+          <Pressable accessibilityRole="button" onPress={() => void loadOlder()} style={styles.olderButton}>
+            <Text style={styles.olderText}>{loadingOlder ? "加载中…" : "加载更早消息"}</Text>
+          </Pressable>
+        ) : null}
         {messages === null ? <Text style={styles.loading}>正在加载消息…</Text> : null}
         {messages?.length === 0 ? <Text style={styles.loading}>还没有消息。发送第一条消息开始。</Text> : null}
 
@@ -187,6 +242,12 @@ export default function ChatScreen() {
       </View>
     </KeyboardAvoidingView>
   )
+}
+
+function mergeMessages(first: SessionMessage[], second: SessionMessage[]): SessionMessage[] {
+  const byId = new Map<string, SessionMessage>()
+  for (const message of [...first, ...second]) byId.set(message.id, message)
+  return [...byId.values()].sort((left, right) => toMillis(left.time?.created) - toMillis(right.time?.created))
 }
 
 function MessageRow(props: { message: SessionMessage }) {
@@ -310,6 +371,8 @@ const styles = StyleSheet.create({
   subtitle: { marginTop: 2, fontSize: 11, color: colors.muted },
   messages: { padding: spacing.lg, paddingBottom: spacing.xl, gap: spacing.md },
   loading: { textAlign: "center", fontSize: 13, color: colors.faint, marginTop: spacing.lg },
+  olderButton: { alignSelf: "center", paddingVertical: spacing.sm, paddingHorizontal: spacing.md },
+  olderText: { fontSize: 13, color: colors.accent },
   error: { fontSize: 13, color: colors.danger, lineHeight: 19 },
   bubble: { maxWidth: "86%", paddingHorizontal: spacing.md, paddingVertical: spacing.sm + 2, borderRadius: radius.lg },
   userBubble: { alignSelf: "flex-end", backgroundColor: colors.accent },

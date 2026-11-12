@@ -2,6 +2,7 @@ import type { Transport } from "@ocremote/protocol"
 import { deviceInfo } from "@/config/device"
 import { useConnections, type HostConnection } from "@/stores/connections"
 import { credentialsFor, useHosts } from "@/stores/hosts"
+import { HostEventStream, type OpencodeEvent } from "@/transport/hostEvents"
 import {
   candidateUrls,
   HostError,
@@ -12,12 +13,16 @@ import {
 
 const runtimes = new Map<string, HostRuntime>()
 const pending = new Map<string, Promise<HostRuntime>>()
+const eventStreams = new Map<string, HostEventStream>()
 
 export async function ensureConnection(hostId: string, options: { force?: boolean } = {}): Promise<HostRuntime> {
   if (options.force) closeRuntime(hostId)
 
   const existing = runtimes.get(hostId)
-  if (existing?.state === "ready") return existing
+  if (existing?.state === "ready") {
+    ensureEventStream(hostId, existing)
+    return existing
+  }
 
   const pendingConnection = pending.get(hostId)
   if (pendingConnection) return pendingConnection
@@ -36,11 +41,17 @@ export function getRuntime(hostId: string): HostRuntime | undefined {
 }
 
 export function closeRuntime(hostId: string): void {
+  eventStreams.get(hostId)?.stop()
+  eventStreams.delete(hostId)
   const runtime = runtimes.get(hostId)
   if (!runtime) return
   runtime.disconnect()
   runtimes.delete(hostId)
   useConnections.getState().remove(hostId)
+}
+
+export function subscribeHostEvents(hostId: string, listener: (event: OpencodeEvent) => void): () => void {
+  return ensureEventStream(hostId)?.subscribe(listener) ?? (() => undefined)
 }
 
 export function isConnected(hostId: string): boolean {
@@ -115,6 +126,7 @@ async function openConnection(hostId: string): Promise<HostRuntime> {
     throw failure
   }
 
+  ensureEventStream(hostId, runtime)
   await useHosts.getState().touchHost(hostId, transportKind(host.transports, runtime.activeCandidate))
   const session = runtime.session
   useConnections.getState().patch(hostId, {
@@ -124,6 +136,17 @@ async function openConnection(hostId: string): Promise<HostRuntime> {
     ...(runtime.latencyMs !== undefined ? { latencyMs: runtime.latencyMs } : {}),
   })
   return runtime
+}
+
+function ensureEventStream(hostId: string, runtime?: HostRuntime): HostEventStream | undefined {
+  const active = runtime ?? runtimes.get(hostId)
+  if (!active) return undefined
+  const existing = eventStreams.get(hostId)
+  if (existing) return existing
+  const stream = new HostEventStream(active)
+  stream.start()
+  eventStreams.set(hostId, stream)
+  return stream
 }
 
 function transportKind(transports: Transport[], activeCandidate: string | undefined): "lan" | "relay" | "custom" | undefined {
