@@ -1,0 +1,79 @@
+# Per project instructions: local-only reference and notes
+/reference/
+/idea.txt
+/opencode-remote-mobile-development-guide.md
+/environment-setup-log.md
+
+# Secrets / credentials
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+!**/test-fixtures/**/*.pem
+
+# Node / Bun / Expo
+node_modules/
+.bun/
+.pnpm-store/
+.yarn/
+.expo/
+.expo-shared/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+*.log
+.npmrc.local
+
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+android/app/debug/
+android/app/release/
+android/.idea/
+*.iml
+
+# Go
+apps/relay/bin/
+*.test
+*.out
+coverage.html
+
+# Test / tooling output
+.maestro/tests/
+/tmp/
+/test-results/
+/playwright-report/
+/blob-report/
+*.trace
+*.profraw
+*.profdata
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local dev state
+.dev/
+.dev-data/
+*.pid
+*.sock
