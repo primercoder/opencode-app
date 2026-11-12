@@ -58,6 +58,7 @@ export default function ChatScreen() {
   const [loadingOlder, setLoadingOlder] = useState(false)
   const scrollRef = useRef<ScrollView>(null)
   const loadedRef = useRef(false)
+  const atBottomRef = useRef(true)
 
   useEffect(() => {
     if (!hydrated) void hydrate()
@@ -98,7 +99,9 @@ export default function ChatScreen() {
         if (!options.silent) setOlderCursor(page.cursor)
         else setOlderCursor((current) => current ?? page.cursor)
         if (!options.silent) loadedRef.current = true
-        requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: false }))
+        if (!options.silent || atBottomRef.current) {
+          requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: false }))
+        }
       } catch (cause) {
         if (!options.silent) setError(cause instanceof Error ? cause.message : "加载会话失败")
       }
@@ -114,9 +117,10 @@ export default function ChatScreen() {
   useEffect(() => {
     if (connection?.status !== "ready") return
     let timer: ReturnType<typeof setTimeout> | undefined
-    const unsubscribe = subscribeHostEvents(hostId, () => {
+    const unsubscribe = subscribeHostEvents(hostId, (event) => {
+      if (!isSessionEvent(event.type)) return
       if (timer) clearTimeout(timer)
-      timer = setTimeout(() => void load({ silent: true }), 250)
+      timer = setTimeout(() => void load({ silent: true }), 400)
     })
     return () => {
       unsubscribe()
@@ -330,6 +334,11 @@ export default function ChatScreen() {
         keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} tintColor={colors.text} />}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        onScroll={(event) => {
+          const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent
+          atBottomRef.current = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 80
+        }}
+        scrollEventThrottle={100}
       >
         {!ready && connection?.status === "error" ? (
           <View style={styles.notice}>
@@ -417,6 +426,11 @@ export default function ChatScreen() {
       </View>
     </KeyboardAvoidingView>
   )
+}
+
+function isSessionEvent(type: string | undefined): boolean {
+  if (!type) return false
+  return /^(message|session|permission|form)\./u.test(type)
 }
 
 function mergeMessages(first: SessionMessage[], second: SessionMessage[]): SessionMessage[] {
