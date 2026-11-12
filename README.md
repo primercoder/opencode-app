@@ -48,6 +48,13 @@ All TypeScript tests (including the real Go relay integration test):
 bun run test
 ```
 
+Read-only smoke test against the locally running opencode service (pairs, lists
+sessions/projects/models/files, reads one file):
+
+```bash
+bun run smoke:opencode
+```
+
 Relay tests:
 
 ```bash

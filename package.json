@@ -15,7 +15,8 @@
     "host": "bun run --cwd apps/host src/index.ts",
     "env:check": "bash scripts/check-env.sh",
     "env:bench": "bash scripts/bench-network.sh",
-    "test:relay": "cd apps/relay && go test ./..."
+    "test:relay": "cd apps/relay && go test ./...",
+    "smoke:opencode": "bun run scripts/ocremote-smoke.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",
