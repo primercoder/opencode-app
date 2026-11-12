@@ -27,7 +27,7 @@ scripts/             environment and network helpers
 
 ## Requirements
 
-- Node 22 (`.nvmrc`)
+- Node 26 (`.nvmrc`; React Native 0.86 supports Node >=25)
 - Bun 1.4+
 - Go 1.24+
 - JDK 21 (`JAVA_HOME`)
