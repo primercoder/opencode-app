@@ -10,9 +10,28 @@
     "android": {
       "package": "app.ocremote.android",
       "usesCleartextTraffic": true,
-      "permissions": ["INTERNET", "ACCESS_NETWORK_STATE", "CAMERA", "POST_NOTIFICATIONS", "RECORD_AUDIO"]
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "CAMERA",
+        "POST_NOTIFICATIONS",
+        "RECORD_AUDIO"
+      ]
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 29,
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 35
+          }
+        }
+      ],
+      "expo-secure-store"
+    ],
     "experiments": {
       "typedRoutes": true
     }
