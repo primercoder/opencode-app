@@ -11,7 +11,7 @@
   "scripts": {
     "test": "bun run --cwd packages/protocol test && bun run --cwd apps/host test",
     "test:protocol": "bun test packages/protocol",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && bun run --cwd apps/mobile typecheck",
     "host": "bun run --cwd apps/host src/index.ts",
     "env:check": "bash scripts/check-env.sh",
     "env:bench": "bash scripts/bench-network.sh",
