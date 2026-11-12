@@ -4,6 +4,7 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "r
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
 import { OpencodeClient, type FileDiff } from "@/opencode/client"
+import { parsePatch, type DiffLineKind } from "@/opencode/diff"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 import { ensureConnection } from "@/transport/runtimes"
@@ -94,7 +95,7 @@ export default function SessionDiffScreen() {
 }
 
 function DiffCard(props: { diff: FileDiff }) {
-  const lines = props.diff.patch.split("\n")
+  const lines = parsePatch(props.diff.patch)
   const visible = lines.length > 1500 ? lines.slice(0, 1500) : lines
   return (
     <View style={styles.fileCard}>
@@ -109,9 +110,11 @@ function DiffCard(props: { diff: FileDiff }) {
       <ScrollView horizontal contentContainerStyle={styles.patchScroll} showsHorizontalScrollIndicator={false}>
         <View>
           {visible.map((line, index) => (
-            <Text key={index} style={[styles.line, lineStyle(line)]}>
-              {line.length > 0 ? line : " "}
-            </Text>
+            <View key={index} style={[styles.lineRow, lineBackground(line.kind)]}>
+              <Text style={styles.oldLineNumber}>{line.oldLine ?? ""}</Text>
+              <Text style={styles.newLineNumber}>{line.newLine ?? ""}</Text>
+              <Text style={[styles.line, lineStyle(line.kind)]}>{line.text.length > 0 ? line.text : " "}</Text>
+            </View>
           ))}
           {lines.length > visible.length ? (
             <Text style={styles.truncated}>已省略 {lines.length - visible.length} 行，请在电脑上查看完整 Diff。</Text>
@@ -122,11 +125,18 @@ function DiffCard(props: { diff: FileDiff }) {
   )
 }
 
-function lineStyle(line: string) {
-  if (line.startsWith("+++") || line.startsWith("---")) return styles.lineMeta
-  if (line.startsWith("@@")) return styles.lineHunk
-  if (line.startsWith("+")) return styles.lineAdd
-  if (line.startsWith("-")) return styles.lineDel
+function lineStyle(kind: DiffLineKind) {
+  if (kind === "meta") return styles.lineMeta
+  if (kind === "hunk") return styles.lineHunk
+  if (kind === "add") return styles.lineAdd
+  if (kind === "del") return styles.lineDel
+  return undefined
+}
+
+function lineBackground(kind: DiffLineKind) {
+  if (kind === "hunk") return styles.rowHunk
+  if (kind === "add") return styles.rowAdd
+  if (kind === "del") return styles.rowDel
   return undefined
 }
 
@@ -184,10 +194,32 @@ const styles = StyleSheet.create({
   add: { color: colors.success },
   del: { color: colors.danger },
   patchScroll: { paddingVertical: spacing.xs },
-  line: { fontSize: 11, lineHeight: 17, color: colors.text, ...mono, paddingHorizontal: spacing.sm },
+  lineRow: { flexDirection: "row", minHeight: 17 },
+  rowHunk: { backgroundColor: "rgba(59,92,246,0.08)" },
+  rowAdd: { backgroundColor: "rgba(25,139,67,0.10)" },
+  rowDel: { backgroundColor: "rgba(217,46,60,0.10)" },
+  oldLineNumber: {
+    width: 42,
+    paddingRight: 5,
+    textAlign: "right",
+    fontSize: 10,
+    lineHeight: 17,
+    color: colors.faint,
+    ...mono,
+  },
+  newLineNumber: {
+    width: 42,
+    paddingRight: spacing.sm,
+    textAlign: "right",
+    fontSize: 10,
+    lineHeight: 17,
+    color: colors.faint,
+    ...mono,
+  },
+  line: { fontSize: 11, lineHeight: 17, color: colors.text, ...mono, paddingRight: spacing.md },
   lineMeta: { color: colors.faint, fontWeight: "600" },
-  lineHunk: { color: colors.accent, backgroundColor: "rgba(59,92,246,0.08)" },
-  lineAdd: { color: "#0B6B32", backgroundColor: "rgba(25,139,67,0.10)" },
-  lineDel: { color: "#9B1C28", backgroundColor: "rgba(217,46,60,0.10)" },
+  lineHunk: { color: colors.accent },
+  lineAdd: { color: "#0B6B32" },
+  lineDel: { color: "#9B1C28" },
   truncated: { padding: spacing.md, fontSize: 12, color: colors.faint },
 })

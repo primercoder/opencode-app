@@ -1,7 +1,8 @@
 import { parsePairingOffer, type PairingOffer } from "@ocremote/protocol"
+import { CameraView, useCameraPermissions } from "expo-camera"
 import { router, useLocalSearchParams } from "expo-router"
 import { useEffect, useState } from "react"
-import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, View } from "react-native"
+import { KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
 import { pairWithOffer, type PairingStage } from "@/services/pairing"
@@ -23,6 +24,9 @@ export default function AddHostScreen() {
   const [offer, setOffer] = useState<PairingOffer | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [stage, setStage] = useState<PairingStage | null>(null)
+  const [mode, setMode] = useState<"scan" | "paste">("paste")
+  const [scanLocked, setScanLocked] = useState(false)
+  const [permission, requestPermission] = useCameraPermissions()
 
   const busy = stage !== null
 
@@ -69,25 +73,68 @@ export default function AddHostScreen() {
         <View style={styles.spacer} />
       </View>
 
-      <Text style={styles.label}>配对链接</Text>
-      <TextInput
-        autoCapitalize="none"
-        autoCorrect={false}
-        editable={!busy}
-        multiline
-        onChangeText={(value) => {
-          setUrl(value)
-          setOffer(null)
-          setError(null)
-        }}
-        placeholder="ocremote://pair#..."
-        placeholderTextColor={colors.faint}
-        style={styles.input}
-        value={url}
-      />
-      <Text style={styles.hint}>
-        在电脑上运行 `ocremote pair --lan`，扫码或粘贴链接。链接一次性有效，过期后重新生成。
-      </Text>
+      <View style={styles.tabs}>
+        <Tab label="扫码" active={mode === "scan"} onPress={() => setMode("scan")} disabled={busy} />
+        <Tab label="粘贴链接" active={mode === "paste"} onPress={() => setMode("paste")} disabled={busy} />
+      </View>
+
+      {mode === "scan" && !offer ? (
+        <View style={styles.scannerWrap}>
+          {permission?.granted ? (
+            <CameraView
+              barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+              facing="back"
+              onBarcodeScanned={
+                scanLocked
+                  ? undefined
+                  : ({ data }) => {
+                      setScanLocked(true)
+                      setUrl(data)
+                      parseText(data)
+                      setMode("paste")
+                      setTimeout(() => setScanLocked(false), 500)
+                    }
+              }
+              style={styles.scanner}
+            />
+          ) : (
+            <View style={styles.permissionCard}>
+              <Text style={styles.permissionTitle}>需要相机权限</Text>
+              <Text style={styles.permissionBody}>用相机扫描电脑上的配对二维码。</Text>
+              {permission?.canAskAgain === false ? (
+                <Button label="打开系统设置" variant="outline" onPress={() => void Linking.openSettings()} />
+              ) : (
+                <Button label="允许使用相机" onPress={() => void requestPermission()} />
+              )}
+            </View>
+          )}
+          <Text style={styles.hint}>将电脑上 `ocremote pair` 显示的二维码放入取景框。</Text>
+        </View>
+      ) : null}
+
+      {mode === "paste" ? (
+        <>
+          <Text style={styles.label}>配对链接</Text>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!busy}
+            multiline
+            onChangeText={(value) => {
+              setUrl(value)
+              setOffer(null)
+              setError(null)
+            }}
+            placeholder="ocremote://pair#..."
+            placeholderTextColor={colors.faint}
+            style={styles.input}
+            value={url}
+          />
+          <Text style={styles.hint}>
+            在电脑上运行 `ocremote pair --lan`，扫码或粘贴链接。链接一次性有效，过期后重新生成。
+          </Text>
+        </>
+      ) : null}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -115,11 +162,25 @@ export default function AddHostScreen() {
       <View style={styles.actions}>
         {offer ? (
           <Button label={busy ? "配对中…" : "连接并配对"} onPress={() => void pair()} disabled={busy} />
-        ) : (
+        ) : mode === "paste" ? (
           <Button label="解析链接" onPress={parse} disabled={busy || url.trim().length === 0} />
-        )}
+        ) : null}
       </View>
     </KeyboardAvoidingView>
+  )
+}
+
+function Tab(props: { label: string; active: boolean; disabled: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="tab"
+      accessibilityState={{ selected: props.active }}
+      disabled={props.disabled}
+      onPress={props.onPress}
+      style={[styles.tab, props.active && styles.tabActive, props.disabled && styles.actionDisabled]}
+    >
+      <Text style={[styles.tabText, props.active && styles.tabTextActive]}>{props.label}</Text>
+    </Pressable>
   )
 }
 
@@ -141,6 +202,34 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.xl },
   title: { fontSize: 20, fontWeight: "600", color: colors.text },
   spacer: { width: 72 },
+  tabs: {
+    flexDirection: "row",
+    gap: spacing.xs,
+    padding: 3,
+    borderRadius: radius.full,
+    backgroundColor: colors.surface2,
+    marginBottom: spacing.lg,
+  },
+  tab: { flex: 1, alignItems: "center", paddingVertical: spacing.sm, borderRadius: radius.full },
+  tabActive: { backgroundColor: colors.bg },
+  tabText: { fontSize: 13, color: colors.muted, fontWeight: "500" },
+  tabTextActive: { color: colors.text, fontWeight: "600" },
+  actionDisabled: { opacity: 0.4 },
+  scannerWrap: { gap: spacing.sm },
+  scanner: { height: 280, borderRadius: radius.md, overflow: "hidden" },
+  permissionCard: {
+    height: 220,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    padding: spacing.lg,
+  },
+  permissionTitle: { fontSize: 16, fontWeight: "600", color: colors.text },
+  permissionBody: { fontSize: 13, color: colors.muted, textAlign: "center" },
   label: { fontSize: 13, fontWeight: "500", color: colors.muted, marginBottom: spacing.sm },
   input: {
     minHeight: 104,
