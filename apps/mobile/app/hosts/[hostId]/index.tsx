@@ -145,6 +145,7 @@ export default function HostHomeScreen() {
           <InfoRow label="opencode" value={connection?.session?.opencode.version ?? (ready ? "2.x" : "—")} />
           <InfoRow label="连接" value={transportLabel(connection?.transport)} />
           <InfoRow label="延迟" value={connection?.latencyMs !== undefined ? `${connection.latencyMs} ms` : "—"} />
+          <InfoRow label="设备权限" value={connection?.session?.device?.scope === "read" ? "只读" : "完整"} />
           <InfoRow
             label="最近同步"
             value={connection?.lastSyncedAt ? new Date(connection.lastSyncedAt).toLocaleTimeString() : "—"}

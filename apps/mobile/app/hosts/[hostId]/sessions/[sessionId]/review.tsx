@@ -145,8 +145,10 @@ export default function ReviewScreen() {
     setAnchor(null)
   }
 
+  const readOnly = connection?.session?.device?.scope === "read"
+
   const send = async () => {
-    if (comments.length === 0 || sending) return
+    if (comments.length === 0 || sending || readOnly) return
     setSending(true)
     setError(null)
     try {
@@ -178,8 +180,13 @@ export default function ReviewScreen() {
             {comments.length > 0 ? `${comments.length} 条评论待发送` : "只读"}
           </Text>
         </View>
-        <Pressable accessibilityRole="button" onPress={() => void send()} disabled={comments.length === 0 || sending} style={styles.send}>
-          {sending ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={[styles.sendText, comments.length === 0 && styles.sendDisabled]}>发送</Text>}
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => void send()}
+          disabled={comments.length === 0 || sending || readOnly}
+          style={styles.send}
+        >
+          {sending ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={[styles.sendText, (comments.length === 0 || readOnly) && styles.sendDisabled]}>发送</Text>}
         </Pressable>
       </View>
 

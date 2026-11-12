@@ -267,6 +267,7 @@ export default function ChatScreen() {
   }
 
   const ready = connection?.status === "ready"
+  const readOnly = connection?.session?.device?.scope === "read"
   const title = session?.title?.trim() || "会话"
 
   return (
@@ -355,7 +356,7 @@ export default function ChatScreen() {
       <PendingDock
         permissions={permissions}
         forms={forms}
-        busy={dockBusy}
+        busy={dockBusy || readOnly}
         onReplyPermission={(request, decision) => void replyPermission(request, decision)}
         onSubmitForm={(form, answer) => void submitForm(form, answer)}
         onCancelForm={(form) => void cancelForm(form)}
@@ -379,22 +380,22 @@ export default function ChatScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={dictation.listening ? "停止听写" : "语音听写"}
-            disabled={!ready || sending}
+            disabled={!ready || sending || readOnly}
             onPress={() => (dictation.listening ? dictation.stop() : void dictation.start("zh-CN"))}
             style={({ pressed }) => [
               styles.mic,
               dictation.listening && styles.micActive,
-              (!ready || sending) && styles.sendDisabled,
+              (!ready || sending || readOnly) && styles.sendDisabled,
               pressed && styles.sendPressed,
             ]}
           >
             <Text style={[styles.micText, dictation.listening && styles.micTextActive]}>🎤</Text>
           </Pressable>
           <TextInput
-            editable={ready && !sending}
+            editable={ready && !sending && !readOnly}
             multiline
             onChangeText={setDraft}
-            placeholder={ready ? "输入消息…" : "等待主机连接…"}
+            placeholder={readOnly ? "只读设备无法发送消息" : ready ? "输入消息…" : "等待主机连接…"}
             placeholderTextColor={colors.faint}
             style={styles.input}
             value={draft}
@@ -402,11 +403,11 @@ export default function ChatScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="发送"
-            disabled={!ready || sending || draft.trim().length === 0}
+            disabled={!ready || sending || readOnly || draft.trim().length === 0}
             onPress={() => void send()}
             style={({ pressed }) => [
               styles.send,
-              (!ready || sending || draft.trim().length === 0) && styles.sendDisabled,
+              (!ready || sending || readOnly || draft.trim().length === 0) && styles.sendDisabled,
               pressed && styles.sendPressed,
             ]}
           >

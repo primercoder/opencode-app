@@ -127,7 +127,7 @@ describe("HostRuntime", () => {
     const session = await runtime.connect()
     expect(runtime.state).toBe("ready")
     expect(session.host.name).toBe(env.host.config.name)
-    expect(session.device).toBeUndefined()
+    expect(session.device?.scope).toBe("full")
   })
 
   test("reports an auth error for a revoked token", async () => {

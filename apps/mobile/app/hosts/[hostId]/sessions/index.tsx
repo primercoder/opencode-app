@@ -126,6 +126,7 @@ export default function SessionsScreen() {
   }
 
   const ready = connection?.status === "ready"
+  const readOnly = connection?.session?.device?.scope === "read"
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + spacing.md }]}>
@@ -151,7 +152,7 @@ export default function SessionsScreen() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <View style={styles.actions}>
-          <Button label="新建会话" onPress={() => void openPicker()} disabled={!ready} />
+          <Button label="新建会话" onPress={() => void openPicker()} disabled={!ready || readOnly} />
         </View>
 
         {!ready && connection?.status === "error" ? (

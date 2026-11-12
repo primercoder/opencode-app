@@ -183,7 +183,11 @@ export class ConnectionSession {
     this.deviceId = device.id
     this.scope = device.scope
     this.ctx.onAuthenticated?.(device.id)
-    this.sendControl({ t: "welcome", ...this.hostInfo() })
+    this.sendControl({
+      t: "welcome",
+      ...this.hostInfo(),
+      device: { id: device.id, name: device.name, scope: device.scope },
+    })
   }
 
   private async handleRequest(value: OcrpControlFrame): Promise<void> {

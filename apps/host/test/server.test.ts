@@ -64,6 +64,39 @@ describe("host LAN server", () => {
     const welcome = await reconnect.auth(paired.device.id, paired.token)
     expect(welcome.t).toBe("welcome")
     expect(welcome.host.id).toBe(host.identity.hostId)
+    expect(welcome.device.scope).toBe("full")
+  })
+
+  test("read-only devices can read but not write", async () => {
+    const home = await mkdtemp(join(tmpdir(), "ocremote-host-readonly-"))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        if (new URL(request.url).pathname === "/api/info") return Response.json({ version: "read-only" })
+        return Response.json({ created: true }, { status: 201 })
+      },
+    })
+    cleanups.push(() => opencode.stop(true))
+
+    const host = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${opencode.port}`,
+      opencodePassword: "test-password",
+    })
+    cleanups.push(() => host.close())
+
+    const client = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    cleanups.push(() => client.close())
+    const paired = await client.pair(await host.issuePairCode("read"))
+    expect(paired.device.scope).toBe("read")
+
+    const info = await client.request("GET", "/api/info")
+    expect(info.status).toBe(200)
+    await expect(client.request("POST", "/api/session")).rejects.toThrow(/read-only/u)
   })
 
   test("cancels an in-flight upstream request", async () => {
@@ -208,7 +241,9 @@ async function connectClient(url: string, hostPublicKey: Uint8Array) {
       const id = requestId++
       sendControl({ t: "req", id, method, path, headers: {}, body: null })
       const response = await receiveFor(id)
-      if (response.t !== "res") throw new Error(`expected res, got ${String(response.t)}`)
+      if (response.t !== "res") {
+        throw new Error(`expected res, got ${String(response.t)}: ${String(response.message ?? "")}`)
+      }
       let body = ""
       while (true) {
         const chunk = await receiveFor(id)
