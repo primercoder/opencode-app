@@ -1,6 +1,6 @@
 import { router, useLocalSearchParams } from "expo-router"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native"
+import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
 import {
@@ -27,6 +27,7 @@ export default function SessionsScreen() {
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [search, setSearch] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [pickerVisible, setPickerVisible] = useState(false)
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null)
@@ -50,20 +51,24 @@ export default function SessionsScreen() {
     setError(null)
     try {
       const runtime = await ensureConnection(hostId)
-      const page = await new OpencodeClient(runtime).listSessions({ limit: 50, order: "desc" })
+      const page = await new OpencodeClient(runtime).listSessions({
+        limit: 50,
+        order: "desc",
+        ...(search.trim() ? { search: search.trim() } : {}),
+      })
       setSessions(page.data)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载会话失败")
     } finally {
       setLoading(false)
     }
-  }, [hostId])
+  }, [hostId, search])
 
   useEffect(() => {
     if (connection?.status !== "ready") return
-    if (sessions !== null) return
-    void load()
-  }, [connection?.status, sessions, load])
+    const timer = setTimeout(() => void load(), 300)
+    return () => clearTimeout(timer)
+  }, [connection?.status, load])
 
   useForeground(
     useCallback(() => {
@@ -145,9 +150,22 @@ export default function SessionsScreen() {
         <View style={styles.back} />
       </View>
 
+      <View style={styles.searchRow}>
+        <TextInput
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={setSearch}
+          placeholder="搜索会话"
+          placeholderTextColor={colors.faint}
+          style={styles.search}
+          value={search}
+        />
+      </View>
+
       <ScrollView
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} tintColor={colors.text} />}
+        keyboardShouldPersistTaps="handled"
       >
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -169,8 +187,8 @@ export default function SessionsScreen() {
 
         {sessions?.length === 0 ? (
           <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>还没有会话</Text>
-            <Text style={styles.emptyBody}>新建一个会话，从手机上开始工作。</Text>
+            <Text style={styles.emptyTitle}>{search.trim() ? "没有匹配的会话" : "还没有会话"}</Text>
+            <Text style={styles.emptyBody}>{search.trim() ? "换个关键词试试。" : "新建一个会话，从手机上开始工作。"}</Text>
           </View>
         ) : null}
 
@@ -265,6 +283,17 @@ const styles = StyleSheet.create({
   headerCenter: { flex: 1, alignItems: "center" },
   title: { fontSize: 18, fontWeight: "600", color: colors.text },
   subtitle: { marginTop: 2, fontSize: 12, color: colors.muted },
+  searchRow: { paddingBottom: spacing.md },
+  search: {
+    minHeight: 40,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.full,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.lg,
+    fontSize: 14,
+    color: colors.text,
+  },
   content: { paddingBottom: spacing.xxl },
   actions: { marginBottom: spacing.lg, alignItems: "flex-start" },
   error: { marginBottom: spacing.md, fontSize: 13, color: colors.danger },
