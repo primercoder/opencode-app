@@ -7,13 +7,15 @@ export type RegisterRelayInput = {
   relayUrl: string
   secret?: string
   room?: string
+  hostToken?: string
+  clientToken?: string
   ttlSeconds?: number
 }
 
 export async function registerRelayRoom(input: RegisterRelayInput): Promise<RelayConfig> {
   const room = input.room ?? `room_${randomBytes(8).toString("hex")}`
-  const hostToken = base64UrlEncode(randomBytes(32))
-  const clientToken = base64UrlEncode(randomBytes(32))
+  const hostToken = input.hostToken ?? base64UrlEncode(randomBytes(32))
+  const clientToken = input.clientToken ?? base64UrlEncode(randomBytes(32))
   const registration = new URL(input.relayUrl)
   registration.protocol = registration.protocol === "wss:" ? "https:" : "http:"
   registration.pathname = "/v1/rooms"
@@ -55,6 +57,8 @@ export type RelayHostOptions = {
   config: RelayConfig
   createSession(socket: SessionSocket): ConnectionSession
   onState?: (state: RelayState, detail?: string) => void
+  /** Recreate the in-memory relay room before a reconnect (e.g. after relay restart). */
+  onBeforeReconnect?: () => Promise<void>
 }
 
 type Entry = {
@@ -187,8 +191,17 @@ export class RelayHostClient {
     const delay = Math.min(500 * 2 ** Math.min(this.attempt - 1, 4), 10_000)
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined
-      void this.open().catch(() => this.scheduleReconnect())
+      void this.reconnect()
     }, delay)
+  }
+
+  private async reconnect(): Promise<void> {
+    try {
+      await this.options.onBeforeReconnect?.()
+      await this.open()
+    } catch {
+      this.scheduleReconnect()
+    }
   }
 
   private closeSessions(): void {

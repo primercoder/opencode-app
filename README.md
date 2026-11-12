@@ -85,6 +85,10 @@ bun run src/index.ts start --lan --pair \
 
 The pairing QR then contains both LAN and relay transports. Rooms are stored in
 `~/.config/ocremote/config.json`; pass `--relay-new-room` to register a fresh room.
+Relay rooms are in-memory, so a relay restart loses them. When
+`RELAY_REGISTRATION_SECRET` (or `--relay-secret`) is available, the host
+re-registers the same room and tokens before reconnecting, and paired clients
+recover without re-pairing.
 
 Relay development network:
 
@@ -120,11 +124,17 @@ Pass `-PreactNativeArchitectures=arm64-v8a` (or `x86_64`) to build one ABI.
 The generated release build uses the Expo debug keystore; configure a real
 keystore before distributing.
 
-Current emulator note: the development machine has no `/dev/kvm`, so `oc35` must run with
-`-accel off`. In this VMware guest the software-emulated system server is repeatedly killed by
-Android's watchdog during boot, which makes UI automation unreliable. Protocol, relay, runtime
-and UI logic are covered by Bun tests, and the Android debug APK builds successfully; on-device
-QA needs a host with nested virtualization enabled. See the setup log for details.
+The development machine now exposes `/dev/kvm`; the `oc35` AVD boots in under a minute with
+hardware acceleration. Headless testing uses:
+
+```bash
+$HOME/Android/Sdk/emulator/emulator -avd oc35 -accel on -no-window \
+  -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 3072
+adb reverse tcp:26379 tcp:26379   # when testing through toxiproxy/relay
+```
+
+The release APKs are smoke-tested on the x86_64 emulator over both LAN and relay
+(including relay restart recovery). See the local setup log for details.
 
 ## Security model
 

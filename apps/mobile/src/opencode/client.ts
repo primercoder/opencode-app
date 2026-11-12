@@ -12,9 +12,14 @@ export type SessionInfo = {
   location?: { directory?: string; workspaceID?: string }
 }
 
+export type PageCursor = {
+  previous?: string
+  next?: string
+}
+
 export type Page<T> = {
   data: T[]
-  cursor?: string
+  cursor?: PageCursor
 }
 
 export type ServerInfo = {
@@ -196,11 +201,15 @@ export class OpencodeClient {
     return result.data
   }
 
-  async listMessages(sessionId: string, input: { limit?: number; order?: "asc" | "desc"; cursor?: string } = {}): Promise<Page<SessionMessage>> {
+  async listMessages(
+    sessionId: string,
+    input: { limit?: number; order?: "asc" | "desc"; cursor?: string } = {},
+  ): Promise<Page<SessionMessage>> {
     const params = new URLSearchParams()
     params.set("limit", String(input.limit ?? 50))
-    params.set("order", input.order ?? "asc")
+    // The server rejects cursor + order; the cursor already carries the order.
     if (input.cursor) params.set("cursor", input.cursor)
+    else params.set("order", input.order ?? "asc")
     return this.raw<Page<SessionMessage>>("GET", `/api/session/${encodeURIComponent(sessionId)}/message?${params.toString()}`)
   }
 

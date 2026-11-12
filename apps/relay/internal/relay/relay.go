@@ -140,24 +140,18 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 		ttl = s.cfg.RoomTTL
 	}
 
+	// Registration is an upsert: a host re-registers after a relay restart,
+	// recreating the in-memory room with the same room id and tokens.
 	s.mu.Lock()
-	_, exists := s.rooms[body.Room]
-	if !exists {
-		s.rooms[body.Room] = &room{
-			id:              body.Room,
-			hostTokenHash:   sha256.Sum256([]byte(body.HostToken)),
-			clientTokenHash: sha256.Sum256([]byte(body.ClientToken)),
-			expiresAt:       time.Now().Add(ttl),
-			clients:         make(map[uint32]*peer),
-			nextClientID:    1,
-		}
+	s.rooms[body.Room] = &room{
+		id:              body.Room,
+		hostTokenHash:   sha256.Sum256([]byte(body.HostToken)),
+		clientTokenHash: sha256.Sum256([]byte(body.ClientToken)),
+		expiresAt:       time.Now().Add(ttl),
+		clients:         make(map[uint32]*peer),
+		nextClientID:    1,
 	}
 	s.mu.Unlock()
-
-	if exists {
-		http.Error(w, "room already exists", http.StatusConflict)
-		return
-	}
 
 	wsURL := s.cfg.PublicURL
 	if wsURL == "" {

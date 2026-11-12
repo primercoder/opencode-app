@@ -21,16 +21,7 @@ export default function HostHomeScreen() {
   const [refreshError, setRefreshError] = useState<string | null>(null)
 
   useEffect(() => {
-    useForeground(
-    useCallback(() => {
-      if (!host) return
-      void ensureConnection(host.id, { force: true })
-        .then(() => refreshInfo(host.id))
-        .catch(() => undefined)
-    }, [host?.id]),
-  )
-
-  if (!hydrated) {
+    if (!hydrated) {
       void hydrate()
       return
     }

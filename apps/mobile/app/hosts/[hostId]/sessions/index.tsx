@@ -1,4 +1,4 @@
-import { router, useLocalSearchParams } from "expo-router"
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
@@ -64,11 +64,13 @@ export default function SessionsScreen() {
     }
   }, [hostId, search])
 
-  useEffect(() => {
-    if (connection?.status !== "ready") return
-    const timer = setTimeout(() => void load(), 300)
-    return () => clearTimeout(timer)
-  }, [connection?.status, load])
+  useFocusEffect(
+    useCallback(() => {
+      if (connection?.status !== "ready") return
+      const timer = setTimeout(() => void load(), 300)
+      return () => clearTimeout(timer)
+    }, [connection?.status, load]),
+  )
 
   useForeground(
     useCallback(() => {

@@ -83,6 +83,34 @@ func TestHostAndClientForwardFrames(t *testing.T) {
 	}
 }
 
+func TestRoomRegistrationIsIdempotent(t *testing.T) {
+	server := httptest.NewServer(New(Config{RegistrationSecret: "secret"}).Handler())
+	defer server.Close()
+
+	room := "room_idem_123456"
+	if code := postRoom(t, server.URL, "secret", room, "host-one", "client-one"); code != http.StatusCreated {
+		t.Fatalf("first registration: %d", code)
+	}
+	if code := postRoom(t, server.URL, "secret", room, "host-two", "client-two"); code != http.StatusCreated {
+		t.Fatalf("second registration: %d", code)
+	}
+
+	host := dial(t, server.URL, room, "host", "host-two")
+	defer host.Close(websocket.StatusNormalClosure, "done")
+	client := dial(t, server.URL, room, "client", "client-two")
+	defer client.Close(websocket.StatusNormalClosure, "done")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	kind, data, err := client.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != websocket.MessageText || !strings.Contains(string(data), `"t":"welcome"`) {
+		t.Fatalf("expected welcome after re-registration, got %d %s", kind, data)
+	}
+}
+
 func TestRoomRequiresRegistrationSecret(t *testing.T) {
 	server := httptest.NewServer(New(Config{RegistrationSecret: "secret"}).Handler())
 	defer server.Close()
@@ -96,6 +124,24 @@ func TestRoomRequiresRegistrationSecret(t *testing.T) {
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", response.StatusCode)
 	}
+}
+
+func postRoom(t *testing.T, baseURL, secret, room, hostToken, clientToken string) int {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"room":        room,
+		"hostToken":   hostToken,
+		"clientToken": clientToken,
+	})
+	request, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/rooms", bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+secret)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	return response.StatusCode
 }
 
 func createRoom(t *testing.T, baseURL, secret string) (room, hostToken, clientToken string) {

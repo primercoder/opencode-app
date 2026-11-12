@@ -30,6 +30,7 @@ program
   .option("--opencode-url <url>", "opencode server URL")
   .option("--opencode-password <password>", "opencode server password")
   .option("--pair", "print a pairing QR after startup", false)
+  .option("--pair-url <url>", "override the LAN URL printed in the pairing offer")
   .option("--read-only", "issue a read-only pairing code", false)
   .option("--relay-url <url>", "relay WebSocket URL, e.g. ws://127.0.0.1:26379/ws")
   .option("--relay-secret <secret>", "relay registration secret")
@@ -42,6 +43,7 @@ program
     opencodeUrl?: string
     opencodePassword?: string
     pair: boolean
+    pairUrl?: string
     readOnly: boolean
     relayUrl?: string
     relaySecret?: string
@@ -68,7 +70,7 @@ program
     for (const url of lanUrls(hostname, host.port)) console.log(`  LAN candidate: ${url}`)
     if (options.pair) {
       const code = await host.issuePairCode(options.readOnly ? "read" : "full")
-      printOffer(await host.pairingOffer(code))
+      printOffer(await host.pairingOffer(code, options.pairUrl))
     }
     process.on("SIGINT", () => {
       void host.close().finally(() => process.exit(0))

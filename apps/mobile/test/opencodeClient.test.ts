@@ -33,6 +33,15 @@ describe("OpencodeClient", () => {
     })
   })
 
+  test("lists messages with order or with a cursor, never both", async () => {
+    const { client: api, calls } = client('{"data":[],"cursor":{"previous":"p","next":"n"}}')
+    const first = await api.listMessages("ses_1", { limit: 50, order: "desc" })
+    expect(first.cursor).toEqual({ previous: "p", next: "n" })
+    await api.listMessages("ses_1", { limit: 50, cursor: "abc" })
+    expect(calls[0]?.path).toBe("/api/session/ses_1/message?limit=50&order=desc")
+    expect(calls[1]?.path).toBe("/api/session/ses_1/message?limit=50&cursor=abc")
+  })
+
   test("lists projects and creates a session in a directory", async () => {
     const { client: api, calls } = client('[{"id":"prj_1","canonical":"/work/a"}]')
     const projects = await api.listProjects()

@@ -17,7 +17,7 @@ import {
 } from "./config.ts"
 import { addPendingPair, hashPairCode } from "./pairing.ts"
 import { resolveOpencodeTarget, type OpencodeTarget } from "./opencode.ts"
-import { RelayHostClient } from "./relay.ts"
+import { registerRelayRoom, RelayHostClient } from "./relay.ts"
 import { ConnectionSession, type HostContext } from "./session.ts"
 
 export type HostOptions = {
@@ -28,6 +28,7 @@ export type HostOptions = {
   opencodeUrl?: string
   opencodePassword?: string
   relay?: RelayConfig
+  relaySecret?: string
 }
 
 export type Host = {
@@ -105,6 +106,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
   await saveConfig(home, config)
 
   if (relayConfig) {
+    const relaySecret = options.relaySecret ?? process.env.RELAY_REGISTRATION_SECRET
     relayClient = new RelayHostClient({
       config: relayConfig,
       createSession: (socket) => new ConnectionSession(socket, ctx),
@@ -113,8 +115,30 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
           console.warn(`[relay] ${state}${detail ? `: ${detail}` : ""}`)
         }
       },
+      ...(relaySecret
+        ? {
+            onBeforeReconnect: async () => {
+              await registerRelayRoom({
+                relayUrl: relayConfig.url,
+                secret: relaySecret,
+                room: relayConfig.room,
+                hostToken: relayConfig.hostToken,
+                clientToken: relayConfig.clientToken,
+              })
+            },
+          }
+        : {}),
     })
     try {
+      if (relaySecret) {
+        await registerRelayRoom({
+          relayUrl: relayConfig.url,
+          secret: relaySecret,
+          room: relayConfig.room,
+          hostToken: relayConfig.hostToken,
+          clientToken: relayConfig.clientToken,
+        })
+      }
       await relayClient.start()
     } catch (error) {
       relayClient.close()

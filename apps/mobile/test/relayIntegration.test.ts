@@ -26,16 +26,7 @@ describe("relay end to end", () => {
     if (build.exitCode !== 0) {
       throw new Error(`relay build failed: ${build.stderr.toString()}`)
     }
-    const relay = Bun.spawn([relayBinary], {
-      env: {
-        ...process.env,
-        RELAY_LISTEN: `127.0.0.1:${relayPort}`,
-        RELAY_REGISTRATION_SECRET: "test-secret",
-        RELAY_PUBLIC_URL: `ws://127.0.0.1:${relayPort}/ws`,
-      },
-      stdout: "ignore",
-      stderr: "inherit",
-    })
+    let relay = spawnRelay(relayBinary, relayPort)
     cleanups.push(async () => {
       relay.kill()
       await rm(relayBinary, { force: true })
@@ -68,6 +59,7 @@ describe("relay end to end", () => {
       opencodeUrl: `http://127.0.0.1:${opencode.port}`,
       opencodePassword: "test-password",
       relay: relayConfig,
+      relaySecret: "test-secret",
     })
     cleanups.push(() => host.close())
 
@@ -76,7 +68,7 @@ describe("relay end to end", () => {
     const offer = parsePairingOffer(pairingUrl)
     expect(offer.transports.map((transport) => transport.kind)).toEqual(["lan", "relay"])
 
-    const runtime = HostRuntime.fromPairingOffer(offer, { autoReconnect: false })
+    const runtime = HostRuntime.fromPairingOffer(offer, { autoReconnect: true })
     cleanups.push(() => runtime.disconnect())
 
     const session = await runtime.connect()
@@ -87,8 +79,37 @@ describe("relay end to end", () => {
     const response = await runtime.request({ method: "GET", path: "/api/info" })
     expect(response.status).toBe(200)
     expect(JSON.parse(response.body).version).toBe("relay-2.2.7")
+
+    // Relay rooms live in memory. After a restart the host must re-register the
+    // room and both ends must reconnect without re-pairing.
+    relay.kill()
+    await relay.exited
+    await Bun.sleep(1_000)
+    relay = spawnRelay(relayBinary, relayPort)
+    await waitFor(`http://127.0.0.1:${relayPort}/healthz`)
+
+    for (let attempt = 0; attempt < 60 && runtime.state !== "ready"; attempt += 1) {
+      await Bun.sleep(500)
+    }
+    expect(runtime.state).toBe("ready")
+    const recovered = await runtime.request({ method: "GET", path: "/api/info" })
+    expect(recovered.status).toBe(200)
+    expect(JSON.parse(recovered.body).version).toBe("relay-2.2.7")
   }, 60_000)
 })
+
+function spawnRelay(binary: string, port: number) {
+  return Bun.spawn([binary], {
+    env: {
+      ...process.env,
+      RELAY_LISTEN: `127.0.0.1:${port}`,
+      RELAY_REGISTRATION_SECRET: "test-secret",
+      RELAY_PUBLIC_URL: `ws://127.0.0.1:${port}/ws`,
+    },
+    stdout: "ignore",
+    stderr: "inherit",
+  })
+}
 
 async function freePort(): Promise<number> {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") })

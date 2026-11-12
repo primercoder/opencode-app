@@ -100,8 +100,9 @@ export default function ChatScreen() {
         setForms(pendingForms)
         const latest = [...page.data].reverse()
         setMessages((current) => mergeMessages(latest, (current ?? []).filter((message) => !message.id.startsWith("local_"))))
-        if (!options.silent) setOlderCursor(page.cursor)
-        else setOlderCursor((current) => current ?? page.cursor)
+        const nextCursor = page.data.length >= 50 ? page.cursor?.next : undefined
+        if (!options.silent) setOlderCursor(nextCursor)
+        else setOlderCursor((current) => current ?? nextCursor)
         if (!options.silent) loadedRef.current = true
         if (!options.silent || atBottomRef.current) {
           requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: false }))
@@ -156,12 +157,11 @@ export default function ChatScreen() {
       const runtime = await ensureConnection(hostId)
       const page = await new OpencodeClient(runtime).listMessages(sessionId, {
         limit: 50,
-        order: "desc",
         cursor: olderCursor,
       })
       const older = [...page.data].reverse()
       setMessages((current) => mergeMessages(older, current ?? []))
-      setOlderCursor(page.cursor)
+      setOlderCursor(page.data.length >= 50 ? page.cursor?.next : undefined)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "加载更早消息失败")
     } finally {
@@ -355,7 +355,7 @@ export default function ChatScreen() {
         ) : null}
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        {olderCursor ? (
+        {olderCursor && messages && messages.length > 0 ? (
           <Pressable accessibilityRole="button" onPress={() => void loadOlder()} style={styles.olderButton}>
             <Text style={styles.olderText}>{loadingOlder ? "加载中…" : "加载更早消息"}</Text>
           </Pressable>
@@ -496,11 +496,7 @@ function ContentBlock(props: { block: AssistantContent }) {
   }
 
   if (block.type === "reasoning") {
-    return (
-      <View style={styles.reasoning}>
-        <Text style={styles.reasoningText}>{(block as { text: string }).text}</Text>
-      </View>
-    )
+    return <ReasoningBlock text={(block as { text: string }).text} />
   }
 
   if (block.type === "tool") {
@@ -526,6 +522,20 @@ function ContentBlock(props: { block: AssistantContent }) {
   }
 
   return null
+}
+
+function ReasoningBlock(props: { text: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <View style={styles.reasoning}>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen((value) => !value)}>
+        <Text style={styles.reasoningToggle}>
+          {open ? "收起思考过程" : "思考过程"} · {props.text.length} 字
+        </Text>
+      </Pressable>
+      {open ? <Text style={styles.reasoningText}>{props.text}</Text> : null}
+    </View>
+  )
 }
 
 function summarizeInput(input: unknown): string {
@@ -579,7 +589,8 @@ const styles = StyleSheet.create({
     paddingLeft: spacing.md,
     paddingVertical: 2,
   },
-  reasoningText: { fontSize: 13, lineHeight: 20, color: colors.muted, fontStyle: "italic" },
+  reasoningToggle: { fontSize: 12, color: colors.faint, fontWeight: "500" },
+  reasoningText: { marginTop: 4, fontSize: 13, lineHeight: 20, color: colors.muted, fontStyle: "italic" },
   systemLine: { textAlign: "center", fontSize: 12, color: colors.faint, marginVertical: spacing.xs },
   toolCard: {
     padding: spacing.md,
