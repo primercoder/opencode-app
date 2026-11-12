@@ -131,3 +131,33 @@ func dial(t *testing.T, baseURL, room, role, token string) *websocket.Conn {
 	}
 	return conn
 }
+
+func TestClientCanAuthenticateWithQueryToken(t *testing.T) {
+	server := httptest.NewServer(New(Config{RegistrationSecret: "secret"}).Handler())
+	defer server.Close()
+
+	room, hostToken, clientToken := createRoom(t, server.URL, "secret")
+	host := dial(t, server.URL, room, "host", hostToken)
+	defer host.Close(websocket.StatusNormalClosure, "done")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws?room=" + room + "&role=client&v=1&token=" + clientToken
+	client, response, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		if response != nil {
+			raw, _ := io.ReadAll(response.Body)
+			t.Fatalf("dial client: %v (%d %s)", err, response.StatusCode, raw)
+		}
+		t.Fatal(err)
+	}
+	defer client.Close(websocket.StatusNormalClosure, "done")
+
+	kind, data, err := client.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != websocket.MessageText || !strings.Contains(string(data), `"t":"welcome"`) {
+		t.Fatalf("expected welcome control, got %d %s", kind, data)
+	}
+}

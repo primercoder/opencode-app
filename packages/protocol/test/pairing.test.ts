@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
+  base64UrlDecode,
+  base64UrlEncode,
   encodePairingOffer,
   fingerprintOfPublicKey,
   isPairingOfferExpired,
@@ -22,6 +24,20 @@ function offer(overrides: Partial<PairingOffer> = {}): PairingOffer {
     ...overrides,
   }
 }
+
+describe("base64url", () => {
+  test("round-trips arbitrary bytes without padding", () => {
+    const bytes = new Uint8Array([0, 255, 254, 251, 239, 190, 1, 2, 3])
+    const encoded = base64UrlEncode(bytes)
+
+    expect(encoded).not.toMatch(/[+/=]/u)
+    expect(base64UrlDecode(encoded)).toEqual(bytes)
+  })
+
+  test("rejects invalid characters", () => {
+    expect(() => base64UrlDecode("ab$c")).toThrow()
+  })
+})
 
 describe("pairing offers", () => {
   test("encodes and parses a URL fragment", () => {

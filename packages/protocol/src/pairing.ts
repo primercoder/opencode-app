@@ -50,18 +50,51 @@ export function fingerprintOfPublicKey(publicKey: Uint8Array): string {
   return bytesToHex(sha256(publicKey).slice(0, 8))
 }
 
+// Pure TypeScript base64url: Hermes does not reliably expose btoa/atob.
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+const BASE64_VALUES = new Map<string, number>(
+  Array.from(BASE64_ALPHABET, (character, index) => [character, index] as const),
+)
+
 export function base64UrlEncode(bytes: Uint8Array): string {
-  let binary = ""
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "")
+  let out = ""
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index] ?? 0
+    const second = bytes[index + 1]
+    const third = bytes[index + 2]
+    out += BASE64_ALPHABET[first >> 2]
+    out += BASE64_ALPHABET[((first & 0x03) << 4) | (second === undefined ? 0 : second >> 4)]
+    if (second === undefined) break
+    out += BASE64_ALPHABET[((second & 0x0f) << 2) | (third === undefined ? 0 : third >> 6)]
+    if (third === undefined) break
+    out += BASE64_ALPHABET[third & 0x3f]
+  }
+  return out
 }
 
 export function base64UrlDecode(value: string): Uint8Array {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/")
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=")
-  const binary = atob(padded)
-  const out = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index += 1) out[index] = binary.charCodeAt(index)
+  if (value.length % 4 === 1) throw new Error("invalid base64url length")
+  const values: number[] = []
+  for (const character of value) {
+    const decoded = BASE64_VALUES.get(character)
+    if (decoded === undefined) throw new Error("invalid base64url character")
+    values.push(decoded)
+  }
+
+  const out = new Uint8Array(Math.floor((values.length * 3) / 4))
+  let offset = 0
+  for (let index = 0; index < values.length; index += 4) {
+    const first = values[index] ?? 0
+    const second = values[index + 1]
+    const third = values[index + 2]
+    const fourth = values[index + 3]
+    if (second === undefined) throw new Error("invalid base64url length")
+    out[offset++] = (first << 2) | (second >> 4)
+    if (third === undefined) break
+    out[offset++] = ((second & 0x0f) << 4) | (third >> 2)
+    if (fourth === undefined) break
+    out[offset++] = ((third & 0x03) << 6) | fourth
+  }
   return out
 }
 

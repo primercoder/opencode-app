@@ -194,6 +194,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := bearer(r)
+	if token == "" {
+		// Browser/React Native WebSocket cannot set Authorization headers.
+		token = q.Get("token")
+	}
 	if !room.authorized(role, token) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
