@@ -11,9 +11,9 @@ P0 foundation and the first encrypted vertical slice are in place:
 - `packages/protocol`: OCRP frames, pairing offers, Noise NK, protected records, tests.
 - `apps/host`: opencode discovery, device pairing/auth, LAN WebSocket server, HTTP/SSE proxy, relay host client.
 - `apps/relay`: Go WebSocket relay with rooms, bearer/query tokens, host/client forwarding and backpressure.
-- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, host home, session list and basic chat.
+- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, host home, session list, chat, permissions/forms, model/agent picker, diff viewer and read-only review with line comments.
 
-Not implemented yet: chat event streaming (currently polling), permissions/forms, diff/file review, ASR, notifications, offline cache.
+Not implemented yet: voice dictation (local/host ASR), notifications, background service, offline cache, image/file preview rendering.
 
 ## Layout
 
@@ -101,7 +101,10 @@ bunx expo run:android
 ```
 
 Current emulator note: the development machine has no `/dev/kvm`, so `oc35` must run with
-`-accel off`; first cold boot is slow. See the setup log for details.
+`-accel off`. In this VMware guest the software-emulated system server is repeatedly killed by
+Android's watchdog during boot, which makes UI automation unreliable. Protocol, relay, runtime
+and UI logic are covered by Bun tests, and the Android debug APK builds successfully; on-device
+QA needs a host with nested virtualization enabled. See the setup log for details.
 
 ## Security model
 

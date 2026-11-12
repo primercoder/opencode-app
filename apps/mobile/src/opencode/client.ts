@@ -23,6 +23,14 @@ export type ServerInfo = {
   urls?: string[]
 }
 
+export type ProjectInfo = {
+  id: string
+  canonical: string
+  name?: string
+  icon?: { color?: string; image?: string }
+  time?: { created?: number | string; updated?: number | string }
+}
+
 export type AgentInfo = {
   id: string
   name: string
@@ -148,6 +156,10 @@ export class OpencodeClient {
     return this.raw<ServerInfo>("GET", "/api/info")
   }
 
+  async listProjects(): Promise<ProjectInfo[]> {
+    return this.raw<ProjectInfo[]>("GET", "/api/project?archived=false")
+  }
+
   async listAgents(directory?: string): Promise<AgentInfo[]> {
     const result = await this.raw<{ data: AgentInfo[] }>("GET", withDirectory("/api/agent", directory))
     return result.data
@@ -174,7 +186,7 @@ export class OpencodeClient {
     return this.raw<Page<SessionInfo>>("GET", `/api/session?${params.toString()}`)
   }
 
-  async createSession(input: { title?: string; agent?: string } = {}): Promise<SessionInfo> {
+  async createSession(input: { title?: string; agent?: string; location?: { directory: string } } = {}): Promise<SessionInfo> {
     const result = await this.raw<{ data: SessionInfo }>("POST", "/api/session", input)
     return result.data
   }
@@ -281,6 +293,7 @@ export class OpencodeClient {
       headers: {
         accept: "application/json",
         "x-opencode-capabilities": "experimental-media-uri",
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     })

@@ -31,6 +31,7 @@ import {
 } from "@/opencode/client"
 import type { FormAnswers } from "@/opencode/forms"
 import { ensureConnection, subscribeHostEvents } from "@/transport/runtimes"
+import { useForeground } from "@/lib/useForeground"
 import { colors, radius, spacing } from "@/theme"
 
 export default function ChatScreen() {
@@ -206,6 +207,14 @@ export default function ChatScreen() {
     await new OpencodeClient(runtime).switchModel(sessionId, model)
     setSession((current) => (current ? { ...current, model } : current))
   }
+
+  useForeground(
+    useCallback(() => {
+      void ensureConnection(hostId, { force: true })
+        .then(() => load({ silent: true }))
+        .catch(() => undefined)
+    }, [hostId, load]),
+  )
 
   const send = async () => {
     const text = draft.trim()

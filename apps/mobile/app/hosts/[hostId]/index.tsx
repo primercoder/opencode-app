@@ -1,11 +1,12 @@
 import { router, useLocalSearchParams } from "expo-router"
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 import { ensureConnection, refreshInfo } from "@/transport/runtimes"
+import { useForeground } from "@/lib/useForeground"
 import { colors, radius, spacing } from "@/theme"
 
 export default function HostHomeScreen() {
@@ -20,7 +21,16 @@ export default function HostHomeScreen() {
   const [refreshError, setRefreshError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!hydrated) {
+    useForeground(
+    useCallback(() => {
+      if (!host) return
+      void ensureConnection(host.id, { force: true })
+        .then(() => refreshInfo(host.id))
+        .catch(() => undefined)
+    }, [host?.id]),
+  )
+
+  if (!hydrated) {
       void hydrate()
       return
     }
@@ -29,6 +39,15 @@ export default function HostHomeScreen() {
       // The connection store carries the error for the UI.
     })
   }, [hydrated, host?.id, hydrate])
+
+  useForeground(
+    useCallback(() => {
+      if (!host) return
+      void ensureConnection(host.id, { force: true })
+        .then(() => refreshInfo(host.id))
+        .catch(() => undefined)
+    }, [host?.id]),
+  )
 
   if (!hydrated) {
     return <View style={styles.screen} />

@@ -114,7 +114,13 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
         }
       },
     })
-    await relayClient.start()
+    try {
+      await relayClient.start()
+    } catch (error) {
+      relayClient.close()
+      server.stop(true)
+      throw error
+    }
   }
 
   return {

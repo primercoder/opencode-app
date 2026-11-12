@@ -121,7 +121,10 @@ export function parsePairingOffer(input: string): PairingOffer {
     throw new Error("pairing offer payload is not valid base64url JSON")
   }
 
-  return PairingOfferSchema.parse(parsed)
+  const offer = PairingOfferSchema.parse(parsed)
+  const expected = fingerprintOfPublicKey(base64UrlDecode(offer.pk))
+  if (offer.fingerprint !== expected) throw new Error("pairing offer fingerprint does not match its public key")
+  return offer
 }
 
 export function isPairingOfferExpired(offer: PairingOffer, now = Date.now()): boolean {

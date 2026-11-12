@@ -161,7 +161,7 @@ export default function ReviewScreen() {
     }
   }
 
-  const parentPath = currentPath.split("/").slice(0, -1).join("/")
+  const parentPath = currentPath.replace(/\/+$/u, "").split("/").slice(0, -1).join("/")
 
   return (
     <KeyboardAvoidingView

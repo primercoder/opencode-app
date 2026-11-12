@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { OpencodeClient } from "../src/opencode/client.ts"
 import type { HostRuntime } from "../src/transport/hostRuntime.ts"
 
-type Call = { method: string; path: string; body?: string }
+type Call = { method: string; path: string; body?: string; headers?: Record<string, string> }
 
 function client(body = ""): { client: OpencodeClient; calls: Call[] } {
   const calls: Call[] = []
@@ -25,7 +25,21 @@ describe("OpencodeClient", () => {
   test("sends a prompt body", async () => {
     const { client: api, calls } = client()
     await api.prompt("ses_1", "hello")
-    expect(calls[0]).toMatchObject({ method: "POST", path: "/api/session/ses_1/prompt", body: '{"text":"hello"}' })
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      path: "/api/session/ses_1/prompt",
+      body: '{"text":"hello"}',
+      headers: { "content-type": "application/json" },
+    })
+  })
+
+  test("lists projects and creates a session in a directory", async () => {
+    const { client: api, calls } = client('[{"id":"prj_1","canonical":"/work/a"}]')
+    const projects = await api.listProjects()
+    expect(projects[0]?.canonical).toBe("/work/a")
+    await api.createSession({ location: { directory: "/work/a" } })
+    expect(calls[0]?.path).toBe("/api/project?archived=false")
+    expect(calls[1]).toMatchObject({ path: "/api/session", body: '{"location":{"directory":"/work/a"}}' })
   })
 
   test("loads catalogs with a directory and switches agent/model", async () => {

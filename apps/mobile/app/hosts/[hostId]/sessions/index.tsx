@@ -1,17 +1,19 @@
 import { router, useLocalSearchParams } from "expo-router"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native"
+import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
 import {
   OpencodeClient,
   sessionBusy,
   sessionUpdatedAt,
+  type ProjectInfo,
   type SessionInfo,
 } from "@/opencode/client"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 import { ensureConnection } from "@/transport/runtimes"
+import { useForeground } from "@/lib/useForeground"
 import { colors, radius, spacing } from "@/theme"
 
 export default function SessionsScreen() {
@@ -26,7 +28,12 @@ export default function SessionsScreen() {
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pickerVisible, setPickerVisible] = useState(false)
+  const [projects, setProjects] = useState<ProjectInfo[] | null>(null)
+  const [projectsLoading, setProjectsLoading] = useState(false)
+  const [projectError, setProjectError] = useState<string | null>(null)
   const creating = useRef(false)
+  const newHandled = useRef(false)
 
   useEffect(() => {
     if (!hydrated) {
@@ -58,25 +65,59 @@ export default function SessionsScreen() {
     void load()
   }, [connection?.status, sessions, load])
 
-  const createSession = useCallback(async () => {
-    if (!hostId || creating.current) return
-    creating.current = true
-    setError(null)
+  useForeground(
+    useCallback(() => {
+      void ensureConnection(hostId, { force: true })
+        .then(() => load())
+        .catch(() => undefined)
+    }, [hostId, load]),
+  )
+
+  const openPicker = useCallback(async () => {
+    setPickerVisible(true)
+    setProjectError(null)
+    if (projects) return
+    setProjectsLoading(true)
     try {
       const runtime = await ensureConnection(hostId)
-      const session = await new OpencodeClient(runtime).createSession()
-      setSessions((current) => [session, ...(current ?? []).filter((item) => item.id !== session.id)])
+      setProjects(await new OpencodeClient(runtime).listProjects())
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "新建会话失败")
+      setProjectError(cause instanceof Error ? cause.message : "加载项目失败")
     } finally {
-      creating.current = false
+      setProjectsLoading(false)
     }
-  }, [hostId])
+  }, [hostId, projects])
+
+  const createSession = useCallback(
+    async (project: ProjectInfo) => {
+      if (!hostId || creating.current) return
+      creating.current = true
+      setProjectError(null)
+      try {
+        const runtime = await ensureConnection(hostId)
+        const session = await new OpencodeClient(runtime).createSession({
+          location: { directory: project.canonical },
+        })
+        setSessions((current) => [session, ...(current ?? []).filter((item) => item.id !== session.id)])
+        setPickerVisible(false)
+        router.push({
+          pathname: "/hosts/[hostId]/sessions/[sessionId]",
+          params: { hostId, sessionId: session.id },
+        })
+      } catch (cause) {
+        setProjectError(cause instanceof Error ? cause.message : "新建会话失败")
+      } finally {
+        creating.current = false
+      }
+    },
+    [hostId],
+  )
 
   useEffect(() => {
-    if (params.new !== "1" || connection?.status !== "ready") return
-    void createSession()
-  }, [params.new, connection?.status, createSession])
+    if (params.new !== "1" || connection?.status !== "ready" || newHandled.current) return
+    newHandled.current = true
+    void openPicker()
+  }, [params.new, connection?.status, openPicker])
 
   const refresh = async () => {
     setRefreshing(true)
@@ -110,7 +151,7 @@ export default function SessionsScreen() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
         <View style={styles.actions}>
-          <Button label="新建会话" onPress={() => void createSession()} disabled={!ready} />
+          <Button label="新建会话" onPress={() => void openPicker()} disabled={!ready} />
         </View>
 
         {!ready && connection?.status === "error" ? (
@@ -158,8 +199,49 @@ export default function SessionsScreen() {
           </Pressable>
         ))}
       </ScrollView>
+
+      <Modal animationType="slide" transparent visible={pickerVisible} onRequestClose={() => setPickerVisible(false)}>
+        <Pressable style={styles.backdrop} onPress={() => setPickerVisible(false)} />
+        <View style={styles.sheet}>
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>选择项目</Text>
+            <Pressable accessibilityRole="button" onPress={() => setPickerVisible(false)}>
+              <Text style={styles.sheetClose}>关闭</Text>
+            </Pressable>
+          </View>
+          {projectError ? <Text style={styles.error}>{projectError}</Text> : null}
+          {projectsLoading ? <Text style={styles.loading}>正在加载项目…</Text> : null}
+          {projects?.length === 0 ? <Text style={styles.loading}>opencode 还没有已知项目。</Text> : null}
+          <ScrollView contentContainerStyle={styles.projectList}>
+            {projects?.map((project) => (
+              <Pressable
+                key={project.id}
+                accessibilityRole="button"
+                disabled={creating.current}
+                onPress={() => void createSession(project)}
+                style={({ pressed }) => [styles.projectRow, pressed && styles.rowPressed]}
+              >
+                <View style={styles.projectBody}>
+                  <Text style={styles.projectName} numberOfLines={1}>
+                    {project.name?.trim() || basename(project.canonical)}
+                  </Text>
+                  <Text style={styles.projectPath} numberOfLines={1}>
+                    {project.canonical}
+                  </Text>
+                </View>
+                <Text style={styles.chevron}>›</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      </Modal>
     </View>
   )
+}
+
+function basename(path: string): string {
+  const parts = path.split("/").filter(Boolean)
+  return parts.at(-1) ?? path
 }
 
 function relativeTime(timestamp: number): string {
@@ -216,4 +298,30 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 15, fontWeight: "500", color: colors.text },
   rowMeta: { marginTop: 3, fontSize: 12, color: colors.muted },
   chevron: { fontSize: 22, color: colors.faint, marginLeft: spacing.sm },
+  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
+  sheet: {
+    maxHeight: "70%",
+    backgroundColor: colors.bg,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.xxl,
+  },
+  sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.md },
+  sheetTitle: { fontSize: 18, fontWeight: "600", color: colors.text },
+  sheetClose: { fontSize: 14, color: colors.muted },
+  projectList: { paddingBottom: spacing.xl, gap: spacing.sm },
+  projectRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  projectBody: { flex: 1 },
+  projectName: { fontSize: 15, fontWeight: "500", color: colors.text },
+  projectPath: { marginTop: 3, fontSize: 12, color: colors.muted },
 })

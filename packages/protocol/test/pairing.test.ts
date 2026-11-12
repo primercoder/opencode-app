@@ -65,6 +65,16 @@ describe("pairing offers", () => {
     expect(() => parsePairingOffer("ocremote://pair#not-json")).toThrow()
   })
 
+  test("rejects a fingerprint that does not match the public key", () => {
+    const url = encodePairingOffer(offer(), publicKey)
+    const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(url.split("#")[1] ?? ""))) as PairingOffer
+    const tampered = base64UrlEncode(
+      new TextEncoder().encode(JSON.stringify({ ...payload, fingerprint: "ffffffffffffffff" })),
+    )
+
+    expect(() => parsePairingOffer(`ocremote://pair#${tampered}`)).toThrow(/fingerprint/u)
+  })
+
   test("reports expiry", () => {
     expect(isPairingOfferExpired(offer({ expiresAt: 1_000 }), 1_001)).toBe(true)
     expect(isPairingOfferExpired(offer({ expiresAt: 1_000 }), 999)).toBe(false)
