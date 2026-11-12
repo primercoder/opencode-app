@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "OC Remote",
+    "slug": "ocremote",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "ocremote",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "android": {
+      "package": "app.ocremote.android",
+      "usesCleartextTraffic": true,
+      "permissions": ["INTERNET", "ACCESS_NETWORK_STATE", "CAMERA", "POST_NOTIFICATIONS", "RECORD_AUDIO"]
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
