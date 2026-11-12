@@ -11,9 +11,9 @@ P0 foundation and the first encrypted vertical slice are in place:
 - `packages/protocol`: OCRP frames, pairing offers, Noise NK, protected records, tests.
 - `apps/host`: opencode discovery, device pairing/auth, LAN WebSocket server, HTTP/SSE proxy, relay host client.
 - `apps/relay`: Go WebSocket relay with rooms, bearer/query tokens, host/client forwarding and backpressure.
-- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, host home, session list, chat, permissions/forms, model/agent picker, diff viewer and read-only review with line comments.
+- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, host home, session list, project-aware new sessions, chat, permissions/forms, model/agent picker, diff viewer, read-only review with line comments, and local speech-to-text dictation.
 
-Not implemented yet: voice dictation (local/host ASR), notifications, background service, offline cache, image/file preview rendering.
+Not implemented yet: host-side ASR, notifications, background service, offline cache, image/file preview rendering.
 
 ## Layout
 

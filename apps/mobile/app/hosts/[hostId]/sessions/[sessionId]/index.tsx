@@ -31,6 +31,7 @@ import {
 } from "@/opencode/client"
 import type { FormAnswers } from "@/opencode/forms"
 import { ensureConnection, subscribeHostEvents } from "@/transport/runtimes"
+import { useDictation } from "@/features/voice/useDictation"
 import { useForeground } from "@/lib/useForeground"
 import { colors, radius, spacing } from "@/theme"
 
@@ -48,6 +49,8 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [draft, setDraft] = useState("")
+  const [insertNotice, setInsertNotice] = useState(false)
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [permissions, setPermissions] = useState<PermissionRequest[]>([])
   const [forms, setForms] = useState<FormInfo[]>([])
   const [dockBusy, setDockBusy] = useState(false)
@@ -59,6 +62,20 @@ export default function ChatScreen() {
   useEffect(() => {
     if (!hydrated) void hydrate()
   }, [hydrated, hydrate])
+
+  useEffect(() => () => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current)
+  }, [])
+
+  const dictation = useDictation((text) => {
+    setDraft((current) => {
+      if (!current) return text
+      return /[\s\n]$/u.test(current) ? `${current}${text}` : `${current} ${text}`
+    })
+    setInsertNotice(true)
+    if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    noticeTimer.current = setTimeout(() => setInsertNotice(false), 3_000)
+  })
 
   const load = useCallback(
     async (options: { silent?: boolean } = {}) => {
@@ -345,28 +362,57 @@ export default function ChatScreen() {
       />
 
       <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
-        <TextInput
-          editable={ready && !sending}
-          multiline
-          onChangeText={setDraft}
-          placeholder={ready ? "输入消息…" : "等待主机连接…"}
-          placeholderTextColor={colors.faint}
-          style={styles.input}
-          value={draft}
-        />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="发送"
-          disabled={!ready || sending || draft.trim().length === 0}
-          onPress={() => void send()}
-          style={({ pressed }) => [
-            styles.send,
-            (!ready || sending || draft.trim().length === 0) && styles.sendDisabled,
-            pressed && styles.sendPressed,
-          ]}
-        >
-          {sending ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.sendText}>发送</Text>}
-        </Pressable>
+        {dictation.listening ? (
+          <Pressable accessibilityRole="button" onPress={dictation.stop} style={styles.voiceBar}>
+            <Text style={styles.voiceText}>正在听写…（系统语音识别）</Text>
+            <Text style={styles.voiceStop}>停止</Text>
+          </Pressable>
+        ) : null}
+        {dictation.error ? (
+          <Pressable accessibilityRole="button" onPress={dictation.clearError} style={styles.voiceBar}>
+            <Text style={styles.voiceError}>{dictation.error}</Text>
+            <Text style={styles.voiceStop}>关闭</Text>
+          </Pressable>
+        ) : null}
+        {insertNotice ? <Text style={styles.insertNotice}>已插入，请确认后发送</Text> : null}
+        <View style={styles.composerRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={dictation.listening ? "停止听写" : "语音听写"}
+            disabled={!ready || sending}
+            onPress={() => (dictation.listening ? dictation.stop() : void dictation.start("zh-CN"))}
+            style={({ pressed }) => [
+              styles.mic,
+              dictation.listening && styles.micActive,
+              (!ready || sending) && styles.sendDisabled,
+              pressed && styles.sendPressed,
+            ]}
+          >
+            <Text style={[styles.micText, dictation.listening && styles.micTextActive]}>🎤</Text>
+          </Pressable>
+          <TextInput
+            editable={ready && !sending}
+            multiline
+            onChangeText={setDraft}
+            placeholder={ready ? "输入消息…" : "等待主机连接…"}
+            placeholderTextColor={colors.faint}
+            style={styles.input}
+            value={draft}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="发送"
+            disabled={!ready || sending || draft.trim().length === 0}
+            onPress={() => void send()}
+            style={({ pressed }) => [
+              styles.send,
+              (!ready || sending || draft.trim().length === 0) && styles.sendDisabled,
+              pressed && styles.sendPressed,
+            ]}
+          >
+            {sending ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.sendText}>发送</Text>}
+          </Pressable>
+        </View>
       </View>
     </KeyboardAvoidingView>
   )
@@ -540,15 +586,40 @@ const styles = StyleSheet.create({
   noticeBody: { marginTop: 4, fontSize: 13, color: colors.muted },
   noticeAction: { marginTop: spacing.md, alignItems: "flex-start" },
   composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: spacing.sm,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     backgroundColor: colors.bg,
+    gap: spacing.sm,
   },
+  composerRow: { flexDirection: "row", alignItems: "flex-end", gap: spacing.sm },
+  voiceBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surface,
+  },
+  voiceText: { fontSize: 13, color: colors.accent, fontWeight: "500" },
+  voiceError: { flex: 1, fontSize: 12, color: colors.danger },
+  voiceStop: { fontSize: 13, color: colors.muted },
+  insertNotice: { fontSize: 12, color: colors.success, paddingHorizontal: spacing.sm },
+  mic: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  micActive: { backgroundColor: colors.danger, borderColor: colors.danger },
+  micText: { fontSize: 18 },
+  micTextActive: { color: "#FFFFFF" },
   input: {
     flex: 1,
     maxHeight: 120,
