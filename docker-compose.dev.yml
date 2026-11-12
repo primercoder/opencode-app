@@ -1,0 +1,34 @@
+services:
+  relay:
+    build: ./apps/relay
+    environment:
+      RELAY_LISTEN: ":8080"
+      RELAY_REGISTRATION_SECRET: dev-secret
+      RELAY_LOG_LEVEL: debug
+    expose:
+      - "8080"
+    mem_limit: 128m
+    cpus: "0.50"
+    restart: unless-stopped
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8474:8474" # control API
+      - "26379:26379" # relay through the simulated network
+    depends_on:
+      - relay
+    mem_limit: 64m
+    restart: unless-stopped
+
+  # Optional protocol/load client. UI tests use the Android AVD, not this container.
+  client-sim:
+    image: oven/bun:1-alpine
+    working_dir: /app
+    volumes:
+      - ./scripts/client-sim:/app
+    command: ["bun", "run", "index.ts"]
+    depends_on:
+      - toxiproxy
+    mem_limit: 128m
+    profiles: ["tools"]

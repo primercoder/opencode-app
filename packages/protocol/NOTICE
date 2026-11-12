@@ -1,0 +1,19 @@
+This package contains portions adapted from Paseo
+(https://github.com/getpaseo/paseo), licensed under the Apache License 2.0.
+
+Adapted files:
+- src/noise/index.ts
+- src/noise/cipher-state.ts
+- src/noise/symmetric-state.ts
+- src/records.ts
+- test/noise.test.ts
+- test/fixtures/nk-25519-chachapoly-sha256.json
+
+Upstream copyright: Copyright (c) 2025-present Mohamed Boudra
+
+The upstream NOTICE and license are available at:
+https://github.com/getpaseo/paseo/blob/main/LICENSE
+
+Changes in this repository:
+- Import paths and package layout adapted for @ocremote/protocol.
+- Transport framing is used with the OCRP control/binary frame layer.

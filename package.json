@@ -1,0 +1,22 @@
+{
+  "name": "ocremote",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/host"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "test:protocol": "bun test packages/protocol",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "host": "bun run --cwd apps/host src/index.ts",
+    "env:check": "bash scripts/check-env.sh",
+    "env:bench": "bash scripts/bench-network.sh"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^5.9.2"
+  }
+}

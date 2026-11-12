@@ -1,0 +1,19 @@
+{
+  "name": "@ocremote/protocol",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./frames": "./src/frames.ts",
+    "./pairing": "./src/pairing.ts",
+    "./noise": "./src/noise/index.ts",
+    "./records": "./src/records.ts"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "zod": "^4.4.3"
+  }
+}
