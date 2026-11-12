@@ -199,7 +199,12 @@ export default function ReviewScreen() {
         </Text>
       </View>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? (
+        <View style={styles.errorRow}>
+          <Text style={styles.error}>{error}</Text>
+          {entries === null ? <Button label="重试" variant="outline" onPress={() => void loadDirectory(currentPath)} /> : null}
+        </View>
+      ) : null}
 
       {file ? (
         <FileView file={file} range={range} anchor={anchor} onSelectLine={selectLine} />
@@ -352,7 +357,15 @@ const styles = StyleSheet.create({
   },
   crumb: { fontSize: 13, color: colors.accent },
   path: { flex: 1, fontSize: 12, color: colors.muted, ...mono },
-  error: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, fontSize: 13, color: colors.danger },
+  errorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+  },
+  error: { flex: 1, fontSize: 13, color: colors.danger },
   list: { padding: spacing.md, paddingBottom: spacing.xxl },
   loading: { padding: spacing.lg, textAlign: "center", fontSize: 13, color: colors.faint },
   entry: {
