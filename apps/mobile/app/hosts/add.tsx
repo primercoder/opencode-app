@@ -1,6 +1,6 @@
 import { parsePairingOffer, type PairingOffer } from "@ocremote/protocol"
-import { router } from "expo-router"
-import { useState } from "react"
+import { router, useLocalSearchParams } from "expo-router"
+import { useEffect, useState } from "react"
 import { KeyboardAvoidingView, Platform, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
@@ -17,16 +17,26 @@ const stageLabels: Record<PairingStage, string> = {
 
 export default function AddHostScreen() {
   const insets = useSafeAreaInsets()
-  const [url, setUrl] = useState("")
+  const params = useLocalSearchParams<{ url?: string }>()
+  const urlParam = typeof params.url === "string" ? params.url : ""
+  const [url, setUrl] = useState(urlParam)
   const [offer, setOffer] = useState<PairingOffer | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [stage, setStage] = useState<PairingStage | null>(null)
 
   const busy = stage !== null
 
-  const parse = () => {
+  useEffect(() => {
+    if (!urlParam) return
+    setUrl(urlParam)
+    parseText(urlParam)
+  }, [urlParam])
+
+  const parse = () => parseText(url)
+
+  const parseText = (value: string) => {
     try {
-      setOffer(parsePairingOffer(url))
+      setOffer(parsePairingOffer(value))
       setError(null)
     } catch (cause) {
       setOffer(null)
