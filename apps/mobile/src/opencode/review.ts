@@ -44,5 +44,9 @@ export function buildReviewPrompt(directory: string, comments: ReviewComment[]):
 function fileUri(directory: string, path: string, start: number, end: number): string {
   const root = directory.replace(/\/+$/u, "")
   const absolute = `${root}/${path.replace(/^\/+/u, "")}`
-  return `file://${encodeURI(absolute)}?start=${start}&end=${end}`
+  const encoded = absolute
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")
+  return `file://${encoded}?start=${start}&end=${end}`
 }

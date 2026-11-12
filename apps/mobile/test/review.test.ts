@@ -41,6 +41,20 @@ describe("review comments", () => {
     expect(prompt.metadata).toEqual({ comments, attachments: [] })
   })
 
+  test("encodes reserved characters in file URIs", () => {
+    const prompt = buildReviewPrompt("/work", [
+      {
+        type: "file",
+        path: "src/a#b%c.ts",
+        selection: { startLine: 1, endLine: 1, startChar: 0, endChar: 0 },
+        comment: "hi",
+        preview: "",
+        origin: "review",
+      },
+    ])
+    expect(prompt.files[0]?.uri).toBe("file:///work/src/a%23b%25c.ts?start=1&end=1")
+  })
+
   test("encodes spaces in file URIs", () => {
     const prompt = buildReviewPrompt("/work/my project", [
       {
