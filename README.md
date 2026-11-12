@@ -107,6 +107,19 @@ bunx expo start
 bunx expo run:android
 ```
 
+Android build (Expo CNG: `android/` is generated and gitignored):
+
+```bash
+cd apps/mobile
+bunx expo prebuild --platform android --clean
+cd android
+./gradlew :app:assembleDebug    # or assembleRelease
+```
+
+Pass `-PreactNativeArchitectures=arm64-v8a` (or `x86_64`) to build one ABI.
+The generated release build uses the Expo debug keystore; configure a real
+keystore before distributing.
+
 Current emulator note: the development machine has no `/dev/kvm`, so `oc35` must run with
 `-accel off`. In this VMware guest the software-emulated system server is repeatedly killed by
 Android's watchdog during boot, which makes UI automation unreliable. Protocol, relay, runtime
