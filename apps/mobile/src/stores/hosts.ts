@@ -38,7 +38,19 @@ export const useHosts = create<HostState>((set, get) => ({
 
   async addHost(offer) {
     const existing = get().hosts.find((host) => host.id === offer.hostId)
-    if (existing) return existing
+    if (existing) {
+      const updated: HostRecord = {
+        ...existing,
+        name: offer.name,
+        publicKey: offer.pk,
+        fingerprint: offer.fingerprint,
+        transports: offer.transports,
+      }
+      const hosts = get().hosts.map((host) => (host.id === updated.id ? updated : host))
+      set({ hosts })
+      await saveHosts(hosts)
+      return updated
+    }
     const host: HostRecord = {
       id: offer.hostId,
       name: offer.name,
