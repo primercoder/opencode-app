@@ -251,18 +251,20 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		if kind != websocket.MessageBinary || int64(len(data)) > s.cfg.MaxFrame {
-			p.close(websocket.StatusMessageTooBig, "binary frame required")
+		if int64(len(data)) > s.cfg.MaxFrame {
+			p.close(websocket.StatusMessageTooBig, "frame too large")
 			return
 		}
 		if role == "host" {
-			if len(data) < 4 {
-				p.close(websocket.StatusMessageTooBig, "missing client id")
+			if kind != websocket.MessageBinary || len(data) < 4 {
+				p.close(websocket.StatusMessageTooBig, "host frames require a client id")
 				return
 			}
 			clientID := binary.BigEndian.Uint32(data[:4])
 			room.deliver(clientID, data[4:])
 		} else {
+			// Clients may use text for the initial Noise handshake. Keep the
+			// payload opaque and always forward it as prefixed host binary.
 			room.deliverToHost(p.id, data)
 		}
 	}

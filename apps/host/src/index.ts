@@ -12,6 +12,7 @@ import {
   type Identity,
 } from "./config.ts"
 import { addPendingPair, revokeDevice } from "./pairing.ts"
+import { registerRelayRoom } from "./relay.ts"
 import { resolveOpencodeTarget } from "./opencode.ts"
 import { lanUrls, startHost } from "./server.ts"
 
@@ -30,6 +31,10 @@ program
   .option("--opencode-password <password>", "opencode server password")
   .option("--pair", "print a pairing QR after startup", false)
   .option("--read-only", "issue a read-only pairing code", false)
+  .option("--relay-url <url>", "relay WebSocket URL, e.g. ws://127.0.0.1:26379/ws")
+  .option("--relay-secret <secret>", "relay registration secret")
+  .option("--relay-room <room>", "reuse a specific relay room")
+  .option("--relay-new-room", "register a new relay room even if one is configured", false)
   .action(async (options: {
     lan: boolean
     port: number
@@ -38,14 +43,25 @@ program
     opencodePassword?: string
     pair: boolean
     readOnly: boolean
+    relayUrl?: string
+    relaySecret?: string
+    relayRoom?: string
+    relayNewRoom: boolean
   }) => {
     const hostname = options.lan ? "0.0.0.0" : "127.0.0.1"
+    const relay = await resolveRelay({
+      ...(options.relayUrl ? { url: options.relayUrl } : {}),
+      ...(options.relaySecret ? { secret: options.relaySecret } : {}),
+      ...(options.relayRoom ? { room: options.relayRoom } : {}),
+      newRoom: options.relayNewRoom,
+    })
     const host = await startHost({
       hostname,
       port: options.port,
       ...(options.name ? { name: options.name } : {}),
       ...(options.opencodeUrl ? { opencodeUrl: options.opencodeUrl } : {}),
       ...(options.opencodePassword ? { opencodePassword: options.opencodePassword } : {}),
+      ...(relay ? { relay } : {}),
     })
     console.log(`ocremote host listening on ws://${hostname}:${host.port}/ws`)
     console.log(`opencode ${host.target.url} (${host.target.version ?? "unknown"}) · ${new Date().toISOString()}`)
@@ -162,15 +178,63 @@ async function createOffer(input: {
     fingerprint: fingerprintOfPublicKey(input.identity.publicKey),
     pairCode: code,
     expiresAt: pending.expiresAt,
-    transports: [
-      {
-        kind: "lan",
-        url: input.url ?? lanUrls(input.hostname, input.port)[0] ?? `ws://127.0.0.1:${input.port}/ws`,
-        priority: 0,
-      },
-    ],
+    transports: relayTransports(input),
   }
   return encodePairingOffer(offer, input.identity.publicKey)
+}
+
+function relayTransports(input: {
+  config: HostConfig
+  hostname: string
+  port: number
+  url?: string
+}): import("@ocremote/protocol").Transport[] {
+  const transports: import("@ocremote/protocol").Transport[] = [
+    {
+      kind: "lan",
+      url: input.url ?? lanUrls(input.hostname, input.port)[0] ?? `ws://127.0.0.1:${input.port}/ws`,
+      priority: 0,
+    },
+  ]
+  if (input.config.relay) {
+    transports.push({
+      kind: "relay",
+      url: input.config.relay.url,
+      room: input.config.relay.room,
+      clientToken: input.config.relay.clientToken,
+      priority: 1,
+    })
+  }
+  return transports
+}
+
+async function resolveRelay(input: {
+  url?: string
+  secret?: string
+  room?: string
+  newRoom: boolean
+}): Promise<import("./config.ts").RelayConfig | undefined> {
+  if (!input.url) return undefined
+  const home = resolveHome()
+  const identity = await loadOrCreateIdentity(home)
+  const config = await loadConfig(home, {
+    hostId: identity.hostId,
+    name: process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
+    lan: { hostname: "0.0.0.0", port: 8787 },
+  })
+  if (!input.newRoom && config.relay && config.relay.url === input.url && !input.room) return config.relay
+
+  const secret = input.secret ?? process.env.RELAY_REGISTRATION_SECRET
+  if (!secret) throw new Error("--relay-secret or RELAY_REGISTRATION_SECRET is required to register a relay room")
+  const relay = await registerRelayRoom({
+    relayUrl: input.url,
+    secret,
+    ...(input.room ? { room: input.room } : {}),
+  })
+  config.relay = relay
+  await saveConfig(home, config)
+  console.log(`registered relay room ${relay.room}`)
+  return relay
 }
 
 function printOffer(url: string): void {

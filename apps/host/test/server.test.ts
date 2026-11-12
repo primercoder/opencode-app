@@ -65,6 +65,55 @@ describe("host LAN server", () => {
     expect(welcome.t).toBe("welcome")
     expect(welcome.host.id).toBe(host.identity.hostId)
   })
+
+  test("cancels an in-flight upstream request", async () => {
+    const home = await mkdtemp(join(tmpdir(), "ocremote-host-cancel-"))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+
+    const slowStarted = Promise.withResolvers<void>()
+    const slowAborted = Promise.withResolvers<void>()
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const url = new URL(request.url)
+        if (url.pathname === "/api/slow") {
+          slowStarted.resolve()
+          return new Promise<Response>((resolve) => {
+            request.signal.addEventListener("abort", () => {
+              slowAborted.resolve()
+              resolve(new Response("aborted", { status: 499 }))
+            })
+          })
+        }
+        if (url.pathname === "/api/info") return Response.json({ version: "after-cancel" })
+        return new Response("not found", { status: 404 })
+      },
+    })
+    cleanups.push(() => opencode.stop(true))
+
+    const host = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${opencode.port}`,
+      opencodePassword: "test-password",
+    })
+    cleanups.push(() => host.close())
+
+    const pairCode = await host.issuePairCode()
+    const client = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    cleanups.push(() => client.close())
+    await client.pair(pairCode)
+
+    client.sendControl({ t: "req", id: 77, method: "GET", path: "/api/slow", headers: {}, body: null })
+    await slowStarted.promise
+    client.sendControl({ t: "cancel", id: 77 })
+    await slowAborted.promise
+
+    const info = await client.request("GET", "/api/info")
+    expect(JSON.parse(info.body).version).toBe("after-cancel")
+  })
 })
 
 type Client = Awaited<ReturnType<typeof connectClient>>
@@ -124,10 +173,17 @@ async function connectClient(url: string, hostPublicKey: Uint8Array) {
     if (frame.kind !== "control") throw new Error("expected control frame")
     return frame.value
   }
+  const receiveFor = async (id: number) => {
+    while (true) {
+      const value = await receiveControl()
+      if (typeof value.id !== "number" || value.id === id) return value
+    }
+  }
 
   return {
     close: () => ws.close(),
     closed,
+    sendControl,
     async pair(code: string) {
       sendControl({
         t: "hello",
@@ -151,11 +207,11 @@ async function connectClient(url: string, hostPublicKey: Uint8Array) {
     async request(method: string, path: string) {
       const id = requestId++
       sendControl({ t: "req", id, method, path, headers: {}, body: null })
-      const response = await receiveControl()
+      const response = await receiveFor(id)
       if (response.t !== "res") throw new Error(`expected res, got ${String(response.t)}`)
       let body = ""
       while (true) {
-        const chunk = await receiveControl()
+        const chunk = await receiveFor(id)
         if (chunk.t === "chunk") {
           body += String(chunk.data)
           continue

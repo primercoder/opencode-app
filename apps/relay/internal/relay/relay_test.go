@@ -67,6 +67,20 @@ func TestHostAndClientForwardFrames(t *testing.T) {
 	if kind != websocket.MessageBinary || string(data) != "world" {
 		t.Fatalf("unexpected host->client frame: %d %q", kind, data)
 	}
+
+	// Clients may use a text frame for the Noise handshake. The relay still
+	// forwards it to the host with the client id prefix; the framing remains
+	// opaque to the relay.
+	if err := client.Write(ctx, websocket.MessageText, []byte(`{"t":"noise"}`)); err != nil {
+		t.Fatal(err)
+	}
+	kind, data, err = host.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != websocket.MessageBinary || len(data) < 4 || string(data[4:]) != `{"t":"noise"}` {
+		t.Fatalf("unexpected client text frame: %d %q", kind, data)
+	}
 }
 
 func TestRoomRequiresRegistrationSecret(t *testing.T) {

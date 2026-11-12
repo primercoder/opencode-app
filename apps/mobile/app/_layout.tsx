@@ -1,4 +1,6 @@
-import "@/polyfills"
+import { installRuntimePolyfills } from "@/polyfills"
+
+installRuntimePolyfills()
 import { Stack } from "expo-router"
 import { StatusBar } from "react-native"
 import { SafeAreaProvider } from "react-native-safe-area-context"

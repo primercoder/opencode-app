@@ -243,7 +243,14 @@ export class HostRuntime {
     this.manualClose = true
     this.clearReconnect()
     this.closeSocket()
-    this.rejectPending(new HostError("network", "connection closed"))
+    const error = new HostError("network", "connection closed")
+    this.rejectPending(error)
+    this.rejectHandshake(error)
+    if (this.connectWaiter) {
+      const waiter = this.connectWaiter
+      this.connectWaiter = undefined
+      waiter.reject(error)
+    }
     this.setState("closed")
   }
 
@@ -293,6 +300,7 @@ export class HostRuntime {
 
     const failure = errors.at(-1) ?? new HostError("network", "could not connect to host")
     this.lastErrorValue = failure
+    if (this.manualClose) throw failure
     this.setState("error")
     if (this.autoReconnect && !this.manualClose && !isFatal(failure)) this.scheduleReconnect()
     throw failure
@@ -380,6 +388,17 @@ export class HostRuntime {
     return session
   }
 
+  private acceptHandshake(text: string): void {
+    if (isRelayControl(text)) return
+    const waiter = this.handshakeWaiter
+    if (waiter) {
+      this.handshakeWaiter = undefined
+      waiter.resolve(text)
+    } else {
+      this.handshakeQueue.push(text)
+    }
+  }
+
   private async nextHandshakeMessage(timeoutMs: number): Promise<string> {
     const queued = this.handshakeQueue.shift()
     if (queued) return queued
@@ -407,13 +426,7 @@ export class HostRuntime {
         this.protocolFailure("text frames are not allowed after the handshake")
         return
       }
-      const waiter = this.handshakeWaiter
-      if (waiter) {
-        this.handshakeWaiter = undefined
-        waiter.resolve(data)
-      } else {
-        this.handshakeQueue.push(data)
-      }
+      this.acceptHandshake(data)
       return
     }
 
@@ -427,7 +440,9 @@ export class HostRuntime {
     }
 
     if (!this.receiveCipher) {
-      this.protocolFailure("protected record received before the handshake")
+      // Relay transport delivers host text frames as binary. Accept the Noise
+      // handshake reply regardless of the WebSocket frame type.
+      this.acceptHandshake(new TextDecoder().decode(bytes))
       return
     }
 
@@ -807,6 +822,15 @@ function waitForOpen(socket: RuntimeSocket, timeoutMs: number): Promise<void> {
       reject(new HostError("network", "websocket closed during connect"))
     }
   })
+}
+
+function isRelayControl(text: string): boolean {
+  try {
+    const value: unknown = JSON.parse(text)
+    return isRecord(value) && value.t === "welcome" && typeof value.clientId === "number"
+  } catch {
+    return false
+  }
 }
 
 function parseNoiseMessage(text: string): Uint8Array {

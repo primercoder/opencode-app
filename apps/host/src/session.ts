@@ -19,6 +19,11 @@ const PROLOGUE = new TextEncoder().encode("ocremote/1")
 const PROTOCOL_VERSION = 1
 const HOST_VERSION = "0.0.1"
 
+export type SessionSocket = {
+  send(data: string | Uint8Array): void
+  close(code?: number, reason?: string): void
+}
+
 export type HostContext = {
   identity: Identity
   config: HostConfig
@@ -35,11 +40,16 @@ export class ConnectionSession {
   private deviceId: string | undefined
   private scope: DeviceScope | undefined
   private closed = false
+  private readonly aborts = new Map<number, AbortController>()
 
   constructor(
-    private readonly ws: Bun.ServerWebSocket<unknown>,
+    private readonly ws: SessionSocket,
     private readonly ctx: HostContext,
   ) {}
+
+  get handshakeComplete(): boolean {
+    return this.sendCipher !== undefined
+  }
 
   onText(message: string): void {
     if (this.closed) return
@@ -95,6 +105,8 @@ export class ConnectionSession {
 
   close(): void {
     this.closed = true
+    for (const controller of this.aborts.values()) controller.abort()
+    this.aborts.clear()
   }
 
   private async handleControl(value: OcrpControlFrame): Promise<void> {
@@ -108,8 +120,12 @@ export class ConnectionSession {
       case "ping":
         this.sendControl({ t: "pong", id: value.id, ts: value.ts, hostTs: Date.now() })
         return
-      case "cancel":
+      case "cancel": {
+        const id = typeof value.id === "number" ? value.id : -1
+        this.aborts.get(id)?.abort()
+        this.aborts.delete(id)
         return
+      }
       default:
         this.sendError("BAD_REQUEST", `unknown control frame: ${value.t}`)
     }
@@ -179,23 +195,34 @@ export class ConnectionSession {
       this.sendError("BAD_REQUEST", "invalid request frame")
       return
     }
-    await handleProxyRequest({
-      request: {
-        id: value.id,
-        method: value.method,
-        path: value.path,
-        ...(value.headers && typeof value.headers === "object"
-          ? { headers: value.headers as Record<string, string> }
-          : {}),
-        ...(typeof value.body === "string" ? { body: value.body } : {}),
-      },
-      target: this.ctx.target,
-      scope: this.scope,
-      sender: {
-        control: (frame) => this.sendControl(frame),
-        chunk: (id, seq, data) => this.sendControl({ t: "chunk", id, seq, data }),
-      },
-    })
+    const controller = new AbortController()
+    this.aborts.set(value.id, controller)
+    try {
+      await handleProxyRequest({
+        request: {
+          id: value.id,
+          method: value.method,
+          path: value.path,
+          ...(value.headers && typeof value.headers === "object"
+            ? { headers: value.headers as Record<string, string> }
+            : {}),
+          ...(typeof value.body === "string" ? { body: value.body } : {}),
+        },
+        target: this.ctx.target,
+        scope: this.scope,
+        signal: controller.signal,
+        sender: {
+          control: (frame) => {
+            if (!controller.signal.aborted) this.sendControl(frame)
+          },
+          chunk: (id, seq, data) => {
+            if (!controller.signal.aborted) this.sendControl({ t: "chunk", id, seq, data })
+          },
+        },
+      })
+    } finally {
+      this.aborts.delete(value.id)
+    }
   }
 
   private hostInfo(): Record<string, unknown> {

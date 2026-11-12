@@ -6,14 +6,14 @@ The host runs next to opencode, the phone connects directly on the LAN or throug
 
 ## Status
 
-P0 foundation is in place:
+P0 foundation and the first encrypted vertical slice are in place:
 
 - `packages/protocol`: OCRP frames, pairing offers, Noise NK, protected records, tests.
-- `apps/host`: opencode discovery, device pairing/auth, LAN WebSocket server, HTTP/SSE proxy.
-- `apps/relay`: Go WebSocket relay with rooms, bearer tokens, forwarding and backpressure.
-- `apps/mobile`: Expo Router scaffold with host list and pairing-link screen.
+- `apps/host`: opencode discovery, device pairing/auth, LAN WebSocket server, HTTP/SSE proxy, relay host client.
+- `apps/relay`: Go WebSocket relay with rooms, bearer/query tokens, host/client forwarding and backpressure.
+- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, host home, session list and basic chat.
 
-Not implemented yet: host relay client, mobile encrypted transport, session/chat UI, ASR, code review, notifications.
+Not implemented yet: chat event streaming (currently polling), permissions/forms, diff/file review, ASR, notifications, offline cache.
 
 ## Layout
 
@@ -42,11 +42,10 @@ Environment details are recorded in the local-only setup log.
 bun install
 ```
 
-Protocol/host tests:
+All TypeScript tests (including the real Go relay integration test):
 
 ```bash
-cd packages/protocol && bun test
-cd ../../apps/host && bun test
+bun run test
 ```
 
 Relay tests:
@@ -69,6 +68,17 @@ bun run src/index.ts pair --lan
 bun run src/index.ts start --lan
 ```
 
+With a relay (register a room once, then reuse it):
+
+```bash
+bun run src/index.ts start --lan --pair \
+  --relay-url ws://127.0.0.1:26379/ws \
+  --relay-secret dev-secret
+```
+
+The pairing QR then contains both LAN and relay transports. Rooms are stored in
+`~/.config/ocremote/config.json`; pass `--relay-new-room` to register a fresh room.
+
 Relay development network:
 
 ```bash
@@ -78,7 +88,8 @@ curl -X POST http://127.0.0.1:8474/proxies \
   -d '{"name":"relay","listen":"0.0.0.0:26379","upstream":"relay:8080","enabled":true}'
 ```
 
-Add latency/bandwidth toxics through the Toxiproxy API when testing failover.
+Add latency/bandwidth toxics through the Toxiproxy API when testing failover. The
+mobile runtime falls back from LAN to relay when the first candidate fails.
 
 Mobile:
 

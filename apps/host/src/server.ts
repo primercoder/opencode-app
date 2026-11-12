@@ -3,6 +3,7 @@ import {
   encodePairingOffer,
   fingerprintOfPublicKey,
   type PairingOffer,
+  type Transport,
 } from "@ocremote/protocol"
 import {
   loadConfig,
@@ -12,9 +13,11 @@ import {
   type DeviceScope,
   type HostConfig,
   type Identity,
+  type RelayConfig,
 } from "./config.ts"
 import { addPendingPair, hashPairCode } from "./pairing.ts"
 import { resolveOpencodeTarget, type OpencodeTarget } from "./opencode.ts"
+import { RelayHostClient } from "./relay.ts"
 import { ConnectionSession, type HostContext } from "./session.ts"
 
 export type HostOptions = {
@@ -24,6 +27,7 @@ export type HostOptions = {
   name?: string
   opencodeUrl?: string
   opencodePassword?: string
+  relay?: RelayConfig
 }
 
 export type Host = {
@@ -32,6 +36,7 @@ export type Host = {
   identity: Identity
   config: HostConfig
   target: OpencodeTarget
+  relay?: RelayConfig
   issuePairCode(scope?: DeviceScope): Promise<string>
   pairingOffer(code: string, transportUrl?: string): Promise<string>
   close(): Promise<void>
@@ -47,6 +52,8 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     name: options.name ?? process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
     lan: { hostname, port },
   })
+  const relayConfig = options.relay ?? config.relay
+  if (relayConfig) config.relay = relayConfig
   const target = await resolveOpencodeTarget({
     ...(options.opencodeUrl ? { url: options.opencodeUrl } : {}),
     ...(options.opencodePassword ? { password: options.opencodePassword } : {}),
@@ -62,6 +69,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     },
   }
 
+  let relayClient: RelayHostClient | undefined
   const sessions = new WeakMap<object, ConnectionSession>()
   let server: Bun.Server<unknown>
   server = Bun.serve<unknown>({
@@ -96,12 +104,26 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
   ctx.lanUrls = lanUrls(hostname, actualPort)
   await saveConfig(home, config)
 
+  if (relayConfig) {
+    relayClient = new RelayHostClient({
+      config: relayConfig,
+      createSession: (socket) => new ConnectionSession(socket, ctx),
+      onState: (state, detail) => {
+        if (state === "reconnecting" || state === "closed") {
+          console.warn(`[relay] ${state}${detail ? `: ${detail}` : ""}`)
+        }
+      },
+    })
+    await relayClient.start()
+  }
+
   return {
     server,
     port: actualPort,
     identity,
     config,
     target,
+    ...(relayConfig ? { relay: relayConfig } : {}),
     async issuePairCode(scope: DeviceScope = "full") {
       const { code } = addPendingPair(config, scope)
       await saveConfig(home, config)
@@ -110,6 +132,22 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     async pairingOffer(code: string, transportUrl?: string) {
       const pending = config.pendingPairs.find((pair) => pair.codeHash === hashPairCode(code))
       if (!pending) throw new Error("pairing code not found")
+      const transports: Transport[] = [
+        {
+          kind: "lan",
+          url: transportUrl ?? ctx.lanUrls[0] ?? `ws://127.0.0.1:${actualPort}/ws`,
+          priority: 0,
+        },
+      ]
+      if (config.relay) {
+        transports.push({
+          kind: "relay",
+          url: config.relay.url,
+          room: config.relay.room,
+          clientToken: config.relay.clientToken,
+          priority: 1,
+        })
+      }
       const offer: PairingOffer = {
         v: 1,
         hostId: identity.hostId,
@@ -118,17 +156,12 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
         fingerprint: fingerprintOfPublicKey(identity.publicKey),
         pairCode: code,
         expiresAt: pending.expiresAt,
-        transports: [
-          {
-            kind: "lan",
-            url: transportUrl ?? ctx.lanUrls[0] ?? `ws://127.0.0.1:${actualPort}/ws`,
-            priority: 0,
-          },
-        ],
+        transports,
       }
       return encodePairingOffer(offer, identity.publicKey)
     },
     async close() {
+      relayClient?.close()
       await saveConfig(home, config)
       server.stop(true)
     },

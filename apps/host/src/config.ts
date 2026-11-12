@@ -23,6 +23,13 @@ export type PendingPair = {
   scope: DeviceScope
 }
 
+export type RelayConfig = {
+  url: string
+  room: string
+  hostToken: string
+  clientToken: string
+}
+
 export type HostConfig = {
   v: 1
   hostId: string
@@ -31,6 +38,7 @@ export type HostConfig = {
     hostname: string
     port: number
   }
+  relay?: RelayConfig
   opencode?: {
     url: string
     password: string
@@ -109,6 +117,7 @@ export async function loadConfig(
       name: raw.name || defaults.name,
       lan: raw.lan || defaults.lan,
       ...(raw.opencode ? { opencode: raw.opencode } : {}),
+      ...(raw.relay ? { relay: raw.relay } : {}),
       devices: Array.isArray(raw.devices) ? raw.devices : [],
       pendingPairs: Array.isArray(raw.pendingPairs) ? raw.pendingPairs : [],
     }
