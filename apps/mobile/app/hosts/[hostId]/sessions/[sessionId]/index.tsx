@@ -61,8 +61,12 @@ export default function ChatScreen() {
   const atBottomRef = useRef(true)
 
   useEffect(() => {
-    if (!hydrated) void hydrate()
-  }, [hydrated, hydrate])
+    if (!hydrated) {
+      void hydrate()
+      return
+    }
+    void ensureConnection(hostId).catch(() => undefined)
+  }, [hydrated, hydrate, hostId])
 
   useEffect(() => () => {
     if (noticeTimer.current) clearTimeout(noticeTimer.current)

@@ -46,8 +46,12 @@ export default function ReviewScreen() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!hydrated) void hydrate()
-  }, [hydrated, hydrate])
+    if (!hydrated) {
+      void hydrate()
+      return
+    }
+    void ensureConnection(hostId).catch(() => undefined)
+  }, [hydrated, hydrate, hostId])
 
   useEffect(() => {
     if (directory || connection?.status !== "ready") return

@@ -21,8 +21,12 @@ export default function SessionDiffScreen() {
   const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => {
-    if (!hydrated) void hydrate()
-  }, [hydrated, hydrate])
+    if (!hydrated) {
+      void hydrate()
+      return
+    }
+    void ensureConnection(hostId).catch(() => undefined)
+  }, [hydrated, hydrate, hostId])
 
   const load = useCallback(async () => {
     setError(null)
