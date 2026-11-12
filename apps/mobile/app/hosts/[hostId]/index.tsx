@@ -102,7 +102,9 @@ export default function HostHomeScreen() {
             <Text style={styles.statusText}>{statusLabel(status)}</Text>
           </View>
         </View>
-        <View style={styles.back} />
+        <Pressable accessibilityRole="button" onPress={() => router.push({ pathname: "/hosts/[hostId]/edit", params: { hostId: host.id } })} style={[styles.back, styles.headerRight]}>
+          <Text style={styles.settings}>设置</Text>
+        </Pressable>
       </View>
 
       <ScrollView
@@ -219,6 +221,8 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
   },
   back: { width: 64 },
+  headerRight: { alignItems: "flex-end" },
+  settings: { fontSize: 14, color: colors.muted },
   backText: { fontSize: 15, color: colors.muted },
   headerCenter: { flex: 1, alignItems: "center" },
   hostName: { fontSize: 18, fontWeight: "600", color: colors.text },

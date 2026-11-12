@@ -17,9 +17,10 @@ export default function HostListScreen() {
     void hydrate()
   }, [hydrate])
 
-  const confirmRemove = (host: HostRecord) => {
-    Alert.alert("移除主机", `移除“${host.name}”？本机保存的设备令牌也会删除，但不会撤销主机端授权。`, [
+  const hostMenu = (host: HostRecord) => {
+    Alert.alert(host.name, "管理这台主机", [
       { text: "取消", style: "cancel" },
+      { text: "编辑", onPress: () => router.push({ pathname: "/hosts/[hostId]/edit", params: { hostId: host.id } }) },
       { text: "移除", style: "destructive", onPress: () => void removeHost(host.id) },
     ])
   }
@@ -40,7 +41,7 @@ export default function HostListScreen() {
             <Text style={styles.security}>端到端加密，中继无法读取你的代码或对话。</Text>
           </View>
         ) : (
-          hosts.map((host) => <HostRow key={host.id} host={host} onLongPress={() => confirmRemove(host)} />)
+          hosts.map((host) => <HostRow key={host.id} host={host} onLongPress={() => hostMenu(host)} />)
         )}
       </ScrollView>
     </View>
