@@ -120,3 +120,8 @@ QA needs a host with nested virtualization enabled. See the setup log for detail
 - Noise NK authenticates the host with the static key from the QR and encrypts every OCRP frame.
 - The relay sees rooms, roles, sizes and timing, never prompts, code or tokens.
 - Relay/ASR/code-review boundaries follow `opencode-remote-mobile-development-guide.md` (local-only document).
+
+## License
+
+Apache-2.0. See `LICENSE` and `NOTICE`; the Noise/protected-record implementation
+contains portions adapted from Paseo.
