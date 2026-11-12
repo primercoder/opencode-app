@@ -78,6 +78,7 @@ export async function refreshInfo(hostId: string): Promise<{ version?: string; h
 }
 
 async function openConnection(hostId: string): Promise<HostRuntime> {
+  closeRuntime(hostId)
   const host = useHosts.getState().getHost(hostId)
   if (!host) throw new HostError("network", "主机不存在")
   const credentials = await credentialsFor(hostId)
