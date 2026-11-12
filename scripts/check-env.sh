@@ -22,6 +22,8 @@ line "Maestro" "$(maestro --version 2>/dev/null | head -1 || echo MISSING)"
 line "scrcpy" "$(scrcpy --version 2>/dev/null | head -1 || echo MISSING)"
 line "GOPROXY" "${GOPROXY:-MISSING}"
 line "KVM" "$([ -e /dev/kvm ] && echo present || echo 'missing (emulator uses -accel off)')"
+line "Virt" "$(systemd-detect-virt 2>/dev/null || echo none)"
+line "vmx/svm" "$(grep -m1 -oE '\b(vmx|svm)\b' /proc/cpuinfo 2>/dev/null || echo 'missing')"
 
 echo
 echo "Git:"
