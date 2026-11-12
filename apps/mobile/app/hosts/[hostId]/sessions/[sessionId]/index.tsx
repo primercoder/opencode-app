@@ -14,15 +14,22 @@ import {
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
+import { PendingDock } from "@/components/PendingDock"
+import { SessionControls } from "@/components/SessionControls"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 import {
   OpencodeClient,
   toMillis,
+  type AgentInfo,
   type AssistantContent,
+  type FormInfo,
+  type ModelInfo,
+  type PermissionRequest,
   type SessionInfo,
   type SessionMessage,
 } from "@/opencode/client"
+import type { FormAnswers } from "@/opencode/forms"
 import { ensureConnection, subscribeHostEvents } from "@/transport/runtimes"
 import { colors, radius, spacing } from "@/theme"
 
@@ -40,6 +47,9 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [draft, setDraft] = useState("")
+  const [permissions, setPermissions] = useState<PermissionRequest[]>([])
+  const [forms, setForms] = useState<FormInfo[]>([])
+  const [dockBusy, setDockBusy] = useState(false)
   const [olderCursor, setOlderCursor] = useState<string | undefined>(undefined)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const scrollRef = useRef<ScrollView>(null)
@@ -56,11 +66,15 @@ export default function ChatScreen() {
       try {
         const runtime = await ensureConnection(hostId)
         const client = new OpencodeClient(runtime)
-        const [detail, page] = await Promise.all([
+        const [detail, page, pendingPermissions, pendingForms] = await Promise.all([
           client.getSession(sessionId),
           client.listMessages(sessionId, { limit: 50, order: "desc" }),
+          client.listPermissions(sessionId),
+          client.listForms(sessionId),
         ])
         setSession(detail)
+        setPermissions(pendingPermissions)
+        setForms(pendingForms)
         const latest = [...page.data].reverse()
         setMessages((current) => mergeMessages(latest, (current ?? []).filter((message) => !message.id.startsWith("local_"))))
         if (!options.silent) setOlderCursor(page.cursor)
@@ -129,6 +143,70 @@ export default function ChatScreen() {
     }
   }
 
+  const replyPermission = async (request: PermissionRequest, decision: "once" | "always" | "reject") => {
+    setDockBusy(true)
+    setError(null)
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).replyPermission(sessionId, request.id, decision)
+      setPermissions((current) => current.filter((item) => item.id !== request.id))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "回复权限失败")
+    } finally {
+      setDockBusy(false)
+    }
+  }
+
+  const submitForm = async (form: FormInfo, answer: FormAnswers) => {
+    setDockBusy(true)
+    setError(null)
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).replyForm(sessionId, form.id, answer)
+      setForms((current) => current.filter((item) => item.id !== form.id))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "提交表单失败")
+    } finally {
+      setDockBusy(false)
+    }
+  }
+
+  const cancelForm = async (form: FormInfo) => {
+    setDockBusy(true)
+    setError(null)
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).cancelForm(sessionId, form.id)
+      setForms((current) => current.filter((item) => item.id !== form.id))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "取消表单失败")
+    } finally {
+      setDockBusy(false)
+    }
+  }
+
+  const loadAgents = async (): Promise<AgentInfo[]> => {
+    const runtime = await ensureConnection(hostId)
+    return new OpencodeClient(runtime).listAgents(session?.location?.directory)
+  }
+
+  const loadModels = async (): Promise<ModelInfo[]> => {
+    const runtime = await ensureConnection(hostId)
+    return new OpencodeClient(runtime).listModels(session?.location?.directory)
+  }
+
+  const selectAgent = async (agent: string) => {
+    const runtime = await ensureConnection(hostId)
+    await new OpencodeClient(runtime).switchAgent(sessionId, agent)
+    setSession((current) => (current ? { ...current, agent } : current))
+  }
+
+  const selectModel = async (model: { id: string; providerID: string; variant?: string }) => {
+    const runtime = await ensureConnection(hostId)
+    await new OpencodeClient(runtime).switchModel(sessionId, model)
+    setSession((current) => (current ? { ...current, model } : current))
+  }
+
   const send = async () => {
     const text = draft.trim()
     if (!text || sending) return
@@ -182,10 +260,42 @@ export default function ChatScreen() {
             {host?.name ?? "主机"} · {ready ? "端到端加密" : "未连接"}
           </Text>
         </View>
-        <Pressable accessibilityRole="button" onPress={() => void refresh()} style={[styles.back, styles.refresh]}>
-          <Text style={styles.backText}>刷新</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() =>
+              router.push({
+                pathname: "/hosts/[hostId]/sessions/[sessionId]/review",
+                params: { hostId, sessionId, directory: session?.location?.directory ?? "" },
+              })
+            }
+            style={styles.headerAction}
+          >
+            <Text style={styles.backText}>审阅</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() =>
+              router.push({
+                pathname: "/hosts/[hostId]/sessions/[sessionId]/diff",
+                params: { hostId, sessionId },
+              })
+            }
+            style={styles.headerAction}
+          >
+            <Text style={styles.backText}>Diff</Text>
+          </Pressable>
+        </View>
       </View>
+
+      <SessionControls
+        session={session ?? { id: sessionId }}
+        disabled={!ready || !session}
+        loadAgents={loadAgents}
+        loadModels={loadModels}
+        onSelectAgent={selectAgent}
+        onSelectModel={selectModel}
+      />
 
       <ScrollView
         ref={scrollRef}
@@ -215,6 +325,15 @@ export default function ChatScreen() {
 
         {messages?.map((message) => <MessageRow key={message.id} message={message} />)}
       </ScrollView>
+
+      <PendingDock
+        permissions={permissions}
+        forms={forms}
+        busy={dockBusy}
+        onReplyPermission={(request, decision) => void replyPermission(request, decision)}
+        onSubmitForm={(form, answer) => void submitForm(form, answer)}
+        onCancelForm={(form) => void cancelForm(form)}
+      />
 
       <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
         <TextInput
@@ -364,7 +483,8 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   back: { width: 64 },
-  refresh: { alignItems: "flex-end" },
+  headerActions: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: spacing.md, width: 88 },
+  headerAction: { paddingVertical: 2 },
   backText: { fontSize: 15, color: colors.muted },
   headerCenter: { flex: 1, alignItems: "center" },
   title: { fontSize: 16, fontWeight: "600", color: colors.text },

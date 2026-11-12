@@ -23,6 +23,98 @@ export type ServerInfo = {
   urls?: string[]
 }
 
+export type AgentInfo = {
+  id: string
+  name: string
+  description?: string
+  mode: "subagent" | "primary" | "all"
+  hidden: boolean
+  color?: string
+  model?: { id: string; providerID: string; variant?: string }
+}
+
+export type ModelInfo = {
+  id: string
+  modelID: string
+  providerID: string
+  name: string
+  status: string
+  enabled: boolean
+  variants?: { id: string }[]
+  limit?: { context: number; output: number }
+  cost?: { input: number; output: number }[]
+}
+
+export type FsEntry = {
+  path: string
+  type: "file" | "directory"
+  ignored?: boolean
+}
+
+export type FileDiff = {
+  file: string
+  patch: string
+  additions: number
+  deletions: number
+  status: "added" | "deleted" | "modified"
+}
+
+export type PermissionRequest = {
+  id: string
+  sessionID: string
+  action: string
+  resources: string[]
+  save?: string[]
+  metadata?: Record<string, unknown>
+  source?: { type: "tool"; messageID: string; id: string }
+  message?: string
+}
+
+export type FormOption = {
+  value: string
+  label: string
+  description?: string
+}
+
+export type FormWhen = {
+  key: string
+  op: "eq" | "neq"
+  value: string | number | boolean
+}
+
+export type FormValue = string | number | boolean | string[]
+
+export type FormField = {
+  type: "string" | "number" | "integer" | "boolean" | "multiselect" | "external"
+  key: string
+  title?: string
+  description?: string
+  required?: boolean
+  hidden?: boolean
+  when?: FormWhen[]
+  default?: FormValue
+  options?: FormOption[]
+  placeholder?: string
+  format?: string
+  minLength?: number
+  maxLength?: number
+  pattern?: string
+  minimum?: number
+  maximum?: number
+  minItems?: number
+  maxItems?: number
+  custom?: boolean
+  url?: string
+}
+
+export type FormInfo = {
+  id: string
+  sessionID: string
+  title: string
+  metadata?: Record<string, unknown>
+  fields: FormField[]
+}
+
 export type SessionMessage = {
   id: string
   type: string
@@ -56,6 +148,24 @@ export class OpencodeClient {
     return this.raw<ServerInfo>("GET", "/api/info")
   }
 
+  async listAgents(directory?: string): Promise<AgentInfo[]> {
+    const result = await this.raw<{ data: AgentInfo[] }>("GET", withDirectory("/api/agent", directory))
+    return result.data
+  }
+
+  async listModels(directory?: string): Promise<ModelInfo[]> {
+    const result = await this.raw<{ data: ModelInfo[] }>("GET", withDirectory("/api/model?types=chat", directory))
+    return result.data.filter((model) => model.enabled !== false && (model.status === undefined || model.status !== "deprecated"))
+  }
+
+  async switchAgent(sessionId: string, agent: string): Promise<void> {
+    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/agent`, { agent })
+  }
+
+  async switchModel(sessionId: string, model: { id: string; providerID: string; variant?: string }): Promise<void> {
+    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/model`, { model })
+  }
+
   async listSessions(input: { limit?: number; order?: "asc" | "desc"; search?: string } = {}): Promise<Page<SessionInfo>> {
     const params = new URLSearchParams()
     params.set("limit", String(input.limit ?? 50))
@@ -82,8 +192,82 @@ export class OpencodeClient {
     return this.raw<Page<SessionMessage>>("GET", `/api/session/${encodeURIComponent(sessionId)}/message?${params.toString()}`)
   }
 
-  async prompt(sessionId: string, text: string): Promise<void> {
-    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, { text })
+  async listFiles(directory: string, path?: string): Promise<FsEntry[]> {
+    const params = new URLSearchParams()
+    params.set("location[directory]", directory)
+    if (path) params.set("path", path)
+    const result = await this.raw<{ data: FsEntry[] }>("GET", `/api/fs/list?${params.toString()}`)
+    return result.data
+  }
+
+  async readFile(directory: string, path: string): Promise<{ content: string; contentType: string | undefined }> {
+    const encoded = path
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/")
+    const response = await this.runtime.request({
+      method: "GET",
+      path: `/api/fs/read/${encoded}?location%5Bdirectory%5D=${encodeURIComponent(directory)}`,
+      headers: { accept: "*/*", "x-opencode-capabilities": "experimental-media-uri" },
+    })
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`opencode read ${path} returned HTTP ${response.status}`)
+    }
+    return { content: response.body, contentType: response.headers["content-type"] }
+  }
+
+  async sessionDiff(sessionId: string): Promise<FileDiff[]> {
+    const result = await this.raw<{ data: FileDiff[] }>("GET", `/api/session/${encodeURIComponent(sessionId)}/diff`)
+    return result.data
+  }
+
+  async listPermissions(sessionId: string): Promise<PermissionRequest[]> {
+    const result = await this.raw<{ data: PermissionRequest[] }>(
+      "GET",
+      `/api/session/${encodeURIComponent(sessionId)}/permission`,
+    )
+    return result.data
+  }
+
+  async replyPermission(
+    sessionId: string,
+    requestId: string,
+    decision: "once" | "always" | "reject",
+    message?: string,
+  ): Promise<void> {
+    await this.raw<unknown>(
+      "POST",
+      `/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(requestId)}/reply`,
+      { decision, ...(message ? { message } : {}) },
+    )
+  }
+
+  async listForms(sessionId: string): Promise<FormInfo[]> {
+    const result = await this.raw<{ data: FormInfo[] }>("GET", `/api/session/${encodeURIComponent(sessionId)}/form`)
+    return result.data
+  }
+
+  async replyForm(sessionId: string, formId: string, answer: Record<string, FormValue>): Promise<void> {
+    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(formId)}/reply`, {
+      answer,
+    })
+  }
+
+  async cancelForm(sessionId: string, formId: string, message?: string): Promise<void> {
+    const query = message ? `?message=${encodeURIComponent(message)}` : ""
+    await this.raw<unknown>(
+      "DELETE",
+      `/api/session/${encodeURIComponent(sessionId)}/form/${encodeURIComponent(formId)}${query}`,
+    )
+  }
+
+  async prompt(sessionId: string, input: string | {
+    text: string
+    files?: Array<{ uri: string; mime: string; name?: string }>
+    metadata?: Record<string, unknown>
+  }): Promise<void> {
+    const body = typeof input === "string" ? { text: input } : input
+    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, body)
   }
 
   async interrupt(sessionId: string): Promise<void> {
@@ -106,6 +290,12 @@ export class OpencodeClient {
     if (!response.body) return undefined as T
     return JSON.parse(response.body) as T
   }
+}
+
+function withDirectory(path: string, directory: string | undefined): string {
+  if (!directory) return path
+  const separator = path.includes("?") ? "&" : "?"
+  return `${path}${separator}location%5Bdirectory%5D=${encodeURIComponent(directory)}`
 }
 
 export function sessionUpdatedAt(session: SessionInfo): number {
