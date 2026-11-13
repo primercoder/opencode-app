@@ -29,6 +29,10 @@ export type IconName =
   | "wifi"
   | "sliders"
   | "spark"
+  | "comment"
+  | "edit"
+  | "arrowUp"
+  | "activity"
 
 export function Icon(props: {
   name: IconName
@@ -77,6 +81,24 @@ export function Icon(props: {
           <Line x1="12" y1="5" x2="12" y2="19" {...common} />
           <Line x1="5" y1="12" x2="19" y2="12" {...common} />
         </>
+      ) : null}
+      {props.name === "arrowUp" ? (
+        <>
+          <Line x1="12" y1="19" x2="12" y2="5" {...common} />
+          <Polyline points="5 12 12 5 19 12" {...common} />
+        </>
+      ) : null}
+      {props.name === "comment" ? (
+        <Path d="M20.5 11.5a8.5 8.5 0 0 1-8.5 8.5H7l-4 3v-5.2A8.5 8.5 0 1 1 20.5 11.5Z" {...common} />
+      ) : null}
+      {props.name === "edit" ? (
+        <>
+          <Path d="M12 20h8" {...common} />
+          <Path d="M16.8 3.7a2.2 2.2 0 0 1 3.1 3.1L7.5 19.2 3 20l.8-4.5z" {...common} />
+        </>
+      ) : null}
+      {props.name === "activity" ? (
+        <Polyline points="3 12 7 12 9.5 5 13.5 19 16 12 21 12" {...common} />
       ) : null}
       {props.name === "send" ? (
         <>

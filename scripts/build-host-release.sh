@@ -80,7 +80,7 @@ Relay mode:
 
 ```bash
 ./ocremote start -d --listen 0.0.0.0:8787 \
-  --relay wss://relay.example/ws --relay-secret SECRET
+  --relay-link 'ocremote-relay://enroll#...' --relay-ca ca.crt
 ```
 
 Speech models are not bundled:

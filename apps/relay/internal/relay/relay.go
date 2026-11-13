@@ -2,12 +2,9 @@ package relay
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,15 +16,17 @@ import (
 	"github.com/coder/websocket"
 )
 
+const ProtocolVersion = 2
+
 type Config struct {
-	RegistrationSecret string
-	PublicURL          string
-	MaxClients         int
-	MaxFrame           int64
-	RoomTTL            time.Duration
-	PingInterval       time.Duration
-	PongTimeout        time.Duration
-	QueueSize          int
+	Store        *Store
+	PublicURL    string
+	MaxClients   int
+	MaxFrame     int64
+	PingInterval time.Duration
+	PongTimeout  time.Duration
+	QueueSize    int
+	HelloTimeout time.Duration
 }
 
 func (c *Config) normalize() {
@@ -36,9 +35,6 @@ func (c *Config) normalize() {
 	}
 	if c.MaxFrame <= 0 {
 		c.MaxFrame = 1024 * 1024
-	}
-	if c.RoomTTL <= 0 {
-		c.RoomTTL = 30 * 24 * time.Hour
 	}
 	if c.PingInterval <= 0 {
 		c.PingInterval = 20 * time.Second
@@ -49,6 +45,9 @@ func (c *Config) normalize() {
 	if c.QueueSize <= 0 {
 		c.QueueSize = 64
 	}
+	if c.HelloTimeout <= 0 {
+		c.HelloTimeout = 10 * time.Second
+	}
 }
 
 type Server struct {
@@ -58,10 +57,8 @@ type Server struct {
 }
 
 type room struct {
-	id              string
-	hostTokenHash   [32]byte
-	clientTokenHash [32]byte
-	expiresAt       time.Time
+	id            string
+	hostSubjectID string
 
 	mu           sync.Mutex
 	host         *peer
@@ -75,17 +72,32 @@ type frame struct {
 }
 
 type peer struct {
-	server *Server
-	room   *room
-	role   string
-	id     uint32
-	conn   *websocket.Conn
-	out    chan frame
-	done   chan struct{}
-	once   sync.Once
+	server    *Server
+	room      *room
+	role      string
+	subjectID string
+	id        uint32
+	conn      *websocket.Conn
+	out       chan frame
+	done      chan struct{}
+	once      sync.Once
+}
+
+type helloFrame struct {
+	T         string `json:"t"`
+	V         int    `json:"v"`
+	Kind      string `json:"kind"`
+	Invite    string `json:"invite"`
+	SubjectID string `json:"subjectId"`
+	Secret    string `json:"secret"`
+	Name      string `json:"name"`
+	Room      string `json:"room"`
 }
 
 func New(cfg Config) *Server {
+	if cfg.Store == nil {
+		panic("relay: Config.Store is required")
+	}
 	cfg.normalize()
 	return &Server{cfg: cfg, rooms: make(map[string]*room)}
 }
@@ -100,66 +112,46 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ready\n")
 	})
-	mux.HandleFunc("/v1/rooms", s.handleRooms)
+	mux.HandleFunc("/v1/info", s.handleInfo)
+	mux.HandleFunc("/v1/rooms", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusGone)
+		_, _ = io.WriteString(w, `{"error":"relay v2 requires an enrollment invite; see /v1/info"}`+"\n")
+	})
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		rooms := len(s.rooms)
 		s.mu.Unlock()
+		subjects, _ := s.cfg.Store.ListSubjects()
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		_, _ = fmt.Fprintf(w, "ocremote_relay_rooms %d\n", rooms)
+		_, _ = fmt.Fprintf(w, "ocremote_relay_rooms %d\nocremote_relay_subjects %d\n", rooms, len(subjects))
 	})
 	return mux
 }
 
-func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.RegistrationSecret != "" && !constantEqual(bearer(r), s.cfg.RegistrationSecret) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	var body struct {
-		Room        string `json:"room"`
-		HostToken   string `json:"hostToken"`
-		ClientToken string `json:"clientToken"`
-		TTL         int64  `json:"ttl"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 16*1024)).Decode(&body); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	if len(body.Room) < 8 || len(body.Room) > 128 || body.HostToken == "" || body.ClientToken == "" {
-		http.Error(w, "invalid room or token", http.StatusBadRequest)
-		return
-	}
-	ttl := time.Duration(body.TTL) * time.Second
-	if ttl <= 0 || ttl > s.cfg.RoomTTL {
-		ttl = s.cfg.RoomTTL
-	}
-
-	// Registration is an upsert: a host re-registers after a relay restart,
-	// recreating the in-memory room with the same room id and tokens.
-	s.mu.Lock()
-	s.rooms[body.Room] = &room{
-		id:              body.Room,
-		hostTokenHash:   sha256.Sum256([]byte(body.HostToken)),
-		clientTokenHash: sha256.Sum256([]byte(body.ClientToken)),
-		expiresAt:       time.Now().Add(ttl),
-		clients:         make(map[uint32]*peer),
-		nextClientID:    1,
-	}
-	s.mu.Unlock()
-
-	wsURL := s.cfg.PublicURL
-	if wsURL == "" {
-		wsURL = "ws://" + r.Host + "/ws"
-	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]string{"room": body.Room, "wsUrl": wsURL})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"relayId": s.cfg.Store.RelayID(),
+		"v":       ProtocolVersion,
+		"wsUrl":   s.publicWSURL(r),
+	})
+}
+
+func (s *Server) publicWSURL(r *http.Request) string {
+	if s.cfg.PublicURL != "" {
+		return s.cfg.PublicURL
+	}
+	scheme := "ws"
+	if r.TLS != nil {
+		scheme = "wss"
+	}
+	return scheme + "://" + r.Host + "/ws"
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -167,34 +159,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	q := r.URL.Query()
-	role := q.Get("role")
-	if role != "host" && role != "client" {
-		http.Error(w, "invalid role", http.StatusBadRequest)
-		return
-	}
-	if version := q.Get("v"); version != "" && version != "1" {
-		http.Error(w, "unsupported protocol version", http.StatusBadRequest)
-		return
-	}
-	roomID := q.Get("room")
-	if roomID == "" {
-		http.Error(w, "missing room", http.StatusBadRequest)
-		return
-	}
-	room := s.room(roomID)
-	if room == nil || time.Now().After(room.expiresAt) {
-		http.Error(w, "room not found", http.StatusNotFound)
-		return
-	}
-	token := bearer(r)
-	if token == "" {
-		// Browser/React Native WebSocket cannot set Authorization headers.
-		token = q.Get("token")
-	}
-	if !room.authorized(role, token) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+	if q := r.URL.Query(); len(q) > 0 {
+		// Tokens never travel in the URL in v2. Reject legacy clients early so
+		// they fail fast instead of hanging on an authentication frame.
+		if q.Get("token") != "" || q.Get("role") != "" {
+			http.Error(w, "relay v2 authenticates with the first websocket frame; upgrade the client", http.StatusUpgradeRequired)
+			return
+		}
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -206,39 +177,105 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	p := &peer{
 		server: s,
-		room:   room,
-		role:   role,
 		conn:   conn,
 		out:    make(chan frame, s.cfg.QueueSize),
 		done:   make(chan struct{}),
 	}
-	if role == "client" {
-		var ok bool
-		p.id, ok = room.attachClient(p, s.cfg.MaxClients)
-		if !ok {
-			p.close(websocket.StatusTryAgainLater, "room is full")
-			return
-		}
-	} else if !room.attachHost(p) {
-		p.close(websocket.StatusPolicyViolation, "host rejected")
+
+	hello, err := readHello(r.Context(), conn, s.cfg.HelloTimeout)
+	if err != nil {
+		p.sendProtocolError(err)
+		p.close(websocket.StatusPolicyViolation, "invalid relay hello")
 		return
 	}
 
+	var subject Subject
+	var secret string
+	var enrolled bool
+	if hello.Invite != "" {
+		subject, secret, err = s.cfg.Store.Enroll(hello.Invite, hello.Kind, hello.Name, hello.Room)
+		enrolled = true
+	} else {
+		subject, err = s.cfg.Store.AuthenticateSubject(hello.SubjectID, hello.Secret, hello.Kind)
+	}
+	if err != nil {
+		p.sendProtocolError(err)
+		p.close(websocket.StatusPolicyViolation, "relay authentication failed")
+		return
+	}
+
+	p.role = subject.Kind
+	p.subjectID = subject.ID
+	p.room = s.room(subject.Room)
+
+	if p.role == KindClient {
+		if _, err := s.cfg.Store.RoomAvailable(hello.Room); err != nil {
+			p.sendProtocolError(err)
+			p.close(websocket.StatusPolicyViolation, "room unavailable")
+			return
+		}
+		p.room = s.room(hello.Room)
+		clientID, ok := p.room.attachClient(p, s.cfg.MaxClients)
+		if !ok {
+			p.writeDirectJSON(map[string]any{"t": "relay.error", "code": "RELAY_ROOM_FULL", "message": "room has no host or is full"})
+			p.close(websocket.StatusTryAgainLater, "room unavailable")
+			return
+		}
+		p.id = clientID
+	}
+
+	welcome := map[string]any{
+		"t":         "relay.welcome",
+		"v":         ProtocolVersion,
+		"kind":      p.role,
+		"subjectId": subject.ID,
+		"room":      p.room.id,
+		"enrolled":  enrolled,
+	}
+	if enrolled {
+		welcome["secret"] = secret
+	}
+	if p.role == KindHost {
+		// A host never asks an administrator for a phone invite: the relay hands
+		// it a fresh one-time phone link when it connects. The pairing offer
+		// carries that link, so the phone enrolls automatically.
+		welcome["caps"] = []string{"clientInvite"}
+		if link, err := s.ClientInvite(p.room.id, subject.Name); err != nil {
+			slog.Warn("relay could not issue a phone invite", "room", p.room.id, "error", err)
+		} else {
+			welcome["clientInvite"] = link
+		}
+	}
+	// Flush the welcome synchronously: the write loop starts afterwards, and
+	// the client must receive the subject secret even if it disconnects early.
+	p.writeDirectJSON(welcome)
+
+	if p.role == KindHost {
+		if !p.room.attachHost(p) {
+			p.close(websocket.StatusPolicyViolation, "host rejected")
+			return
+		}
+	} else {
+		p.writeDirectJSON(map[string]any{"t": "welcome", "clientId": p.id, "hostOnline": true})
+	}
+
+	s.cfg.Store.TouchSubject(subject.ID)
+	slog.Info("relay peer connected", "subject", subject.ID, "kind", p.role, "room", p.room.id)
+
 	go p.writeLoop()
 	go p.pingLoop(s.cfg.PingInterval, s.cfg.PongTimeout)
+	if p.role == KindClient {
+		p.room.notifyHost(fmt.Sprintf(`{"t":"peer","clientId":%d,"role":"client"}`, p.id))
+	}
 	defer func() {
-		if role == "host" {
-			room.detachHost(p)
+		if p.role == KindHost {
+			p.room.detachHost(p)
 		} else {
-			room.detachClient(p)
+			p.room.detachClient(p)
 		}
 		p.close(websocket.StatusNormalClosure, "bye")
+		slog.Info("relay peer disconnected", "subject", subject.ID, "kind", p.role)
 	}()
-
-	if role == "client" {
-		p.sendText(fmt.Sprintf(`{"t":"welcome","clientId":%d,"hostOnline":true}`, p.id))
-		room.notifyHost(fmt.Sprintf(`{"t":"peer","clientId":%d,"role":"client"}`, p.id))
-	}
 
 	for {
 		kind, data, err := conn.Read(context.Background())
@@ -249,40 +286,141 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			p.close(websocket.StatusMessageTooBig, "frame too large")
 			return
 		}
-		if role == "host" {
+		if p.role == KindHost {
+			if kind == websocket.MessageText {
+				s.handleHostControl(p, data)
+				continue
+			}
 			if kind != websocket.MessageBinary || len(data) < 4 {
 				p.close(websocket.StatusMessageTooBig, "host frames require a client id")
 				return
 			}
 			clientID := binary.BigEndian.Uint32(data[:4])
-			room.deliver(clientID, data[4:])
+			p.room.deliver(clientID, data[4:])
 		} else {
-			// Clients may use text for the initial Noise handshake. Keep the
-			// payload opaque and always forward it as prefixed host binary.
-			room.deliverToHost(p.id, data)
+			// Clients may use text for the Noise handshake. Keep the payload
+			// opaque and always forward it as prefixed host binary.
+			p.room.deliverToHost(p.id, data)
 		}
 	}
+}
+
+func (s *Server) handleHostControl(p *peer, data []byte) {
+	var message struct {
+		T    string `json:"t"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &message); err != nil || message.T != "relay.invite" {
+		p.sendJSON(map[string]any{
+			"t":       "relay.error",
+			"code":    "RELAY_BAD_REQUEST",
+			"message": "unsupported host control frame",
+		})
+		return
+	}
+	name := strings.TrimSpace(message.Name)
+	if name == "" {
+		name = "phone"
+	}
+	link, err := s.ClientInvite(p.room.id, name)
+	if err != nil {
+		code := "RELAY_INTERNAL"
+		text := err.Error()
+		var protocol *Error
+		if errors.As(err, &protocol) {
+			code = protocol.Code
+			text = protocol.Message
+		}
+		p.sendJSON(map[string]any{"t": "relay.error", "code": code, "message": text})
+		return
+	}
+	p.sendJSON(map[string]any{
+		"t":      "relay.invite",
+		"v":      ProtocolVersion,
+		"kind":   KindClient,
+		"invite": link,
+		"room":   p.room.id,
+	})
+}
+
+func readHello(ctx context.Context, conn *websocket.Conn, timeout time.Duration) (helloFrame, error) {
+	helloCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	kind, data, err := conn.Read(helloCtx)
+	if err != nil {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "expected a relay.hello frame")
+	}
+	if kind != websocket.MessageText {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "relay.hello must be a text frame")
+	}
+	var hello helloFrame
+	if err := json.Unmarshal(data, &hello); err != nil {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "relay.hello is not valid JSON")
+	}
+	if hello.T != "relay.hello" {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "first frame must be relay.hello")
+	}
+	if hello.V != 0 && hello.V != ProtocolVersion {
+		return helloFrame{}, relayError("RELAY_VERSION", fmt.Sprintf("unsupported relay protocol version %d", hello.V))
+	}
+	if hello.Kind != KindHost && hello.Kind != KindClient {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "kind must be host or client")
+	}
+	if len(data) > 8*1024 {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "relay.hello is too large")
+	}
+	return hello, nil
 }
 
 func (s *Server) room(id string) *room {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.rooms[id]
+	if existing, ok := s.rooms[id]; ok {
+		return existing
+	}
+	value := &room{id: id, clients: make(map[uint32]*peer), nextClientID: 1}
+	s.rooms[id] = value
+	return value
 }
 
-func (room *room) authorized(role, token string) bool {
-	hash := sha256.Sum256([]byte(token))
-	expected := room.clientTokenHash
-	if role == "host" {
-		expected = room.hostTokenHash
+func (s *Server) RevokeSubject(id string) (Subject, error) {
+	subject, err := s.cfg.Store.RevokeSubject(id)
+	if err != nil {
+		return Subject{}, err
 	}
-	return subtle.ConstantTimeCompare(hash[:], expected[:]) == 1
+	s.disconnectSubject(id)
+	return subject, nil
+}
+
+func (s *Server) disconnectSubject(id string) {
+	s.mu.Lock()
+	rooms := make([]*room, 0, len(s.rooms))
+	for _, value := range s.rooms {
+		rooms = append(rooms, value)
+	}
+	s.mu.Unlock()
+	for _, value := range rooms {
+		value.disconnectSubject(id)
+	}
+}
+
+func (s *Server) Close() {
+	s.mu.Lock()
+	rooms := make([]*room, 0, len(s.rooms))
+	for _, value := range s.rooms {
+		rooms = append(rooms, value)
+	}
+	s.mu.Unlock()
+	for _, value := range rooms {
+		value.closeAll()
+	}
 }
 
 func (room *room) attachHost(p *peer) bool {
 	room.mu.Lock()
 	old := room.host
 	room.host = p
+	room.hostSubjectID = p.subjectID
 	room.mu.Unlock()
 	if old != nil {
 		old.close(websocket.StatusPolicyViolation, "Replaced by new connection")
@@ -323,7 +461,9 @@ func (room *room) attachClient(p *peer, max int) (uint32, bool) {
 
 func (room *room) detachClient(p *peer) {
 	room.mu.Lock()
-	delete(room.clients, p.id)
+	if current, ok := room.clients[p.id]; ok && current == p {
+		delete(room.clients, p.id)
+	}
 	room.mu.Unlock()
 	room.notifyHost(fmt.Sprintf(`{"t":"peer.left","clientId":%d}`, p.id))
 }
@@ -357,6 +497,53 @@ func (room *room) deliverToHost(clientID uint32, payload []byte) {
 	binary.BigEndian.PutUint32(data, clientID)
 	copy(data[4:], payload)
 	host.sendBinary(data)
+}
+
+func (room *room) disconnectSubject(id string) {
+	room.mu.Lock()
+	host := room.host
+	hostMatch := host != nil && host.subjectID == id
+	var clients []*peer
+	if hostMatch {
+		clients = make([]*peer, 0, len(room.clients))
+		for _, client := range room.clients {
+			clients = append(clients, client)
+		}
+		room.clients = make(map[uint32]*peer)
+		room.host = nil
+	} else {
+		for clientID, client := range room.clients {
+			if client.subjectID == id {
+				clients = append(clients, client)
+				delete(room.clients, clientID)
+			}
+		}
+	}
+	room.mu.Unlock()
+	if hostMatch {
+		host.close(websocket.StatusPolicyViolation, "subject revoked")
+	}
+	for _, client := range clients {
+		client.close(websocket.StatusPolicyViolation, "subject revoked")
+	}
+}
+
+func (room *room) closeAll() {
+	room.mu.Lock()
+	host := room.host
+	clients := make([]*peer, 0, len(room.clients))
+	for _, client := range room.clients {
+		clients = append(clients, client)
+	}
+	room.host = nil
+	room.clients = make(map[uint32]*peer)
+	room.mu.Unlock()
+	if host != nil {
+		host.close(websocket.StatusGoingAway, "relay shutting down")
+	}
+	for _, client := range clients {
+		client.close(websocket.StatusGoingAway, "relay shutting down")
+	}
 }
 
 func (p *peer) writeLoop() {
@@ -399,6 +586,35 @@ func (p *peer) sendText(text string) {
 	p.send(frame{kind: websocket.MessageText, data: []byte(text)})
 }
 
+func (p *peer) sendJSON(value any) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	p.send(frame{kind: websocket.MessageText, data: raw})
+}
+
+func (p *peer) sendProtocolError(err error) {
+	code := "RELAY_BAD_REQUEST"
+	message := err.Error()
+	var protocol *Error
+	if errors.As(err, &protocol) {
+		code = protocol.Code
+		message = protocol.Message
+	}
+	p.writeDirectJSON(map[string]any{"t": "relay.error", "code": code, "message": message})
+}
+
+func (p *peer) writeDirectJSON(value any) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = p.conn.Write(ctx, websocket.MessageText, raw)
+}
+
 func (p *peer) sendBinary(data []byte) {
 	copied := append([]byte(nil), data...)
 	p.send(frame{kind: websocket.MessageBinary, data: copied})
@@ -418,7 +634,9 @@ func (p *peer) send(item frame) {
 func (p *peer) close(code websocket.StatusCode, reason string) {
 	p.once.Do(func() {
 		close(p.done)
-		_ = p.conn.Close(code, reason)
+		// coder/websocket waits for the close handshake. Never block the
+		// handler goroutine on a peer that may be gone.
+		go func() { _ = p.conn.Close(code, reason) }()
 	})
 }
 
@@ -430,17 +648,3 @@ func bearer(r *http.Request) string {
 	}
 	return ""
 }
-
-func constantEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
-
-func randomID(prefix string) string {
-	var data [16]byte
-	_, _ = rand.Read(data[:])
-	return prefix + hex.EncodeToString(data[:])
-}
-

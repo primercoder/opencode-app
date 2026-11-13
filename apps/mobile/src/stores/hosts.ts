@@ -38,6 +38,13 @@ export const useHosts = create<HostState>((set, get) => ({
   },
 
   async addHost(offer) {
+    const transports = offer.transports.map((transport) => {
+      if (transport.kind !== "relay") return transport
+      // Pairing invites are single-use and already consumed by the time the
+      // host is saved. Keep the room/URL, but do not persist the token.
+      const { invite: _invite, ...rest } = transport
+      return rest
+    })
     const existing = get().hosts.find((host) => host.id === offer.hostId)
     if (existing) {
       const updated: HostRecord = {
@@ -45,7 +52,7 @@ export const useHosts = create<HostState>((set, get) => ({
         name: offer.name,
         publicKey: offer.pk,
         fingerprint: offer.fingerprint,
-        transports: offer.transports,
+        transports,
       }
       const hosts = get().hosts.map((host) => (host.id === updated.id ? updated : host))
       set({ hosts })
@@ -57,7 +64,7 @@ export const useHosts = create<HostState>((set, get) => ({
       name: offer.name,
       publicKey: offer.pk,
       fingerprint: offer.fingerprint,
-      transports: offer.transports,
+      transports,
     }
     const hosts = [...get().hosts, host]
     set({ hosts })

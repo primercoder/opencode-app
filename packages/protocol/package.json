@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./frames": "./src/frames.ts",
     "./pairing": "./src/pairing.ts",
+    "./relay": "./src/relay.ts",
     "./noise": "./src/noise/index.ts",
     "./records": "./src/records.ts"
   },

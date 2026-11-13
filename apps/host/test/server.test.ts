@@ -207,8 +207,8 @@ describe("host LAN server", () => {
     config.relay = {
       url: "ws://127.0.0.1:1/ws",
       room: "room_stale",
-      hostToken: "host-stale",
-      clientToken: "client-stale",
+      subjectId: "sub_stale",
+      secret: "secret-stale",
     }
     await writeFile(configPath, JSON.stringify(config, null, 2))
 

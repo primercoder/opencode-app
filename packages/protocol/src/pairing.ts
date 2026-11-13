@@ -14,8 +14,13 @@ export const RelayTransportSchema = z.object({
   kind: z.literal("relay"),
   url: wsUrl,
   room: z.string().min(1),
-  clientToken: z.string().min(1),
   priority: z.number().int().nonnegative(),
+  /**
+   * One-time phone invite issued by the relay to the host. It is carried inside
+   * the short-lived pairing offer so the phone can enroll without an admin
+   * copying a client invite by hand.
+   */
+  invite: z.string().min(1).optional(),
 })
 
 export const CustomTransportSchema = z.object({

@@ -3,8 +3,12 @@ services:
     build: ./apps/relay
     environment:
       RELAY_LISTEN: ":8080"
-      RELAY_REGISTRATION_SECRET: dev-secret
+      RELAY_DATA_DIR: /data
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-ws://127.0.0.1:26379/ws}
       RELAY_LOG_LEVEL: debug
+      RELAY_TLS_OFF: "1"
+    volumes:
+      - ./apps/relay/data:/data
     expose:
       - "8080"
     mem_limit: 128m

@@ -20,7 +20,7 @@ import { addPendingPair, hashPairCode } from "./pairing.ts"
 import { resolveOpencodeTarget, type OpencodeTarget } from "./opencode.ts"
 import { HostModelManager } from "./asr/modelManager.ts"
 import { HostAsr, type AsrService } from "./asr/service.ts"
-import { registerRelayRoom, RelayHostClient } from "./relay.ts"
+import { RelayHostClient } from "./relay.ts"
 import { ConnectionSession, type ClientInfo, type HostContext } from "./session.ts"
 
 export type HostOptions = {
@@ -32,7 +32,8 @@ export type HostOptions = {
   opencodePassword?: string
   /** Relay is used only when this is set; a saved room is never activated implicitly. */
   relay?: RelayConfig
-  relaySecret?: string
+  /** PEM CA used to verify the relay TLS certificate (development / private CA). */
+  relayCa?: string
   modelsDir?: string
   modelBaseUrl?: string
   asrModelId?: string
@@ -175,39 +176,23 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
   await saveConfig(home, config)
 
   if (relayConfig) {
-    const relaySecret = options.relaySecret ?? process.env.RELAY_REGISTRATION_SECRET
     relayClient = new RelayHostClient({
       config: relayConfig,
+      ...(options.relayCa ? { caPath: options.relayCa } : {}),
       createSession: (socket) => new ConnectionSession(socket, ctx, { transport: "relay" }),
       onState: (state, detail) => {
         if (state === "reconnecting" || state === "closed") {
           console.warn(`[relay] ${state}${detail ? `: ${detail}` : ""}`)
         }
       },
-      ...(relaySecret
-        ? {
-            onBeforeReconnect: async () => {
-              await registerRelayRoom({
-                relayUrl: relayConfig.url,
-                secret: relaySecret,
-                room: relayConfig.room,
-                hostToken: relayConfig.hostToken,
-                clientToken: relayConfig.clientToken,
-              })
-            },
-          }
-        : {}),
+      onClientInvite: (link) => {
+        // Keep the last phone link on disk so "ocremote pair --relay" can still
+        // build an offer while the host is stopped.
+        relayConfig.clientInvite = link
+        void saveConfig(home, config).catch(() => undefined)
+      },
     })
     try {
-      if (relaySecret) {
-        await registerRelayRoom({
-          relayUrl: relayConfig.url,
-          secret: relaySecret,
-          room: relayConfig.room,
-          hostToken: relayConfig.hostToken,
-          clientToken: relayConfig.clientToken,
-        })
-      }
       await relayClient.start()
     } catch (error) {
       relayClient.close()
@@ -244,12 +229,23 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
         transports.push({ kind: "lan", url: directUrl, priority: 0 })
       }
       if (relayConfig) {
+        let clientInvite = relayConfig.clientInvite
+        if (relayClient) {
+          // The host is connected to the relay, so ask it for a fresh phone
+          // link for this pairing code. Fall back to the cached link when the
+          // relay is temporarily unreachable.
+          try {
+            clientInvite = await relayClient.requestClientInvite()
+          } catch {
+            // keep the cached invite
+          }
+        }
         transports.push({
           kind: "relay",
           url: relayConfig.url,
           room: relayConfig.room,
-          clientToken: relayConfig.clientToken,
           priority: transports.length,
+          ...(clientInvite ? { invite: clientInvite } : {}),
         })
       }
       if (transports.length === 0) throw new Error("no transport is available for pairing")

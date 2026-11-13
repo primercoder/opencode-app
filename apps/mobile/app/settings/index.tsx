@@ -1,12 +1,11 @@
 import Constants from "expo-constants"
 import { router } from "expo-router"
-import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native"
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Icon } from "@/components/Icon"
 import { Card, Divider, IconButton, SectionLabel, Segmented } from "@/components/ui"
 import { useT } from "@/i18n"
 import { usePreferences, type Language } from "@/stores/preferences"
-import { saveVoiceEnginePreference } from "@/features/voice/preferences"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
 
 export default function SettingsScreen() {
@@ -16,12 +15,8 @@ export default function SettingsScreen() {
   const styles = useThemedStyles(settingsStyles)
   const themeMode = usePreferences((state) => state.themeMode)
   const language = usePreferences((state) => state.language)
-  const notifications = usePreferences((state) => state.notifications)
-  const voiceEngine = usePreferences((state) => state.voiceEngine)
   const setThemeMode = usePreferences((state) => state.setThemeMode)
   const setLanguage = usePreferences((state) => state.setLanguage)
-  const setNotifications = usePreferences((state) => state.setNotifications)
-  const setVoiceEngine = usePreferences((state) => state.setVoiceEngine)
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -55,40 +50,8 @@ export default function SettingsScreen() {
           onChange={(value) => void setLanguage(value as Language)}
         />
 
-        <SectionLabel>{t("notifications")}</SectionLabel>
+        <SectionLabel>{t("voiceModels")}</SectionLabel>
         <Card>
-          <View style={styles.row}>
-            <Icon name="bell" size={18} color={colors.muted} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>{t("notifications")}</Text>
-              <Text style={styles.rowBody}>{t("notificationsHint")}</Text>
-            </View>
-            <Switch
-              value={notifications}
-              onValueChange={(value) => void setNotifications(value)}
-              trackColor={{ false: colors.surface2, true: colors.accent }}
-              thumbColor="#FFFFFF"
-            />
-          </View>
-        </Card>
-
-        <SectionLabel>{t("voice")}</SectionLabel>
-        <Text style={styles.hint}>{t("engineAutoHint")}</Text>
-        <Segmented
-          value={voiceEngine}
-          options={[
-            { value: "auto", label: t("engineAuto") },
-            { value: "local", label: t("engineLocal") },
-            { value: "host", label: t("engineHost") },
-            { value: "system", label: t("engineSystem") },
-          ]}
-          onChange={(value) => {
-            void setVoiceEngine(value)
-            void saveVoiceEnginePreference(value)
-          }}
-        />
-
-        <Card style={{ marginTop: 12 }}>
           <Pressable
             accessibilityRole="button"
             onPress={() => router.push("/settings/voice")}
@@ -109,6 +72,22 @@ export default function SettingsScreen() {
               <Text style={styles.rowBody}>{t("hostModelHint")}</Text>
             </View>
           </View>
+        </Card>
+
+        <SectionLabel>{t("relayAccessTitle")}</SectionLabel>
+        <Card>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push({ pathname: "/settings/relay" })}
+            style={({ pressed }) => [styles.row, pressed && { opacity: 0.7 }]}
+          >
+            <Icon name="globe" size={18} color={colors.muted} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>{t("relayAccessTitle")}</Text>
+              <Text style={styles.rowBody}>{t("relayAccessHint")}</Text>
+            </View>
+            <Icon name="chevronRight" size={16} color={colors.faint} />
+          </Pressable>
         </Card>
 
         <SectionLabel>{t("about")}</SectionLabel>

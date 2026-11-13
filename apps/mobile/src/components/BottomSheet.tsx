@@ -1,4 +1,4 @@
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native"
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Icon } from "@/components/Icon"
 import { IconButton } from "@/components/ui"
@@ -21,7 +21,10 @@ export function BottomSheet(props: {
       statusBarTranslucent
       onRequestClose={props.onClose}
     >
-      <View style={{ flex: 1, justifyContent: "flex-end" }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1, justifyContent: "flex-end" }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
         <Pressable style={[StyleSheet.absoluteFill, { backgroundColor: colors.overlap }]} onPress={props.onClose} />
         <View
           style={{
@@ -57,7 +60,7 @@ export function BottomSheet(props: {
             {props.children}
           </ScrollView>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   )
 }

@@ -86,3 +86,13 @@ Thumbs.db
 
 # Temporary release staging
 /.release/
+
+# Local remediation/design notes
+/REMEDIATION_PLAN.md
+
+# Generated development TLS material
+/deploy/tls/
+/apps/mobile/android/app/src/qa/res/raw/relay_test_ca.pem
+
+# Relay runtime data
+/apps/relay/data/

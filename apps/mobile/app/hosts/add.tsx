@@ -16,10 +16,13 @@ import {
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Icon } from "@/components/Icon"
+import { RelayAccessCard } from "@/components/RelayAccessCard"
 import { Button, Card, Divider, IconButton, Segmented } from "@/components/ui"
 import { useT } from "@/i18n"
-import { pairWithOffer, type PairingStage } from "@/services/pairing"
-import { HostError } from "@/transport/hostRuntime"
+import { pairWithOffer, resolvePairingInput, type PairingStage } from "@/services/pairing"
+import { enrollRelayClient, type RelayEnrollment } from "@/services/relay"
+import { loadRelayAccess, normalizeRelayUrl } from "@/storage/relay"
+import { HostError, type RelayAuthResolver } from "@/transport/hostRuntime"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
 
 export default function AddHostScreen() {
@@ -36,6 +39,7 @@ export default function AddHostScreen() {
   const [mode, setMode] = useState<"scan" | "paste">("scan")
   const [scanLocked, setScanLocked] = useState(false)
   const [resolving, setResolving] = useState(false)
+  const [relayEnrolled, setRelayEnrolled] = useState<RelayEnrollment | null>(null)
   const [permission, requestPermission] = useCameraPermissions()
   const parsedParam = useRef(false)
   const busy = stage !== null || resolving
@@ -51,8 +55,9 @@ export default function AddHostScreen() {
     setResolving(true)
     setError(null)
     try {
-      const resolved = await resolveInput(value)
+      const resolved = await resolvePairingInput(value)
       setOffer(parsePairingOffer(resolved))
+      setRelayEnrolled(null)
       setMode("scan")
     } catch (cause) {
       setOffer(null)
@@ -66,7 +71,12 @@ export default function AddHostScreen() {
     if (!offer) return
     setError(null)
     try {
-      const { host } = await pairWithOffer(offer, setStage)
+      const relay = await relayAuthFor(offer, relayEnrolled)
+      if (offer.transports.every((transport) => transport.kind === "relay") && !relay.auth) {
+        setError(relay.error ?? t("relayAccessRequired"))
+        return
+      }
+      const { host } = await pairWithOffer(offer, setStage, relay.auth ? { relayAuth: relay.auth } : {})
       router.replace({ pathname: "/hosts/[hostId]", params: { hostId: host.id } })
     } catch (cause) {
       const failure = cause instanceof HostError ? cause : null
@@ -79,11 +89,15 @@ export default function AddHostScreen() {
   const stageLabel = stage
     ? { connecting: t("connecting"), handshaking: t("connecting"), authenticating: t("connecting"), saving: t("pairingNow") }[stage]
     : t("pairingNow")
+  const relayTransport = offer?.transports.find((transport) => transport.kind === "relay")
+  const relayInvite = relayTransport?.kind === "relay" ? relayTransport.invite : undefined
+  const relayRoom = relayTransport?.kind === "relay" ? relayTransport.room : ""
+  const relayUrl = relayTransport?.kind === "relay" ? relayTransport.url : ""
 
   return (
     <KeyboardAvoidingView
       style={[styles.screen, { paddingTop: insets.top }]}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <View style={styles.header}>
         <IconButton label={t("back")} onPress={() => router.back()} disabled={stage !== null}>
@@ -213,6 +227,14 @@ export default function AddHostScreen() {
           </Card>
         ) : null}
 
+        {offer && relayTransport ? (
+          relayInvite ? (
+            <Text style={[styles.hint, { marginTop: 10 }]}>{t("relayAutoEnroll")}</Text>
+          ) : (
+            <RelayAccessCard room={relayRoom} url={relayUrl} onEnrolled={setRelayEnrolled} />
+          )
+        ) : null}
+
         {stage ? (
           <View style={styles.stage}>
             <ActivityIndicator size="small" color={colors.accent} />
@@ -230,21 +252,52 @@ export default function AddHostScreen() {
   )
 }
 
-async function resolveInput(value: string): Promise<string> {
-  const trimmed = value.trim()
-  if (!/^https?:\/\//u.test(trimmed)) return trimmed
-  const response = await fetch(trimmed, { headers: { accept: "text/plain" } })
-  if (!response.ok) throw new Error(`pairing link returned HTTP ${response.status}`)
-  const text = (await response.text()).trim()
-  if (text.startsWith("ocremote://")) return text
-  try {
-    const payload = JSON.parse(text) as { offer?: unknown }
-    if (typeof payload.offer === "string") return payload.offer
-  } catch {
-    // not JSON
+async function relayAuthFor(
+  offer: PairingOffer,
+  enrolled: RelayEnrollment | null,
+): Promise<{ auth?: RelayAuthResolver; error?: string }> {
+  const entries = new Map<string, { subjectId: string; secret: string }>()
+  let error: string | undefined
+  for (const transport of offer.transports) {
+    if (transport.kind !== "relay") continue
+    const access = await loadRelayAccess(transport.url)
+    if (transport.invite) {
+      // A fresh pairing code may point at a relay whose database was reset.
+      // Prefer the new one-time invite; fall back to the saved subject only if
+      // the invite was already consumed.
+      try {
+        const result = await enrollRelayClient({ link: transport.invite, room: transport.room })
+        entries.set(normalizeRelayUrl(result.url), {
+          subjectId: result.access.subjectId,
+          secret: result.access.secret,
+        })
+        continue
+      } catch (cause) {
+        if (!access) {
+          error ??= cause instanceof Error ? cause.message : "中继访问登记失败"
+          continue
+        }
+      }
+    }
+    if (access) {
+      entries.set(normalizeRelayUrl(transport.url), { subjectId: access.subjectId, secret: access.secret })
+      continue
+    }
+    error ??= "这台手机还没有该中继的访问权限，请让主机重新生成配对码或在下面粘贴手机邀请。"
   }
-  return text
+  if (enrolled) {
+    entries.set(normalizeRelayUrl(enrolled.url), {
+      subjectId: enrolled.access.subjectId,
+      secret: enrolled.access.secret,
+    })
+  }
+  if (entries.size === 0) return error ? { error } : {}
+  return {
+    auth: (url) => entries.get(normalizeRelayUrl(url)),
+    ...(error ? { error } : {}),
+  }
 }
+
 
 function pairingMessage(error: HostError | null, t: ReturnType<typeof useT>): string {
   if (!error) return t("pairingFailed")

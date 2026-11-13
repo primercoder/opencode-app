@@ -4,7 +4,9 @@ import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleShee
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import type { Transport } from "@ocremote/protocol"
 import { Icon } from "@/components/Icon"
-import { Button, Card, Divider, IconButton, SectionLabel, Segmented } from "@/components/ui"
+import { RelayAccessCard } from "@/components/RelayAccessCard"
+import { TransportAddSheet } from "@/components/TransportAddSheet"
+import { Button, Card, Divider, IconButton, SectionLabel } from "@/components/ui"
 import { useT } from "@/i18n"
 import { useHosts } from "@/stores/hosts"
 import { closeRuntime, ensureConnection } from "@/transport/runtimes"
@@ -26,15 +28,14 @@ export default function EditHostScreen() {
 
   const [name, setName] = useState(host?.name ?? "")
   const [routes, setRoutes] = useState<Transport[]>(host?.transports ?? [])
-  const [mode, setMode] = useState<"none" | "direct" | "relay">("none")
-  const [directUrl, setDirectUrl] = useState("ws://")
-  const [relayUrl, setRelayUrl] = useState("wss://")
-  const [relayRoom, setRelayRoom] = useState("")
-  const [relayToken, setRelayToken] = useState("")
+  const [addOpen, setAddOpen] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testFailed, setTestFailed] = useState(false)
+  const relayRoute = routes.find((route) => route.kind === "relay")
+  const relayRoom = relayRoute?.kind === "relay" ? relayRoute.room : ""
+  const relayUrl = relayRoute?.kind === "relay" ? relayRoute.url : ""
 
   useEffect(() => {
     if (!hydrated) void hydrate()
@@ -96,41 +97,7 @@ export default function EditHostScreen() {
     }
   }
 
-  const addRoute = () => {
-    setFormError(null)
-    if (mode === "direct") {
-      const url = directUrl.trim()
-      if (!/^wss?:\/\/\S+$/u.test(url)) {
-        setFormError(t("directHint"))
-        return
-      }
-      setRoutes((current) => [...current, { kind: "lan", url, priority: current.length }])
-      setMode("none")
-      setDirectUrl("ws://")
-      return
-    }
-    if (mode === "relay") {
-      const url = relayUrl.trim()
-      if (!/^wss?:\/\/\S+$/u.test(url) || !relayRoom.trim() || !relayToken.trim()) {
-        setFormError(t("error"))
-        return
-      }
-      setRoutes((current) => [
-        ...current,
-        {
-          kind: "relay",
-          url,
-          room: relayRoom.trim(),
-          clientToken: relayToken.trim(),
-          priority: current.length,
-        },
-      ])
-      setMode("none")
-      setRelayUrl("wss://")
-      setRelayRoom("")
-      setRelayToken("")
-    }
-  }
+
 
   const confirmRemove = () => {
     Alert.alert(t("removeHost"), t("removeHostConfirm", { name: host.name }), [
@@ -149,7 +116,7 @@ export default function EditHostScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.screen, { paddingTop: insets.top }]}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <View style={styles.header}>
         <IconButton label={t("back")} onPress={() => router.back()}>
@@ -212,73 +179,17 @@ export default function EditHostScreen() {
         </Card>
 
         <View style={{ marginTop: 10 }}>
-          <Segmented
-            value={mode === "none" ? "add" : mode}
-            options={[
-              { value: "add", label: t("add") },
-              { value: "direct", label: t("addDirect") },
-              { value: "relay", label: t("addRelayMethod") },
-            ]}
-            onChange={(value) => {
-              setMode(value === "add" ? "none" : value)
-              setFormError(null)
-            }}
-          />
+          <Button label={t("addConnection")} size="sm" variant="outline" onPress={() => setAddOpen(true)} />
         </View>
 
-        {mode === "direct" ? (
-          <Card style={{ padding: 14, gap: 8, marginTop: 10 }}>
-            <Text style={styles.formLabel}>{t("address")}</Text>
-            <TextInput
-              autoCapitalize="none"
-              autoCorrect={false}
-              onChangeText={setDirectUrl}
-              placeholder="ws://192.168.1.23:8787/ws"
-              placeholderTextColor={colors.faint}
-              style={styles.input}
-              value={directUrl}
-            />
-            <Text style={styles.hint}>{t("directHint")}</Text>
-            <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
-              <Button label={t("add")} size="sm" onPress={addRoute} />
-            </View>
-          </Card>
-        ) : null}
-
-        {mode === "relay" ? (
-          <Card style={{ padding: 14, gap: 8, marginTop: 10 }}>
-            <Text style={styles.formLabel}>{t("relayUrl")}</Text>
-            <TextInput
-              autoCapitalize="none"
-              autoCorrect={false}
-              onChangeText={setRelayUrl}
-              placeholder="wss://relay.example/ws"
-              placeholderTextColor={colors.faint}
-              style={styles.input}
-              value={relayUrl}
-            />
-            <Text style={styles.formLabel}>{t("room")}</Text>
-            <TextInput
-              autoCapitalize="none"
-              autoCorrect={false}
-              onChangeText={setRelayRoom}
-              style={styles.input}
-              value={relayRoom}
-            />
-            <Text style={styles.formLabel}>{t("token")}</Text>
-            <TextInput
-              autoCapitalize="none"
-              autoCorrect={false}
-              onChangeText={setRelayToken}
-              secureTextEntry
-              style={styles.input}
-              value={relayToken}
-            />
-            <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
-              <Button label={t("add")} size="sm" onPress={addRoute} />
-            </View>
-          </Card>
-        ) : null}
+        {relayRoom ? (
+          <RelayAccessCard key={relayRoom} room={relayRoom} url={relayUrl} compact />
+        ) : (
+          <>
+            <SectionLabel>{t("relayAccessTitle")}</SectionLabel>
+            <Text style={styles.hint}>{t("relayNeedsPairing")}</Text>
+          </>
+        )}
 
         {formError ? <Text style={styles.error}>{formError}</Text> : null}
 
@@ -306,6 +217,24 @@ export default function EditHostScreen() {
           </View>
         </Card>
       </ScrollView>
+
+      <TransportAddSheet
+        visible={addOpen}
+        existing={routes}
+        onClose={() => setAddOpen(false)}
+        onAdd={(transport) => {
+          if (routes.some((route) => route.kind === transport.kind && route.url === transport.url && (transport.kind !== "relay" || route.kind !== "relay" || route.room === transport.room))) {
+            return false
+          }
+          setRoutes((current) =>
+            [...current, transport]
+              .sort((left, right) => (left.kind === "relay" ? 1 : 0) - (right.kind === "relay" ? 1 : 0))
+              .map((route, index) => ({ ...route, priority: index })),
+          )
+          setFormError(null)
+          return true
+        }}
+      />
     </KeyboardAvoidingView>
   )
 }

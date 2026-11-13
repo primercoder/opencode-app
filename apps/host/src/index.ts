@@ -18,7 +18,7 @@ import {
 import { HostModelManager } from "./asr/modelManager.ts"
 import { HostAsr } from "./asr/service.ts"
 import { addPendingPair, revokeDevice } from "./pairing.ts"
-import { registerRelayRoom } from "./relay.ts"
+import { enrollRelaySubject } from "./relay.ts"
 import { resolveOpencodeTarget } from "./opencode.ts"
 import { directPairUrl, httpOrigin, startHost, type Host } from "./server.ts"
 import {
@@ -53,17 +53,16 @@ Examples:
                                         direct, bind one network card
   ocremote start --foreground --listen 0.0.0.0:8787
                                         stay attached (tmux/systemd)
-  ocremote start --relay ws://192.168.1.10:8080/ws --relay-secret SECRET
-                                        through a self-hosted relay
-  ocremote start --listen 0.0.0.0:8787 --relay ws://relay.example/ws \\
-                 --relay-secret SECRET
+  ocremote start --relay-link 'ocremote-relay://enroll#...'
+                                        enroll this host with a self-hosted relay
+  ocremote start --listen 0.0.0.0:8787 --relay-link '...'
                                         offer both direct and relay
   ocremote pair                        print a pairing QR for a running host
   ocremote status | clients | stop      manage the detached host
 
 Connection modes: direct (LAN) and relay are independent. Direct is always on for
-the --listen address; relay is used only when --relay is passed, even if a
-room was saved by an earlier run.`,
+the --listen address; a saved relay subject is used only when --relay-link or
+--relay is passed. Each relay invite can be enrolled exactly once.`,
 )
 
 program
@@ -84,10 +83,9 @@ program
   .option("--pair-url <ws-url>", "override the direct URL placed in the pairing offer")
   .option("--read-only", "issue a read-only pairing code", false)
   .option("--ttl <minutes>", "pairing code lifetime in minutes", (value) => Number(value), 5)
-  .option("--relay <ws-url>", "relay WebSocket URL, e.g. ws://192.168.1.10:8080/ws")
-  .option("--relay-secret <secret>", "relay registration secret (first run / new room)")
-  .option("--relay-room <room>", "reuse a specific relay room")
-  .option("--relay-new-room", "register a new relay room", false)
+  .option("--relay <ws-url>", "reuse a relay subject saved for this URL")
+  .option("--relay-link <link>", "consume a one-time host invite")
+  .option("--relay-ca <pem>", "CA certificate used to verify the relay")
   .option("--models-dir <dir>", "local speech model directory")
   .option("--model-server <url>", "development model server base URL")
   .option("--asr-model <id>", "default host speech model id")
@@ -104,11 +102,15 @@ Direct mode:
   "ocremote pair" instead.
 
 Relay mode (independent, optional):
-  --relay <ws-url>         Enables relay. Without it a saved room is ignored.
-  --relay-secret <s>       Required the first time or with --relay-new-room.
-                           Also read from RELAY_REGISTRATION_SECRET.
-  --relay-room <room>      Reuse an existing room (needs its secret unless the
-                           room was registered on this machine before).
+  --relay <ws-url>         Reuse a relay subject saved by --relay-link.
+  --relay-link <link>      Consume a one-time host invite and remember the
+                           returned subject. The relay also returns a one-time
+                           phone link; pairing codes carry it so the phone
+                           enrolls automatically.
+  --relay-ca <pem>         CA used to verify the relay certificate (dev/private
+                           CA). For the relay's generated CA use
+                           <relay-data>/tls/ca.crt. Also read from
+                           OCREMOTE_RELAY_CA.
   The QR offers direct first, then relay. Relay never sees plaintext.
 
 Background:
@@ -400,9 +402,8 @@ type StartOptions = {
   readOnly: boolean
   ttl: number
   relay?: string
-  relaySecret?: string
-  relayRoom?: string
-  relayNewRoom: boolean
+  relayLink?: string
+  relayCa?: string
   modelsDir?: string
   modelServer?: string
   asrModel?: string
@@ -453,6 +454,7 @@ async function runForeground(options: StartOptions): Promise<void> {
   await rm(socketPath(), { force: true })
 
   const relay = await resolveRelay(options)
+  const relayCa = options.relayCa ?? process.env.OCREMOTE_RELAY_CA
   const host = await startHost({
     hostname: listen.hostname,
     port: listen.port,
@@ -460,10 +462,7 @@ async function runForeground(options: StartOptions): Promise<void> {
     ...(options.opencodeUrl ? { opencodeUrl: options.opencodeUrl } : {}),
     ...(options.opencodePassword ? { opencodePassword: options.opencodePassword } : {}),
     ...(relay ? { relay } : {}),
-    ...(options.relaySecret ? { relaySecret: options.relaySecret } : {}),
-    ...(process.env.RELAY_REGISTRATION_SECRET && !options.relaySecret
-      ? { relaySecret: process.env.RELAY_REGISTRATION_SECRET }
-      : {}),
+    ...(relayCa ? { relayCa } : {}),
     ...(options.modelsDir ? { modelsDir: options.modelsDir } : {}),
     ...(options.modelServer ? { modelBaseUrl: options.modelServer } : {}),
     ...(options.asrModel ? { asrModelId: options.asrModel } : {}),
@@ -595,9 +594,8 @@ async function startBackground(options: StartOptions): Promise<void> {
     ...(options.opencodePassword ? ["--opencode-password", options.opencodePassword] : []),
     ...(options.readOnly ? ["--read-only"] : []),
     ...(options.relay ? ["--relay", options.relay] : []),
-    ...(options.relaySecret ? ["--relay-secret", options.relaySecret] : []),
-    ...(options.relayRoom ? ["--relay-room", options.relayRoom] : []),
-    ...(options.relayNewRoom ? ["--relay-new-room"] : []),
+    ...(options.relayLink ? ["--relay-link", options.relayLink] : []),
+    ...(options.relayCa ? ["--relay-ca", options.relayCa] : []),
     ...(options.modelsDir ? ["--models-dir", options.modelsDir] : []),
     ...(options.modelServer ? ["--model-server", options.modelServer] : []),
     ...(options.asrModel ? ["--asr-model", options.asrModel] : []),
@@ -743,7 +741,7 @@ function printTransports(host: Host, listen: Listen): void {
 }
 
 async function resolveRelay(options: StartOptions): Promise<RelayConfig | undefined> {
-  if (!options.relay) return undefined
+  if (!options.relay && !options.relayLink) return undefined
   const home = resolveHome()
   const identity = await loadOrCreateIdentity(home)
   const config = await loadConfig(home, {
@@ -751,33 +749,23 @@ async function resolveRelay(options: StartOptions): Promise<RelayConfig | undefi
     name: options.name ?? process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
     lan: { hostname: "127.0.0.1", port: 8787 },
   })
-  if (!options.relayNewRoom && config.relay?.url === options.relay) {
-    if (options.relaySecret) {
-      await registerRelayRoom({
-        relayUrl: config.relay.url,
-        secret: options.relaySecret,
-        room: config.relay.room,
-        hostToken: config.relay.hostToken,
-        clientToken: config.relay.clientToken,
-      })
-    }
-    return config.relay
+  if (options.relayLink) {
+    const relay = await enrollRelaySubject({
+      link: options.relayLink,
+      name: config.name,
+      ...(options.relayCa ? { caPath: options.relayCa } : {}),
+    })
+    config.relay = relay
+    await saveConfig(home, config)
+    console.log(`enrolled relay subject ${relay.subjectId} · room ${relay.room}`)
+    return relay
   }
-  const secret = options.relaySecret ?? process.env.RELAY_REGISTRATION_SECRET
-  if (!secret) {
+  if (config.relay?.url !== options.relay) {
     throw new Error(
-      "relay registration needs --relay-secret (or RELAY_REGISTRATION_SECRET) the first time a room is created",
+      `no relay subject saved for ${options.relay}; enroll this host once with --relay-link`,
     )
   }
-  const relay = await registerRelayRoom({
-    relayUrl: options.relay,
-    secret,
-    ...(options.relayRoom ? { room: options.relayRoom } : {}),
-  })
-  config.relay = relay
-  await saveConfig(home, config)
-  console.log(`registered relay room ${relay.room}`)
-  return relay
+  return config.relay
 }
 
 async function createOffer(input: {
@@ -803,8 +791,8 @@ async function createOffer(input: {
       kind: "relay",
       url: input.config.relay.url,
       room: input.config.relay.room,
-      clientToken: input.config.relay.clientToken,
       priority: 1,
+      ...(input.config.relay.clientInvite ? { invite: input.config.relay.clientInvite } : {}),
     })
   }
   const offer: PairingOffer = {

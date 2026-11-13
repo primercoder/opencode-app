@@ -23,6 +23,13 @@ export {
   type Transport,
 } from "./pairing.ts"
 export {
+  encodeRelayInviteLink,
+  parseRelayInviteLink,
+  RELAY_INVITE_PREFIX,
+  RelayInviteSchema,
+  type RelayInvite,
+} from "./relay.ts"
+export {
   decodeProtectedRecord,
   encodeProtectedRecord,
   MAX_CHUNK_DATA_BYTES,

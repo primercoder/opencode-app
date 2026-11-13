@@ -2,6 +2,7 @@ import type { Transport } from "@ocremote/protocol"
 import { deviceInfo } from "@/config/device"
 import { useConnections, type HostConnection } from "@/stores/connections"
 import { credentialsFor, useHosts } from "@/stores/hosts"
+import { loadRelayAccess, normalizeRelayUrl } from "@/storage/relay"
 import { HostEventStream, type OpencodeEvent } from "@/transport/hostEvents"
 import {
   candidateUrls,
@@ -9,6 +10,7 @@ import {
   HostRuntime,
   type ConnectionState,
   type HostSession,
+  type RelayAuthResolver,
 } from "@/transport/hostRuntime"
 
 const runtimes = new Map<string, HostRuntime>()
@@ -83,6 +85,7 @@ async function openConnection(hostId: string): Promise<HostRuntime> {
   if (!host) throw new HostError("network", "主机不存在")
   const credentials = await credentialsFor(hostId)
   if (!credentials) throw new HostError("auth", "这台主机的设备令牌已丢失，请重新配对")
+  const relayAuth = await relayAuthFor(host.transports)
 
   const runtime = new HostRuntime({
     hostId,
@@ -92,6 +95,7 @@ async function openConnection(hostId: string): Promise<HostRuntime> {
     token: credentials.token,
     device: deviceInfo,
     autoReconnect: true,
+    ...(relayAuth ? { relayAuth } : {}),
   })
   runtimes.set(hostId, runtime)
 
@@ -148,6 +152,17 @@ function ensureEventStream(hostId: string, runtime?: HostRuntime): HostEventStre
   stream.start()
   eventStreams.set(hostId, stream)
   return stream
+}
+
+async function relayAuthFor(transports: Transport[]): Promise<RelayAuthResolver | undefined> {
+  const entries = new Map<string, { subjectId: string; secret: string }>()
+  for (const transport of transports) {
+    if (transport.kind !== "relay") continue
+    const access = await loadRelayAccess(transport.url)
+    if (access) entries.set(normalizeRelayUrl(transport.url), { subjectId: access.subjectId, secret: access.secret })
+  }
+  if (entries.size === 0) return undefined
+  return (url) => entries.get(normalizeRelayUrl(url))
 }
 
 function transportKind(transports: Transport[], activeCandidate: string | undefined): "lan" | "relay" | "custom" | undefined {

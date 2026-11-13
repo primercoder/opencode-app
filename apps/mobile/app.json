@@ -21,7 +21,8 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#EAF3FF"
       },
-      "versionCode": 2
+      "versionCode": 2,
+      "softwareKeyboardLayoutMode": "resize"
     },
     "plugins": [
       "expo-router",

@@ -93,6 +93,13 @@ export type HostCredentials = {
   token: string
 }
 
+export type RelayAuth = {
+  subjectId: string
+  secret: string
+}
+
+export type RelayAuthResolver = (relayUrl: string) => RelayAuth | undefined
+
 export type HttpResponse = {
   status: number
   headers: Record<string, string>
@@ -130,6 +137,7 @@ export type HostRuntimeOptions = {
   candidates: string[]
   deviceId?: string
   token?: string
+  relayAuth?: RelayAuthResolver
   pairCode?: string
   device?: { name: string; platform: string; appVersion: string }
   autoReconnect?: boolean
@@ -186,6 +194,10 @@ export class HostRuntime {
   private readonly socketFactory: SocketFactory
 
   private pairCode: string | undefined
+  private readonly relayAuth: RelayAuthResolver | undefined
+  private relayWaiter:
+    | { resolve(): void; reject(error: HostError): void; timer: ReturnType<typeof setTimeout> }
+    | undefined
   private socket: RuntimeSocket | undefined
   private noise: ReturnType<typeof createNoiseInitiator> | undefined
   private sendCipher: CipherState | undefined
@@ -212,6 +224,7 @@ export class HostRuntime {
     this.candidates = options.candidates.filter((candidate) => candidate.length > 0)
     this.publicKey = typeof options.hostPublicKey === "string" ? base64UrlDecode(options.hostPublicKey) : options.hostPublicKey
     this.pairCode = options.pairCode
+    this.relayAuth = options.relayAuth
     this.autoReconnect = options.autoReconnect ?? true
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this.handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
@@ -236,6 +249,7 @@ export class HostRuntime {
       device?: { name: string; platform: string; appVersion: string }
       autoReconnect?: boolean
       socketFactory?: SocketFactory
+      relayAuth?: RelayAuthResolver
     } = {},
   ): HostRuntime {
     return new HostRuntime({
@@ -246,6 +260,7 @@ export class HostRuntime {
       ...(options.device ? { device: options.device } : {}),
       ...(options.autoReconnect !== undefined ? { autoReconnect: options.autoReconnect } : {}),
       ...(options.socketFactory ? { socketFactory: options.socketFactory } : {}),
+      ...(options.relayAuth ? { relayAuth: options.relayAuth } : {}),
     })
   }
 
@@ -401,8 +416,9 @@ export class HostRuntime {
     throw failure
   }
 
-  private async connectCandidate(url: string): Promise<HostSession> {
-    const socket = this.socketFactory(url)
+  private async connectCandidate(candidate: string): Promise<HostSession> {
+    const target = parseCandidate(candidate)
+    const socket = this.socketFactory(target.url)
     this.socket = socket
     socket.binaryType = "arraybuffer"
     this.sendCipher = undefined
@@ -411,6 +427,7 @@ export class HostRuntime {
     this.handshakeQueue.length = 0
     this.handshakeWaiter = undefined
     this.session = undefined
+    this.relayWaiter = undefined
 
     await waitForOpen(socket, this.connectTimeoutMs)
     if (this.socket !== socket) throw new HostError("network", "connection was cancelled")
@@ -421,13 +438,18 @@ export class HostRuntime {
     }
     socket.onerror = () => {
       if (this.socket !== socket) return
-      this.handleSocketClosed(new HostError("network", `connection to ${url} failed`))
+      this.handleSocketClosed(new HostError("network", `connection to ${target.url} failed`))
     }
     socket.onclose = (event) => {
       if (this.socket !== socket) return
       this.handleSocketClosed(
         new HostError("network", event.reason || "host disconnected", event.code !== undefined ? { status: event.code } : undefined),
       )
+    }
+
+    if (target.relay) {
+      this.setState("authenticating")
+      await this.authenticateRelay(target.url, target.relay.room)
     }
 
     this.setState("handshaking")
@@ -483,6 +505,67 @@ export class HostRuntime {
     return session
   }
 
+  private authenticateRelay(relayUrl: string, room: string): Promise<void> {
+    const credentials = this.relayAuth?.(relayUrl)
+    if (!credentials) {
+      return Promise.reject(
+        new HostError("auth", "这台手机还没有该中继的访问权限，请先登记中继邀请", { code: "RELAY_SUBJECT_MISSING" }),
+      )
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.relayWaiter = undefined
+        reject(new HostError("timeout", "relay authentication timed out", { code: "RELAY_TIMEOUT" }))
+      }, this.handshakeTimeoutMs)
+      this.relayWaiter = {
+        resolve: () => {
+          clearTimeout(timer)
+          this.relayWaiter = undefined
+          resolve()
+        },
+        reject: (error) => {
+          clearTimeout(timer)
+          this.relayWaiter = undefined
+          reject(error)
+        },
+        timer,
+      }
+      this.sendText(
+        JSON.stringify({
+          t: "relay.hello",
+          v: 2,
+          kind: "client",
+          subjectId: credentials.subjectId,
+          secret: credentials.secret,
+          room,
+        }),
+      )
+    })
+  }
+
+  private handleRelayControl(text: string): void {
+    const waiter = this.relayWaiter
+    if (!waiter) return
+    let value: unknown
+    try {
+      value = JSON.parse(text)
+    } catch {
+      return
+    }
+    if (!isRecord(value)) return
+    if (value.t === "relay.error") {
+      waiter.reject(
+        new HostError("auth", stringValue(value.message) || "relay authentication failed", {
+          code: stringValue(value.code) || "RELAY_AUTH_FAILED",
+        }),
+      )
+      return
+    }
+    if (value.t === "relay.welcome") {
+      waiter.resolve()
+    }
+  }
+
   private acceptHandshake(text: string): void {
     if (isRelayControl(text)) return
     const waiter = this.handshakeWaiter
@@ -516,6 +599,10 @@ export class HostRuntime {
   }
 
   private async handleWire(data: unknown): Promise<void> {
+    if (this.relayWaiter) {
+      if (typeof data === "string") this.handleRelayControl(data)
+      return
+    }
     if (typeof data === "string") {
       if (this.receiveCipher) {
         this.protocolFailure("text frames are not allowed after the handshake")
@@ -872,6 +959,12 @@ export class HostRuntime {
     const socket = this.socket
     this.socket = undefined
     this.stopHeartbeat()
+    if (this.relayWaiter) {
+      const waiter = this.relayWaiter
+      this.relayWaiter = undefined
+      clearTimeout(waiter.timer)
+      waiter.reject(new HostError("network", "relay connection closed"))
+    }
     if (!socket) return
     socket.onopen = null
     socket.onerror = null
@@ -935,12 +1028,26 @@ export function candidateUrls(transports: Transport[]): string[] {
 
 function candidateUrl(transport: Transport): string {
   if (transport.kind !== "relay") return transport.url
+  // The relay URL itself stays clean; the descriptor carries the room so the
+  // runtime can run first-frame relay authentication before Noise.
   const url = new URL(transport.url)
+  url.searchParams.set("relay", "1")
   url.searchParams.set("room", transport.room)
-  url.searchParams.set("role", "client")
-  url.searchParams.set("v", "1")
-  url.searchParams.set("token", transport.clientToken)
   return url.toString()
+}
+
+function parseCandidate(candidate: string): { url: string; relay?: { room: string } } {
+  let url: URL
+  try {
+    url = new URL(candidate)
+  } catch {
+    return { url: candidate }
+  }
+  if (url.searchParams.get("relay") !== "1") return { url: candidate }
+  const room = url.searchParams.get("room") ?? ""
+  url.searchParams.delete("relay")
+  url.searchParams.delete("room")
+  return { url: url.toString(), relay: { room } }
 }
 
 function waitForOpen(socket: RuntimeSocket, timeoutMs: number): Promise<void> {

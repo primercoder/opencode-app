@@ -10,6 +10,18 @@ export type SessionGroup = {
   updatedAt: number
 }
 
+type SessionIndexCache = {
+  sessions: SessionInfo[]
+  projects: ProjectInfo[]
+  loadedAt: number
+}
+
+const indexCache = new Map<string, SessionIndexCache>()
+
+export function invalidateSessionIndex(hostId: string): void {
+  indexCache.delete(hostId)
+}
+
 export function useSessionIndex(hostId: string | undefined, enabled: boolean) {
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null)
   const [projects, setProjects] = useState<ProjectInfo[]>([])
@@ -21,7 +33,16 @@ export function useSessionIndex(hostId: string | undefined, enabled: boolean) {
   const load = useCallback(
     async (options: { silent?: boolean; hard?: boolean } = {}) => {
       if (!hostId) return
-      if (options.hard) loaded.current = false
+      if (options.hard) {
+        loaded.current = false
+        indexCache.delete(hostId)
+      }
+      const cached = indexCache.get(hostId)
+      if (cached) {
+        setSessions(cached.sessions)
+        setProjects(cached.projects)
+        loaded.current = true
+      }
       if (!options.silent) setLoading(!loaded.current)
       if (options.hard) setRefreshing(true)
       setError(null)
@@ -34,6 +55,7 @@ export function useSessionIndex(hostId: string | undefined, enabled: boolean) {
         ])
         setSessions(page.data)
         setProjects(projectList)
+        indexCache.set(hostId, { sessions: page.data, projects: projectList, loadedAt: Date.now() })
         loaded.current = true
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "failed to load sessions")

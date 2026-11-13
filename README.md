@@ -10,11 +10,11 @@ P0 foundation and the first encrypted vertical slice are in place:
 
 - `packages/protocol`: OCRP frames, pairing offers, Noise NK, protected records, tests.
 - `apps/host`: opencode discovery, device pairing/auth, LAN WebSocket server, HTTP/SSE proxy, relay host client.
-- `apps/relay`: Go WebSocket relay with rooms, bearer/query tokens, host/client forwarding and backpressure.
-- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, QR/paste pairing (including short HTTP pairing links), project/session drawer, Markdown chat with collapsible tools and a live running state, a bottom session-settings sheet (agent, model, MCP, dictation engine), diff viewer with paging, read-only review with line comments, general settings (theme, language, notifications, voice models), and hybrid voice dictation (phone whisper model / host SenseVoice / system recognizer).
+- `apps/relay`: Go WebSocket relay with per-room forwarding, first-frame subject authentication, one-time invites, BoltDB persistence and an admin API.
+- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, QR/paste pairing (including short HTTP pairing links), project/session drawer, Markdown chat with collapsible tools and a live running state, a single workspace with a slide-in session drawer, a bottom session-settings sheet (agent, provider/model tree, reasoning depth, MCP, skills, dictation engine), diff viewer with paging, read-only review with line comments, general settings (theme, language, voice models, relay access), and hybrid voice dictation (phone whisper model / host SenseVoice / system recognizer).
 - `apps/host`: also runs local SenseVoice speech recognition through sherpa-onnx; models are downloaded or imported by the user, never bundled.
 
-Not implemented yet: notifications, background service, offline cache, image/file preview rendering.
+Not implemented yet: background service, offline cache, image/file preview rendering.
 
 ## Layout
 
@@ -81,21 +81,64 @@ link is printed below it for pasting. A running host can issue another code with
 ./ocremote pair --read-only
 ```
 
-Relay is a separate mode and is used only when requested:
+Relay is a separate mode and is used only when requested. Relay v2 authenticates
+the WebSocket with a first-frame hello (no token in the URL), stores invites and
+subjects in BoltDB, and lets any enrolled client subject join any host room:
+
+```bash
+# zero-argument default: wss on :8443, local CA/cert generated in ./data,
+# and a one-time host invite printed on first run
+apps/relay/ocremote-relay
+
+# optional overrides
+apps/relay/ocremote-relay serve --data-dir ./relay-data --listen :8443 \
+  --public-url wss://relay.example/ws
+
+# issue another host invite (for a new host) or manage subjects
+apps/relay/ocremote-relay admin --data-dir ./relay-data add-host --name office
+apps/relay/ocremote-relay admin --data-dir ./relay-data subjects|invites|rooms
+apps/relay/ocremote-relay admin --data-dir ./relay-data revoke <subject-id>
+```
+
+The first run creates `<data-dir>/tls/ca.crt`, `relay.crt` and `relay.key`.
+Install that CA in the Android system trust store once; the release APK uses the
+system roots:
+
+```bash
+./scripts/install-android-ca.sh ./data/tls/ca.crt
+```
+
+Pass `--tls-cert/--tls-key` to use an existing certificate instead, or
+`--no-tls` for a local plain-ws test. The server certificate covers localhost,
+the machine hostname and all local addresses at creation time.
+
+Enroll the host with its one-time host invite and trust the relay CA:
 
 ```bash
 ./ocremote start --listen 0.0.0.0:8787 --pair \
-  --relay ws://127.0.0.1:26379/ws \
-  --relay-secret dev-secret
+  --relay-link 'ocremote-relay://enroll#...' \
+  --relay-ca ./data/tls/ca.crt
 ```
 
-The pairing QR then offers direct first and relay second. A saved room is never
-activated implicitly: starting without `--relay` ignores it. Rooms are stored in
-`~/.config/ocremote/config.json`; pass `--relay-new-room` for a fresh room.
-Relay rooms are in-memory, so a relay restart loses them. When
-`RELAY_REGISTRATION_SECRET` (or `--relay-secret`) is available, the host
-re-registers the same room and tokens before reconnecting, and paired clients
-recover without re-pairing.
+When it connects, the relay gives the host a fresh one-time phone link. The
+host puts that link into its pairing QR/link, so a phone that scans the code
+enrolls with the relay automatically; there is no admin-issued client invite to
+copy. The subject secret is kept in the Android keystore and reused for future
+connections. A server-issued phone invite is single-use and bound to that
+host's room; generating a new pairing code requests a new one. A saved relay is
+never activated implicitly: starting without `--relay-link` or a saved relay
+subject ignores it.
+
+Development TLS (`relay.ocremote.test`, loopback, `10.0.2.2` and the LAN IP in
+the SAN) is still available for the QA build:
+
+```bash
+./scripts/gen-dev-tls.sh
+apps/relay/ocremote-relay serve --data-dir ./relay-data \
+  --tls-cert deploy/tls/relay.crt --tls-key deploy/tls/relay.key
+# QA builds trust deploy/tls/ca.crt via src/qa/res; release builds use the
+# system trust store, so install the CA produced by the relay there.
+```
 
 Relay development network:
 

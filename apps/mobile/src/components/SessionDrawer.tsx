@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Animated, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
+import { Animated, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Icon } from "@/components/Icon"
 import { IconButton } from "@/components/ui"
@@ -18,7 +18,8 @@ export function SessionDrawer(props: {
   onClose: () => void
   onSelect: (session: SessionInfo) => void
   onNewSession: () => void
-  onHosts: () => void
+  onSettings?: () => void
+  statusLabel?: string
 }) {
   const { colors } = useTheme()
   const t = useT()
@@ -36,13 +37,25 @@ export function SessionDrawer(props: {
       setMounted(true)
       setQuery("")
       Animated.parallel([
-        Animated.timing(slide, { toValue: 0, duration: 220, useNativeDriver: true }),
-        Animated.timing(fade, { toValue: 1, duration: 180, useNativeDriver: true }),
+        Animated.timing(slide, {
+          toValue: 0,
+          duration: 120,
+          easing: Easing.out(Easing.cubic),
+          isInteraction: false,
+          useNativeDriver: true,
+        }),
+        Animated.timing(fade, { toValue: 1, duration: 90, useNativeDriver: true }),
       ]).start()
     } else {
       Animated.parallel([
-        Animated.timing(slide, { toValue: -360, duration: 180, useNativeDriver: true }),
-        Animated.timing(fade, { toValue: 0, duration: 160, useNativeDriver: true }),
+        Animated.timing(slide, {
+          toValue: -360,
+          duration: 100,
+          easing: Easing.in(Easing.cubic),
+          isInteraction: false,
+          useNativeDriver: true,
+        }),
+        Animated.timing(fade, { toValue: 0, duration: 80, useNativeDriver: true }),
       ]).start(({ finished }) => {
         if (finished) setMounted(false)
       })
@@ -75,6 +88,8 @@ export function SessionDrawer(props: {
         <Pressable style={StyleSheet.absoluteFill} onPress={props.onClose} />
       </Animated.View>
       <Animated.View
+        renderToHardwareTextureAndroid
+        shouldRasterizeIOS
         style={{
           position: "absolute",
           left: 0,
@@ -95,39 +110,16 @@ export function SessionDrawer(props: {
             <Text style={{ fontSize: 18, fontWeight: "700", color: colors.text }} numberOfLines={1}>
               {props.hostName}
             </Text>
-            <Text style={{ fontSize: 11.5, color: colors.faint, marginTop: 2 }}>{t("encrypted")}</Text>
+            <Text style={{ fontSize: 11.5, color: colors.faint, marginTop: 2 }}>
+              {props.statusLabel ?? t("connected")}
+            </Text>
           </View>
           <IconButton label={t("close")} onPress={props.onClose}>
             <Icon name="close" size={20} color={colors.muted} />
           </IconButton>
         </View>
 
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => {
-            props.onClose()
-            props.onHosts()
-          }}
-          style={({ pressed }) => [
-            {
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 10,
-              marginHorizontal: 12,
-              paddingHorizontal: 12,
-              paddingVertical: 11,
-              borderRadius: 12,
-              backgroundColor: colors.surface,
-            },
-            pressed && { opacity: 0.7 },
-          ]}
-        >
-          <Icon name="server" size={18} color={colors.muted} />
-          <Text style={{ flex: 1, fontSize: 14, fontWeight: "500", color: colors.text }}>{t("hostList")}</Text>
-          <Icon name="chevronRight" size={16} color={colors.faint} />
-        </Pressable>
-
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 12, marginTop: 14 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 12, marginTop: 4 }}>
           <View
             style={{
               flex: 1,
@@ -165,12 +157,24 @@ export function SessionDrawer(props: {
           >
             <Icon name="plus" size={20} color={colors.accent} />
           </IconButton>
+          {props.onSettings ? (
+            <IconButton
+              label={t("hostSettings")}
+              onPress={() => {
+                props.onClose()
+                props.onSettings?.()
+              }}
+            >
+              <Icon name="settings" size={20} color={colors.muted} />
+            </IconButton>
+          ) : null}
         </View>
 
         <ScrollView
           style={{ flex: 1, marginTop: 8 }}
           contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 24 }}
           keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
         >
           {index.loading && index.sessions === null ? (
             <Text style={{ fontSize: 13, color: colors.faint, textAlign: "center", marginTop: 24 }}>{t("loadingSessions")}</Text>
@@ -251,11 +255,6 @@ export function SessionDrawer(props: {
             })
           )}
         </ScrollView>
-
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingTop: 8 }}>
-          <Icon name="lock" size={12} color={colors.faint} />
-          <Text style={{ fontSize: 10.5, color: colors.faint }}>{t("encrypted")}</Text>
-        </View>
       </Animated.View>
     </Modal>
   )
@@ -269,6 +268,7 @@ function SessionRow(props: {
   nested?: boolean
 }) {
   const { colors } = useTheme()
+  const t = useT()
   const busy = sessionBusy(props.session)
   return (
     <Pressable
@@ -305,9 +305,12 @@ function SessionRow(props: {
         >
           {props.session.title?.trim() || "—"}
         </Text>
-        <Text style={{ fontSize: 10.5, color: colors.faint, marginTop: 1 }} numberOfLines={1}>
-          {props.time}
-        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginTop: 1 }}>
+          {busy ? <Text style={{ fontSize: 10.5, color: colors.accent, fontWeight: "600" }}>{t("running")}</Text> : null}
+          <Text style={{ fontSize: 10.5, color: colors.faint }} numberOfLines={1}>
+            {props.time}
+          </Text>
+        </View>
       </View>
     </Pressable>
   )

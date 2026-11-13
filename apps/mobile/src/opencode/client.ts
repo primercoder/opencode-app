@@ -58,6 +58,24 @@ export type ModelInfo = {
   cost?: { input: number; output: number }[]
 }
 
+export type SkillInfo = {
+  id: string
+  name: string
+  description?: string
+  autoinvoke?: boolean
+  path?: string
+  content?: string
+}
+
+export type InboxItem = {
+  id: string
+  sessionID?: string
+  type: string
+  delivery?: "queue" | "steer"
+  time?: { created?: number | string }
+  payload?: { text?: string }
+}
+
 export type McpServer = {
   name: string
   title?: string
@@ -141,11 +159,16 @@ export type SessionMessage = {
   content?: AssistantContent[]
   time?: { created?: number | string; completed?: number | string }
   agent?: string
-  model?: unknown
+  model?: { id?: string; providerID?: string; variant?: string }
+  tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
   error?: { message?: string }
   outcome?: string
   description?: string
   name?: string
+  status?: string
+  command?: string
+  shellID?: string
+  metadata?: Record<string, unknown>
 }
 
 export type AssistantContent =
@@ -158,7 +181,6 @@ export type AssistantContent =
       state?: { status?: string; input?: unknown; error?: { message?: string } }
       time?: { created?: number | string; completed?: number | string }
     }
-  | { type: string; [key: string]: unknown }
 
 export class OpencodeClient {
   constructor(private readonly runtime: HostRuntime) {}
@@ -200,12 +222,35 @@ export class OpencodeClient {
     await this.raw<unknown>("POST", path)
   }
 
-  async listSessions(input: { limit?: number; order?: "asc" | "desc"; search?: string } = {}): Promise<Page<SessionInfo>> {
+  async listSessions(
+    input: { limit?: number; order?: "asc" | "desc"; search?: string; parentID?: string } = {},
+  ): Promise<Page<SessionInfo>> {
     const params = new URLSearchParams()
     params.set("limit", String(input.limit ?? 50))
     params.set("order", input.order ?? "desc")
     if (input.search) params.set("search", input.search)
+    if (input.parentID) params.set("parentID", input.parentID)
     return this.raw<Page<SessionInfo>>("GET", `/api/session?${params.toString()}`)
+  }
+
+  async listSkills(directory?: string): Promise<SkillInfo[]> {
+    const result = await this.raw<{ data: SkillInfo[] }>("GET", withDirectory("/api/skill", directory))
+    return result.data
+  }
+
+  async listInbox(sessionId: string): Promise<InboxItem[]> {
+    const result = await this.raw<{ data: InboxItem[] }>(
+      "GET",
+      `/api/session/${encodeURIComponent(sessionId)}/inbox`,
+    )
+    return result.data
+  }
+
+  async cancelInbox(sessionId: string, inboxId: string): Promise<void> {
+    await this.raw<unknown>(
+      "DELETE",
+      `/api/session/${encodeURIComponent(sessionId)}/inbox/${encodeURIComponent(inboxId)}`,
+    )
   }
 
   async createSession(input: { title?: string; agent?: string; location?: { directory: string } } = {}): Promise<SessionInfo> {
@@ -303,6 +348,7 @@ export class OpencodeClient {
     text: string
     files?: Array<{ uri: string; mime: string; name?: string }>
     metadata?: Record<string, unknown>
+    delivery?: "queue" | "steer"
   }): Promise<void> {
     const body = typeof input === "string" ? { text: input } : input
     await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, body)

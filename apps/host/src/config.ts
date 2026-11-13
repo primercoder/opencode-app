@@ -26,8 +26,15 @@ export type PendingPair = {
 export type RelayConfig = {
   url: string
   room: string
-  hostToken: string
-  clientToken: string
+  /** Long-lived relay subject returned by a one-time host invite. */
+  subjectId: string
+  secret: string
+  /**
+   * One-time phone invite last issued by the relay. Pairing offers prefer a
+   * fresh invite requested while connected, but this cached copy keeps
+   * "ocremote pair --relay" usable while the host is stopped.
+   */
+  clientInvite?: string
 }
 
 export type HostConfig = {

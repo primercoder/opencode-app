@@ -57,6 +57,23 @@ describe("pairing offers", () => {
     expect(parsed.fingerprint).toBe(fingerprintOfPublicKey(publicKey))
   })
 
+  test("carries an optional relay phone invite", () => {
+    const invite = "ocremote-relay://enroll#demotoken"
+    const input = offer({
+      transports: [
+        {
+          kind: "relay",
+          url: "wss://relay.example/ws",
+          room: "room_demo",
+          priority: 0,
+          invite,
+        },
+      ],
+    })
+    const parsed = parsePairingOffer(encodePairingOffer(input, publicKey))
+    expect(parsed.transports[0]).toMatchObject({ kind: "relay", room: "room_demo", invite })
+  })
+
   test("rejects a missing fragment", () => {
     expect(() => parsePairingOffer("ocremote://pair")).toThrow()
   })
