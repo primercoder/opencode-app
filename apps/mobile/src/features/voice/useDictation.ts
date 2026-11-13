@@ -4,6 +4,7 @@ import {
   useSpeechRecognitionEvent,
   type ExpoSpeechRecognitionErrorCode,
 } from "expo-speech-recognition"
+import { useT } from "@/i18n"
 
 export function useDictation(onFinal: (text: string) => void): {
   listening: boolean
@@ -12,6 +13,7 @@ export function useDictation(onFinal: (text: string) => void): {
   stop: () => void
   clearError: () => void
 } {
+  const t = useT()
   const [listening, setListening] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -24,7 +26,7 @@ export function useDictation(onFinal: (text: string) => void): {
   })
   useSpeechRecognitionEvent("error", (event) => {
     setListening(false)
-    setError(errorMessage(event.error))
+    setError(errorMessage(event.error, t))
   })
 
   const start = useCallback(async (language = "zh-CN") => {
@@ -32,7 +34,7 @@ export function useDictation(onFinal: (text: string) => void): {
     try {
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync()
       if (!permission.granted) {
-        setError("需要麦克风权限才能听写")
+        setError(t("micPermission"))
         return
       }
       ExpoSpeechRecognitionModule.start({
@@ -43,9 +45,9 @@ export function useDictation(onFinal: (text: string) => void): {
         maxAlternatives: 1,
       })
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法启动语音识别")
+      setError(cause instanceof Error ? cause.message : t("recognitionFailed"))
     }
-  }, [])
+  }, [t])
 
   const stop = useCallback(() => {
     ExpoSpeechRecognitionModule.stop()
@@ -56,22 +58,22 @@ export function useDictation(onFinal: (text: string) => void): {
   return { listening, error, start, stop, clearError }
 }
 
-function errorMessage(code: ExpoSpeechRecognitionErrorCode): string {
+function errorMessage(code: ExpoSpeechRecognitionErrorCode, t: ReturnType<typeof useT>): string {
   switch (code) {
     case "not-allowed":
-      return "麦克风或语音识别权限被拒绝"
+      return t("micDenied")
     case "no-speech":
     case "speech-timeout":
-      return "没有听清，请重试"
+      return t("noSpeechHeard")
     case "network":
-      return "系统语音识别需要网络，或改用主机识别"
+      return t("systemNeedsNetwork")
     case "language-not-supported":
-      return "系统没有安装中文语音包"
+      return t("systemNoLanguage")
     case "busy":
-      return "语音识别正忙，请稍后再试"
+      return t("systemBusy")
     case "service-not-allowed":
-      return "系统语音识别服务不可用"
+      return t("systemUnavailable")
     default:
-      return "语音识别失败，请重试"
+      return t("recognitionFailed")
   }
 }

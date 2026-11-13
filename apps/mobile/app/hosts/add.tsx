@@ -1,50 +1,64 @@
 import { parsePairingOffer, type PairingOffer } from "@ocremote/protocol"
 import { CameraView, useCameraPermissions } from "expo-camera"
 import { router, useLocalSearchParams } from "expo-router"
-import { useEffect, useState } from "react"
-import { KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native"
+import { useEffect, useRef, useState } from "react"
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Linking,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { Button } from "@/components/Button"
+import { Icon } from "@/components/Icon"
+import { Button, Card, Divider, IconButton, Segmented } from "@/components/ui"
+import { useT } from "@/i18n"
 import { pairWithOffer, type PairingStage } from "@/services/pairing"
 import { HostError } from "@/transport/hostRuntime"
-import { colors, radius, spacing } from "@/theme"
-
-const stageLabels: Record<PairingStage, string> = {
-  connecting: "正在连接主机…",
-  handshaking: "正在建立加密通道…",
-  authenticating: "正在验证主机…",
-  saving: "正在保存设备…",
-}
+import { useTheme, useThemedStyles, type Palette } from "@/theme"
 
 export default function AddHostScreen() {
   const insets = useSafeAreaInsets()
+  const { colors } = useTheme()
+  const t = useT()
+  const styles = useThemedStyles(addStyles)
   const params = useLocalSearchParams<{ url?: string }>()
   const urlParam = typeof params.url === "string" ? params.url : ""
   const [url, setUrl] = useState(urlParam)
   const [offer, setOffer] = useState<PairingOffer | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [stage, setStage] = useState<PairingStage | null>(null)
-  const [mode, setMode] = useState<"scan" | "paste">("paste")
+  const [mode, setMode] = useState<"scan" | "paste">("scan")
   const [scanLocked, setScanLocked] = useState(false)
+  const [resolving, setResolving] = useState(false)
   const [permission, requestPermission] = useCameraPermissions()
-
-  const busy = stage !== null
+  const parsedParam = useRef(false)
+  const busy = stage !== null || resolving
 
   useEffect(() => {
-    if (!urlParam) return
+    if (!urlParam || parsedParam.current) return
+    parsedParam.current = true
     setUrl(urlParam)
-    parseText(urlParam)
+    void parseText(urlParam)
   }, [urlParam])
 
-  const parse = () => parseText(url)
-
-  const parseText = (value: string) => {
+  const parseText = async (value: string) => {
+    setResolving(true)
+    setError(null)
     try {
-      setOffer(parsePairingOffer(value))
-      setError(null)
+      const resolved = await resolveInput(value)
+      setOffer(parsePairingOffer(resolved))
+      setMode("scan")
     } catch (cause) {
       setOffer(null)
-      setError(cause instanceof Error ? cause.message : "无效的配对链接")
+      setError(cause instanceof Error ? cause.message : t("pairingFailed"))
+    } finally {
+      setResolving(false)
     }
   }
 
@@ -56,140 +70,186 @@ export default function AddHostScreen() {
       router.replace({ pathname: "/hosts/[hostId]", params: { hostId: host.id } })
     } catch (cause) {
       const failure = cause instanceof HostError ? cause : null
-      setError(pairingMessage(failure))
+      setError(pairingMessage(failure, t))
     } finally {
       setStage(null)
     }
   }
 
+  const stageLabel = stage
+    ? { connecting: t("connecting"), handshaking: t("connecting"), authenticating: t("connecting"), saving: t("pairingNow") }[stage]
+    : t("pairingNow")
+
   return (
     <KeyboardAvoidingView
-      style={[styles.screen, { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + spacing.lg }]}
+      style={[styles.screen, { paddingTop: insets.top }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <View style={styles.header}>
-        <Button label="返回" variant="outline" onPress={() => router.back()} disabled={busy} />
-        <Text style={styles.title}>添加主机</Text>
-        <View style={styles.spacer} />
+        <IconButton label={t("back")} onPress={() => router.back()} disabled={stage !== null}>
+          <Icon name="back" size={22} color={colors.text} />
+        </IconButton>
+        <Text style={styles.title}>{t("addHostTitle")}</Text>
+        <View style={{ width: 40 }} />
       </View>
 
-      <View style={styles.tabs}>
-        <Tab label="扫码" active={mode === "scan"} onPress={() => setMode("scan")} disabled={busy} />
-        <Tab label="粘贴链接" active={mode === "paste"} onPress={() => setMode("paste")} disabled={busy} />
-      </View>
+      <ScrollView
+        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 40 }]}
+        keyboardShouldPersistTaps="handled"
+      >
+        <Segmented
+          value={mode}
+          options={[
+            { value: "scan", label: t("scanQr") },
+            { value: "paste", label: t("pasteLink") },
+          ]}
+          onChange={(value) => {
+            setMode(value)
+            setError(null)
+          }}
+        />
 
-      {mode === "scan" && !offer ? (
-        <View style={styles.scannerWrap}>
-          {permission?.granted ? (
-            <CameraView
-              barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-              facing="back"
-              onBarcodeScanned={
-                scanLocked
-                  ? undefined
-                  : ({ data }) => {
-                      setScanLocked(true)
-                      setUrl(data)
-                      parseText(data)
-                      setMode("paste")
-                      setTimeout(() => setScanLocked(false), 500)
-                    }
-              }
-              style={styles.scanner}
-            />
-          ) : (
-            <View style={styles.permissionCard}>
-              <Text style={styles.permissionTitle}>需要相机权限</Text>
-              <Text style={styles.permissionBody}>用相机扫描电脑上的配对二维码。</Text>
-              {permission?.canAskAgain === false ? (
-                <Button label="打开系统设置" variant="outline" onPress={() => void Linking.openSettings()} />
-              ) : (
-                <Button label="允许使用相机" onPress={() => void requestPermission()} />
-              )}
-            </View>
-          )}
-          <Text style={styles.hint}>将电脑上 `ocremote pair` 显示的二维码放入取景框。</Text>
-        </View>
-      ) : null}
-
-      {mode === "paste" ? (
-        <>
-          <Text style={styles.label}>配对链接</Text>
-          <TextInput
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!busy}
-            multiline
-            onChangeText={(value) => {
-              setUrl(value)
-              setOffer(null)
-              setError(null)
-            }}
-            placeholder="ocremote://pair#..."
-            placeholderTextColor={colors.faint}
-            style={styles.input}
-            value={url}
-          />
-          <Text style={styles.hint}>
-            在电脑上运行 `ocremote pair --lan`，扫码或粘贴链接。链接一次性有效，过期后重新生成。
-          </Text>
-        </>
-      ) : null}
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      {offer ? (
-        <View style={styles.preview}>
-          <View style={styles.previewHeader}>
-            <Text style={styles.previewTitle}>{offer.name}</Text>
-            <Text style={styles.badge}>{offer.transports.length} 条线路</Text>
+        {mode === "scan" ? (
+          <View style={{ marginTop: 14, gap: 10 }}>
+            {permission?.granted ? (
+              <View style={styles.scannerWrap}>
+                <CameraView
+                  barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                  facing="back"
+                  onBarcodeScanned={
+                    scanLocked || offer || stage !== null
+                      ? undefined
+                      : ({ data }) => {
+                          setScanLocked(true)
+                          setUrl(data)
+                          void parseText(data).finally(() => setTimeout(() => setScanLocked(false), 800))
+                        }
+                  }
+                  style={styles.scanner}
+                />
+                {!offer ? (
+                  <View style={styles.scanOverlay} pointerEvents="none">
+                    <View style={styles.scanFrame} />
+                  </View>
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setOffer(null)
+                      setScanLocked(false)
+                    }}
+                    style={styles.rescan}
+                  >
+                    <Icon name="refresh" size={14} color={colors.accent} />
+                    <Text style={{ fontSize: 12.5, color: colors.accent, fontWeight: "600" }}>{t("rescan")}</Text>
+                  </Pressable>
+                )}
+                {resolving ? (
+                  <View style={styles.resolving}>
+                    <ActivityIndicator color="#FFFFFF" />
+                  </View>
+                ) : null}
+              </View>
+            ) : (
+              <Card style={{ padding: 20, alignItems: "center", gap: 8 }}>
+                <Icon name="eye" size={26} color={colors.faint} />
+                <Text style={{ fontSize: 15.5, fontWeight: "600", color: colors.text }}>{t("cameraPermission")}</Text>
+                <Text style={{ fontSize: 12.5, color: colors.muted, textAlign: "center" }}>{t("cameraBody")}</Text>
+                {permission?.canAskAgain === false ? (
+                  <Button label={t("openSystemSettings")} size="sm" variant="outline" onPress={() => void Linking.openSettings()} />
+                ) : (
+                  <Button label={t("allowCamera")} size="sm" onPress={() => void requestPermission()} />
+                )}
+              </Card>
+            )}
+            <Text style={styles.hint}>{t("scanHint")}</Text>
           </View>
-          <Text style={styles.previewLabel}>主机指纹</Text>
-          <Text style={styles.fingerprint}>{formatFingerprint(offer.fingerprint)}</Text>
-          <Text style={styles.previewMeta}>请与电脑上显示的指纹核对。</Text>
-          <Text style={styles.previewMeta}>配对码 {offer.pairCode} · 有效期至 {new Date(offer.expiresAt).toLocaleTimeString()}</Text>
-          <Text style={styles.security}>中继只能转发密文，无法读取你的代码或对话。</Text>
-        </View>
-      ) : null}
+        ) : (
+          <View style={{ marginTop: 14, gap: 8 }}>
+            <Text style={styles.label}>{t("pairingLink")}</Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!busy}
+              multiline
+              onChangeText={(value) => {
+                setUrl(value)
+                setOffer(null)
+                setError(null)
+              }}
+              placeholder="ocremote://pair#…"
+              placeholderTextColor={colors.faint}
+              style={styles.input}
+              value={url}
+            />
+            <Text style={styles.hint}>{t("pasteHint")}</Text>
+            <Button label={t("parseLink")} size="sm" variant="outline" disabled={busy || !url.trim()} onPress={() => void parseText(url)} />
+          </View>
+        )}
 
-      {stage ? (
-        <View style={styles.stage}>
-          <Text style={styles.stageDot}>●</Text>
-          <Text style={styles.stageText}>{stageLabels[stage]}</Text>
-        </View>
-      ) : null}
+        {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <View style={styles.actions}>
         {offer ? (
-          <Button label={busy ? "配对中…" : "连接并配对"} onPress={() => void pair()} disabled={busy} />
-        ) : mode === "paste" ? (
-          <Button label="解析链接" onPress={parse} disabled={busy || url.trim().length === 0} />
+          <Card style={{ marginTop: 14, padding: 16, gap: 8 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Text style={{ flex: 1, fontSize: 16.5, fontWeight: "700", color: colors.text }} numberOfLines={1}>
+                {offer.name}
+              </Text>
+              <Text style={{ fontSize: 11.5, color: colors.accent, fontWeight: "600" }}>
+                {t("routes", { n: offer.transports.length })}
+              </Text>
+            </View>
+            <Divider inset={0} />
+            <Text style={styles.label}>{t("fingerprint")}</Text>
+            <Text style={styles.fingerprint}>{formatFingerprint(offer.fingerprint)}</Text>
+            <Text style={styles.hint}>{t("verifyFingerprint")}</Text>
+            <Text style={styles.hint}>
+              {t("pairCode")} {offer.pairCode} · {t("validUntil", { time: new Date(offer.expiresAt).toLocaleTimeString() })}
+            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
+              <Icon name="lock" size={12} color={colors.faint} />
+              <Text style={styles.hint}>{t("relayEncrypted")}</Text>
+            </View>
+          </Card>
         ) : null}
-      </View>
+
+        {stage ? (
+          <View style={styles.stage}>
+            <ActivityIndicator size="small" color={colors.accent} />
+            <Text style={{ fontSize: 13, color: colors.text }}>{stageLabel}</Text>
+          </View>
+        ) : null}
+
+        {offer ? (
+          <View style={{ marginTop: 14 }}>
+            <Button label={busy ? t("pairingNow") : t("connectAndPair")} disabled={busy} onPress={() => void pair()} />
+          </View>
+        ) : null}
+      </ScrollView>
     </KeyboardAvoidingView>
   )
 }
 
-function Tab(props: { label: string; active: boolean; disabled: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      accessibilityRole="tab"
-      accessibilityState={{ selected: props.active }}
-      disabled={props.disabled}
-      onPress={props.onPress}
-      style={[styles.tab, props.active && styles.tabActive, props.disabled && styles.actionDisabled]}
-    >
-      <Text style={[styles.tabText, props.active && styles.tabTextActive]}>{props.label}</Text>
-    </Pressable>
-  )
+async function resolveInput(value: string): Promise<string> {
+  const trimmed = value.trim()
+  if (!/^https?:\/\//u.test(trimmed)) return trimmed
+  const response = await fetch(trimmed, { headers: { accept: "text/plain" } })
+  if (!response.ok) throw new Error(`pairing link returned HTTP ${response.status}`)
+  const text = (await response.text()).trim()
+  if (text.startsWith("ocremote://")) return text
+  try {
+    const payload = JSON.parse(text) as { offer?: unknown }
+    if (typeof payload.offer === "string") return payload.offer
+  } catch {
+    // not JSON
+  }
+  return text
 }
 
-function pairingMessage(error: HostError | null): string {
-  if (!error) return "配对失败，请重试"
-  if (error.code === "PAIR_CODE_INVALID") return "配对码无效或已过期，请在电脑上重新生成。"
-  if (error.kind === "auth") return `认证失败：${error.message}`
-  if (error.kind === "network" || error.kind === "timeout") return "无法连接主机，请确认手机与电脑在同一局域网，且主机已启动。"
-  if (error.kind === "protocol") return `协议错误：${error.message}`
+function pairingMessage(error: HostError | null, t: ReturnType<typeof useT>): string {
+  if (!error) return t("pairingFailed")
+  if (error.code === "PAIR_CODE_INVALID") return t("pairCodeInvalid")
+  if (error.kind === "network" || error.kind === "timeout") return t("cannotReachHost")
   return error.message
 }
 
@@ -197,79 +257,75 @@ function formatFingerprint(value: string): string {
   return value.toUpperCase().match(/.{1,4}/gu)?.join(" ") ?? value.toUpperCase()
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: spacing.lg },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.xl },
-  title: { fontSize: 20, fontWeight: "600", color: colors.text },
-  spacer: { width: 72 },
-  tabs: {
-    flexDirection: "row",
-    gap: spacing.xs,
-    padding: 3,
-    borderRadius: radius.full,
-    backgroundColor: colors.surface2,
-    marginBottom: spacing.lg,
-  },
-  tab: { flex: 1, alignItems: "center", paddingVertical: spacing.sm, borderRadius: radius.full },
-  tabActive: { backgroundColor: colors.bg },
-  tabText: { fontSize: 13, color: colors.muted, fontWeight: "500" },
-  tabTextActive: { color: colors.text, fontWeight: "600" },
-  actionDisabled: { opacity: 0.4 },
-  scannerWrap: { gap: spacing.sm },
-  scanner: { height: 280, borderRadius: radius.md, overflow: "hidden" },
-  permissionCard: {
-    height: 220,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: spacing.sm,
-    padding: spacing.lg,
-  },
-  permissionTitle: { fontSize: 16, fontWeight: "600", color: colors.text },
-  permissionBody: { fontSize: 13, color: colors.muted, textAlign: "center" },
-  label: { fontSize: 13, fontWeight: "500", color: colors.muted, marginBottom: spacing.sm },
-  input: {
-    minHeight: 104,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.text,
-    textAlignVertical: "top",
-  },
-  hint: { marginTop: spacing.sm, fontSize: 12, lineHeight: 18, color: colors.faint },
-  error: { marginTop: spacing.md, fontSize: 13, lineHeight: 19, color: colors.danger },
-  preview: {
-    marginTop: spacing.lg,
-    padding: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface2,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  previewHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.md },
-  previewTitle: { fontSize: 17, fontWeight: "600", color: colors.text },
-  badge: { fontSize: 12, color: colors.accent, fontWeight: "500" },
-  previewLabel: { fontSize: 12, color: colors.faint, marginBottom: 2 },
-  fingerprint: { fontSize: 18, fontWeight: "600", letterSpacing: 1.5, color: colors.text, marginBottom: spacing.sm },
-  previewMeta: { marginTop: 3, fontSize: 13, color: colors.muted },
-  security: { marginTop: spacing.md, fontSize: 12, lineHeight: 18, color: colors.faint },
-  stage: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    marginTop: spacing.lg,
-    padding: spacing.md,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surface,
-  },
-  stageDot: { color: colors.accent, fontSize: 12 },
-  stageText: { fontSize: 14, color: colors.text },
-  actions: { marginTop: spacing.lg, gap: spacing.sm },
-})
+const addStyles = (colors: Palette) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.bg },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 8,
+      paddingBottom: 8,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    title: { fontSize: 17, fontWeight: "700", color: colors.text },
+    content: { paddingHorizontal: 16, paddingTop: 14 },
+    scannerWrap: { borderRadius: 18, overflow: "hidden", backgroundColor: colors.surface2 },
+    scanner: { height: 300, width: "100%" },
+    scanOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center" },
+    scanFrame: {
+      width: 210,
+      height: 210,
+      borderRadius: 26,
+      borderWidth: 2,
+      borderColor: "rgba(255,255,255,0.9)",
+    },
+    rescan: {
+      position: "absolute",
+      bottom: 12,
+      alignSelf: "center",
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      backgroundColor: colors.bg,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      borderRadius: 999,
+    },
+    resolving: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: "rgba(0,0,0,0.35)",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    label: { fontSize: 11.5, fontWeight: "600", color: colors.faint },
+    input: {
+      minHeight: 96,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      borderRadius: 12,
+      backgroundColor: colors.surface,
+      padding: 12,
+      fontSize: 13,
+      lineHeight: 19,
+      color: colors.text,
+      textAlignVertical: "top",
+    },
+    hint: { fontSize: 11.5, lineHeight: 17, color: colors.faint },
+    error: { marginTop: 12, fontSize: 12.5, lineHeight: 18, color: colors.danger },
+    fingerprint: { fontSize: 18, fontWeight: "700", letterSpacing: 1.6, color: colors.text },
+    stage: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      marginTop: 14,
+      padding: 12,
+      borderRadius: 12,
+      backgroundColor: colors.surface,
+    },
+  })

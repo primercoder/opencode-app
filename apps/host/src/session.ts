@@ -33,12 +33,31 @@ export type SessionSocket = {
   close(code?: number, reason?: string): void
 }
 
+export type ClientInfo = {
+  id: number
+  deviceId?: string
+  name: string
+  platform: string
+  scope: DeviceScope
+  transport: "direct" | "relay"
+  remoteAddress?: string
+  connectedAt?: number
+  lastSeenAt?: number
+}
+
+export type ClientRegistry = {
+  register(info: Omit<ClientInfo, "id" | "connectedAt" | "lastSeenAt">): number
+  touch(id: number): void
+  unregister(id: number): void
+}
+
 export type HostContext = {
   identity: Identity
   config: HostConfig
   target: OpencodeTarget
   lanUrls: string[]
   asr: AsrService
+  clients: ClientRegistry
   saveConfig(): Promise<void>
   onAuthenticated?(deviceId: string): void
 }
@@ -49,6 +68,7 @@ export class ConnectionSession {
   private receiveCipher: CipherState | undefined
   private deviceId: string | undefined
   private scope: DeviceScope | undefined
+  private clientId: number | undefined
   private closed = false
   private readonly aborts = new Map<number, AbortController>()
   private readonly asrRequests = new Map<number, AsrRequest>()
@@ -57,6 +77,7 @@ export class ConnectionSession {
   constructor(
     private readonly ws: SessionSocket,
     private readonly ctx: HostContext,
+    private readonly transport: { transport: "direct" | "relay"; remoteAddress?: string },
   ) {}
 
   get handshakeComplete(): boolean {
@@ -117,12 +138,17 @@ export class ConnectionSession {
 
   close(): void {
     this.closed = true
+    if (this.clientId !== undefined) {
+      this.ctx.clients.unregister(this.clientId)
+      this.clientId = undefined
+    }
     this.asrRequests.clear()
     for (const controller of this.aborts.values()) controller.abort()
     this.aborts.clear()
   }
 
   private async handleControl(value: OcrpControlFrame): Promise<void> {
+    if (this.clientId !== undefined) this.ctx.clients.touch(this.clientId)
     switch (value.t) {
       case "hello":
         await this.handleHello(value)
@@ -183,6 +209,13 @@ export class ConnectionSession {
       await this.ctx.saveConfig()
       this.deviceId = created.device.id
       this.scope = created.device.scope
+      this.clientId = this.ctx.clients.register({
+        deviceId: created.device.id,
+        name: created.device.name,
+        platform: created.device.platform,
+        scope: created.device.scope,
+        ...this.transport,
+      })
       this.ctx.onAuthenticated?.(created.device.id)
       this.sendControl({
         t: "paired",
@@ -208,6 +241,13 @@ export class ConnectionSession {
     await this.ctx.saveConfig()
     this.deviceId = device.id
     this.scope = device.scope
+    this.clientId = this.ctx.clients.register({
+      deviceId: device.id,
+      name: device.name,
+      platform: device.platform,
+      scope: device.scope,
+      ...this.transport,
+    })
     this.ctx.onAuthenticated?.(device.id)
     this.sendControl({
       t: "welcome",

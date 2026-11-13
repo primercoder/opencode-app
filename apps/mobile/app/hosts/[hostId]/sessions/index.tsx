@@ -1,359 +1,366 @@
-import { router, useFocusEffect, useLocalSearchParams } from "expo-router"
-import { useCallback, useEffect, useRef, useState } from "react"
-import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
+import { router, useLocalSearchParams } from "expo-router"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { Button } from "@/components/Button"
-import {
-  OpencodeClient,
-  sessionBusy,
-  sessionUpdatedAt,
-  type ProjectInfo,
-  type SessionInfo,
-} from "@/opencode/client"
+import { BottomSheet } from "@/components/BottomSheet"
+import { Icon } from "@/components/Icon"
+import { SessionDrawer } from "@/components/SessionDrawer"
+import { Button, Card, EmptyState, IconButton } from "@/components/ui"
+import { useT } from "@/i18n"
+import { relativeTime } from "@/lib/time"
+import { basename, useSessionIndex } from "@/features/sessions/useSessionIndex"
+import { OpencodeClient, sessionBusy, sessionUpdatedAt, type ProjectInfo, type SessionInfo } from "@/opencode/client"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
+import { usePreferences } from "@/stores/preferences"
 import { ensureConnection } from "@/transport/runtimes"
 import { useForeground } from "@/lib/useForeground"
-import { colors, radius, spacing } from "@/theme"
+import { useTheme, useThemedStyles, type Palette } from "@/theme"
 
 export default function SessionsScreen() {
   const insets = useSafeAreaInsets()
   const params = useLocalSearchParams<{ hostId: string; new?: string }>()
   const hostId = params.hostId
+  const { colors } = useTheme()
+  const t = useT()
+  const language = usePreferences((state) => state.language)
+  const styles = useThemedStyles(sessionsStyles)
   const hydrate = useHosts((state) => state.hydrate)
   const hydrated = useHosts((state) => state.hydrated)
   const host = useHosts((state) => state.hosts.find((item) => item.id === hostId))
   const connection = useConnections((state) => (hostId ? state.byHost[hostId] : undefined))
-  const [sessions, setSessions] = useState<SessionInfo[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  const [search, setSearch] = useState("")
-  const [error, setError] = useState<string | null>(null)
-  const [pickerVisible, setPickerVisible] = useState(false)
+  const index = useSessionIndex(hostId, Boolean(hostId))
+  const [query, setQuery] = useState("")
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null)
-  const [projectsLoading, setProjectsLoading] = useState(false)
   const [projectError, setProjectError] = useState<string | null>(null)
-  const creating = useRef(false)
+  const [creating, setCreating] = useState(false)
   const newHandled = useRef(false)
+  const ready = connection?.status === "ready"
+  const readOnly = connection?.session?.device?.scope === "read"
 
   useEffect(() => {
-    if (!hydrated) {
-      void hydrate()
-      return
-    }
-    if (!host) return
-    void ensureConnection(host.id).catch(() => undefined)
-  }, [hydrated, host?.id, hydrate])
+    if (!hydrated) void hydrate()
+  }, [hydrated, hydrate])
 
-  const load = useCallback(async () => {
+  useEffect(() => {
     if (!hostId) return
-    setLoading(true)
-    setError(null)
-    try {
-      const runtime = await ensureConnection(hostId)
-      const page = await new OpencodeClient(runtime).listSessions({
-        limit: 50,
-        order: "desc",
-        ...(search.trim() ? { search: search.trim() } : {}),
-      })
-      setSessions(page.data)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "加载会话失败")
-    } finally {
-      setLoading(false)
-    }
-  }, [hostId, search])
-
-  useFocusEffect(
-    useCallback(() => {
-      if (connection?.status !== "ready") return
-      const timer = setTimeout(() => void load(), 300)
-      return () => clearTimeout(timer)
-    }, [connection?.status, load]),
-  )
+    void ensureConnection(hostId).catch(() => undefined)
+  }, [hostId])
 
   useForeground(
     useCallback(() => {
       void ensureConnection(hostId, { force: true })
-        .then(() => load())
+        .then(() => index.reload({ silent: true }))
         .catch(() => undefined)
-    }, [hostId, load]),
+    }, [hostId, index.reload]),
   )
 
   const openPicker = useCallback(async () => {
-    setPickerVisible(true)
+    setPickerOpen(true)
     setProjectError(null)
     if (projects) return
-    setProjectsLoading(true)
     try {
       const runtime = await ensureConnection(hostId)
       setProjects(await new OpencodeClient(runtime).listProjects())
     } catch (cause) {
-      setProjectError(cause instanceof Error ? cause.message : "加载项目失败")
-    } finally {
-      setProjectsLoading(false)
+      setProjectError(cause instanceof Error ? cause.message : t("error"))
     }
-  }, [hostId, projects])
-
-  const createSession = useCallback(
-    async (project: ProjectInfo) => {
-      if (!hostId || creating.current) return
-      creating.current = true
-      setProjectError(null)
-      try {
-        const runtime = await ensureConnection(hostId)
-        const session = await new OpencodeClient(runtime).createSession({
-          location: { directory: project.canonical },
-        })
-        setSessions((current) => [session, ...(current ?? []).filter((item) => item.id !== session.id)])
-        setPickerVisible(false)
-        router.push({
-          pathname: "/hosts/[hostId]/sessions/[sessionId]",
-          params: { hostId, sessionId: session.id },
-        })
-      } catch (cause) {
-        setProjectError(cause instanceof Error ? cause.message : "新建会话失败")
-      } finally {
-        creating.current = false
-      }
-    },
-    [hostId],
-  )
+  }, [hostId, projects, t])
 
   useEffect(() => {
-    if (params.new !== "1" || connection?.status !== "ready" || newHandled.current) return
+    if (params.new !== "1" || !ready || newHandled.current) return
     newHandled.current = true
     void openPicker()
-  }, [params.new, connection?.status, openPicker])
+  }, [params.new, ready, openPicker])
 
-  const refresh = async () => {
-    setRefreshing(true)
-    await load()
-    setRefreshing(false)
+  const createSession = async (project: ProjectInfo) => {
+    if (creating) return
+    setCreating(true)
+    setProjectError(null)
+    try {
+      const runtime = await ensureConnection(hostId)
+      const session = await new OpencodeClient(runtime).createSession({
+        location: { directory: project.canonical },
+      })
+      setPickerOpen(false)
+      await index.reload({ silent: true })
+      router.push({
+        pathname: "/hosts/[hostId]/sessions/[sessionId]",
+        params: { hostId, sessionId: session.id },
+      })
+    } catch (cause) {
+      setProjectError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setCreating(false)
+    }
   }
 
-  const ready = connection?.status === "ready"
-  const readOnly = connection?.session?.device?.scope === "read"
+  const value = query.trim().toLowerCase()
+  const groups = useMemo(() => {
+    if (!value) return index.groups
+    return index.groups
+      .map((group) => ({
+        ...group,
+        sessions: group.sessions.filter(
+          (session) =>
+            (session.title ?? "").toLowerCase().includes(value) ||
+            (session.location?.directory ?? "").toLowerCase().includes(value),
+        ),
+      }))
+      .filter((group) => group.sessions.length > 0)
+  }, [index.groups, value])
+
+  const openSession = (session: SessionInfo) => {
+    router.push({
+      pathname: "/hosts/[hostId]/sessions/[sessionId]",
+      params: { hostId, sessionId: session.id },
+    })
+  }
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + spacing.md }]}>
+    <View style={[styles.screen, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.header}>
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => router.back()}
-          style={styles.back}
-        >
-          <Text style={styles.backText}>‹ 主机</Text>
-        </Pressable>
+        <IconButton label={t("sessions")} onPress={() => setDrawerOpen(true)}>
+          <Icon name="menu" size={22} color={colors.text} />
+        </IconButton>
         <View style={styles.headerCenter}>
-          <Text style={styles.title}>所有会话</Text>
-          <Text style={styles.subtitle}>{host?.name ?? "主机"}</Text>
+          <Text style={styles.title}>{t("allSessions")}</Text>
+          <Text style={styles.subtitle} numberOfLines={1}>
+            {host?.name ?? t("hosts")} · {connection?.status === "ready" ? t("encrypted") : t("offline")}
+          </Text>
         </View>
-        <View style={styles.back} />
+        <IconButton label={t("newSession")} onPress={() => void openPicker()} disabled={!ready || readOnly}>
+          <Icon name="plus" size={22} color={ready && !readOnly ? colors.accent : colors.faint} />
+        </IconButton>
       </View>
 
       <View style={styles.searchRow}>
-        <TextInput
-          autoCapitalize="none"
-          autoCorrect={false}
-          onChangeText={setSearch}
-          placeholder="搜索会话"
-          placeholderTextColor={colors.faint}
-          style={styles.search}
-          value={search}
-        />
+        <View style={styles.search}>
+          <Icon name="search" size={16} color={colors.faint} />
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder={t("searchSessions")}
+            placeholderTextColor={colors.faint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.searchInput}
+          />
+          {query ? (
+            <Pressable accessibilityRole="button" onPress={() => setQuery("")} hitSlop={8}>
+              <Icon name="close" size={14} color={colors.faint} />
+            </Pressable>
+          ) : null}
+        </View>
       </View>
+
+      {!ready && connection?.status === "error" ? (
+        <Card style={{ marginHorizontal: 16, padding: 14 }}>
+          <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{t("hostOffline")}</Text>
+          <Text style={{ fontSize: 12.5, color: colors.muted, marginTop: 4, lineHeight: 18 }}>
+            {connection.error?.message ?? t("hostOfflineBody")}
+          </Text>
+          <View style={{ marginTop: 10, alignSelf: "flex-start" }}>
+            <Button label={t("retry")} size="sm" onPress={() => void ensureConnection(hostId, { force: true }).catch(() => undefined)} />
+          </View>
+        </Card>
+      ) : null}
 
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} tintColor={colors.text} />}
-        keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={index.refreshing}
+            onRefresh={() => void index.reload({ silent: true, hard: true })}
+            tintColor={colors.muted}
+          />
+        }
       >
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-
-        <View style={styles.actions}>
-          <Button label="新建会话" onPress={() => void openPicker()} disabled={!ready || readOnly} />
-        </View>
-
-        {!ready && connection?.status === "error" ? (
-          <View style={styles.notice}>
-            <Text style={styles.noticeTitle}>主机离线</Text>
-            <Text style={styles.noticeBody}>{connection.error?.message ?? "无法连接主机"}</Text>
-            <View style={styles.noticeAction}>
-              <Button label="重试" onPress={() => void ensureConnection(hostId, { force: true }).catch(() => undefined)} />
-            </View>
-          </View>
-        ) : null}
-
-        {loading && sessions === null ? <Text style={styles.loading}>正在加载会话…</Text> : null}
-
-        {sessions?.length === 0 ? (
-          <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>{search.trim() ? "没有匹配的会话" : "还没有会话"}</Text>
-            <Text style={styles.emptyBody}>{search.trim() ? "换个关键词试试。" : "新建一个会话，从手机上开始工作。"}</Text>
-          </View>
-        ) : null}
-
-        {sessions?.map((session) => (
-          <Pressable
-            key={session.id}
-            accessibilityRole="button"
-            onPress={() =>
-              router.push({
-                pathname: "/hosts/[hostId]/sessions/[sessionId]",
-                params: { hostId, sessionId: session.id },
-              })
-            }
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-          >
-            <View style={[styles.status, { backgroundColor: sessionBusy(session) ? colors.accent : colors.border }]} />
-            <View style={styles.rowBody}>
-              <Text style={styles.rowTitle} numberOfLines={1}>
-                {session.title?.trim() || "未命名会话"}
-              </Text>
-              <Text style={styles.rowMeta} numberOfLines={1}>
-                {session.location?.directory ?? session.projectID ?? "opencode"}
-                {sessionUpdatedAt(session) ? ` · ${relativeTime(sessionUpdatedAt(session))}` : ""}
-              </Text>
-            </View>
-            <Text style={styles.chevron}>›</Text>
+        {index.error ? (
+          <Pressable onPress={() => void index.reload()} style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+            <Text style={{ fontSize: 12.5, color: colors.danger }}>{t("networkError", { message: index.error })}</Text>
           </Pressable>
+        ) : null}
+
+        {index.loading && index.sessions === null ? (
+          <ActivityIndicator style={{ marginTop: 40 }} color={colors.accent} />
+        ) : null}
+
+        {!index.loading && groups.length === 0 ? (
+          <EmptyState
+            icon={<Icon name="message" size={34} color={colors.faint} />}
+            title={value ? t("noMatch") : t("noSessions")}
+            body={value ? t("noMatchBody") : t("noSessionsBody")}
+          />
+        ) : null}
+
+        {groups.map((group) => (
+          <View key={group.key} style={{ marginBottom: 18 }}>
+            <View style={styles.groupHeader}>
+              <Icon name="folder" size={15} color={colors.muted} />
+              <Text style={styles.groupName} numberOfLines={1}>
+                {group.name}
+              </Text>
+              <Text style={styles.groupCount}>{group.sessions.length}</Text>
+            </View>
+            <View style={styles.groupBody}>
+              {group.sessions.map((session, sessionIndex) => (
+                <View key={session.id}>
+                  {sessionIndex > 0 ? <View style={styles.rowDivider} /> : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => openSession(session)}
+                    style={({ pressed }) => [styles.row, pressed && { opacity: 0.65 }]}
+                  >
+                    {sessionBusy(session) ? (
+                      <View style={styles.busyDot} />
+                    ) : (
+                      <Icon name="message" size={15} color={colors.faint} />
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rowTitle} numberOfLines={1}>
+                        {session.title?.trim() || "—"}
+                      </Text>
+                      <Text style={styles.rowMeta} numberOfLines={1}>
+                        {relativeTime(sessionUpdatedAt(session), language)}
+                      </Text>
+                    </View>
+                    <Icon name="chevronRight" size={15} color={colors.faint} />
+                  </Pressable>
+                </View>
+              ))}
+              {!readOnly ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    const project = index.projects.find((item) => item.canonical === group.directory)
+                    if (project) void createSession(project)
+                    else void openPicker()
+                  }}
+                  style={({ pressed }) => [styles.newRow, pressed && { opacity: 0.6 }]}
+                >
+                  <Icon name="plus" size={14} color={colors.accent} />
+                  <Text style={{ fontSize: 12.5, color: colors.accent, fontWeight: "500" }}>
+                    {t("newSessionIn")}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
         ))}
       </ScrollView>
 
-      <Modal animationType="slide" transparent visible={pickerVisible} onRequestClose={() => setPickerVisible(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setPickerVisible(false)} />
-        <View style={styles.sheet}>
-          <View style={styles.sheetHeader}>
-            <Text style={styles.sheetTitle}>选择项目</Text>
-            <Pressable accessibilityRole="button" onPress={() => setPickerVisible(false)}>
-              <Text style={styles.sheetClose}>关闭</Text>
+      <SessionDrawer
+        visible={drawerOpen}
+        hostId={hostId}
+        hostName={host?.name ?? t("hosts")}
+        onClose={() => setDrawerOpen(false)}
+        onSelect={(session) => {
+          setDrawerOpen(false)
+          openSession(session)
+        }}
+        onNewSession={() => void openPicker()}
+        onHosts={() => router.replace("/")}
+      />
+
+      <BottomSheet visible={pickerOpen} title={t("chooseProject")} onClose={() => setPickerOpen(false)}>
+        {projectError ? <Text style={{ fontSize: 12.5, color: colors.danger, marginBottom: 8 }}>{projectError}</Text> : null}
+        {projects === null ? (
+          <Text style={{ fontSize: 13, color: colors.faint, paddingVertical: 20, textAlign: "center" }}>
+            {t("loadingProjects")}
+          </Text>
+        ) : projects.length === 0 ? (
+          <Text style={{ fontSize: 13, color: colors.faint, paddingVertical: 20, textAlign: "center" }}>
+            {t("noProjects")}
+          </Text>
+        ) : (
+          projects.map((project) => (
+            <Pressable
+              key={project.id}
+              accessibilityRole="button"
+              disabled={creating}
+              onPress={() => void createSession(project)}
+              style={({ pressed }) => [
+                {
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 10,
+                  paddingVertical: 12,
+                  borderBottomWidth: StyleSheet.hairlineWidth,
+                  borderBottomColor: colors.border,
+                },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Icon name="folder" size={18} color={colors.muted} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 14.5, fontWeight: "500", color: colors.text }} numberOfLines={1}>
+                  {project.name?.trim() || basename(project.canonical)}
+                </Text>
+                <Text style={{ fontSize: 11.5, color: colors.faint, marginTop: 2 }} numberOfLines={1}>
+                  {project.canonical}
+                </Text>
+              </View>
+              {creating ? <ActivityIndicator size="small" color={colors.accent} /> : null}
             </Pressable>
-          </View>
-          {projectError ? <Text style={styles.error}>{projectError}</Text> : null}
-          {projectsLoading ? <Text style={styles.loading}>正在加载项目…</Text> : null}
-          {projects?.length === 0 ? <Text style={styles.loading}>opencode 还没有已知项目。</Text> : null}
-          <ScrollView contentContainerStyle={styles.projectList}>
-            {projects?.map((project) => (
-              <Pressable
-                key={project.id}
-                accessibilityRole="button"
-                disabled={creating.current}
-                onPress={() => void createSession(project)}
-                style={({ pressed }) => [styles.projectRow, pressed && styles.rowPressed]}
-              >
-                <View style={styles.projectBody}>
-                  <Text style={styles.projectName} numberOfLines={1}>
-                    {project.name?.trim() || basename(project.canonical)}
-                  </Text>
-                  <Text style={styles.projectPath} numberOfLines={1}>
-                    {project.canonical}
-                  </Text>
-                </View>
-                <Text style={styles.chevron}>›</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        </View>
-      </Modal>
+          ))
+        )}
+      </BottomSheet>
     </View>
   )
 }
 
-function basename(path: string): string {
-  const parts = path.split("/").filter(Boolean)
-  return parts[parts.length - 1] ?? path
-}
-
-function relativeTime(timestamp: number): string {
-  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000))
-  if (seconds < 60) return "刚刚"
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟前`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  const days = Math.round(hours / 24)
-  if (days < 30) return `${days} 天前`
-  return new Date(timestamp).toLocaleDateString()
-}
-
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: spacing.lg },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingBottom: spacing.lg },
-  back: { width: 64 },
-  backText: { fontSize: 15, color: colors.muted },
-  headerCenter: { flex: 1, alignItems: "center" },
-  title: { fontSize: 18, fontWeight: "600", color: colors.text },
-  subtitle: { marginTop: 2, fontSize: 12, color: colors.muted },
-  searchRow: { paddingBottom: spacing.md },
-  search: {
-    minHeight: 40,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.full,
-    backgroundColor: colors.surface,
-    paddingHorizontal: spacing.lg,
-    fontSize: 14,
-    color: colors.text,
-  },
-  content: { paddingBottom: spacing.xxl },
-  actions: { marginBottom: spacing.lg, alignItems: "flex-start" },
-  error: { marginBottom: spacing.md, fontSize: 13, color: colors.danger },
-  loading: { marginTop: spacing.lg, fontSize: 14, color: colors.muted, textAlign: "center" },
-  notice: {
-    padding: spacing.lg,
-    marginBottom: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  noticeTitle: { fontSize: 15, fontWeight: "600", color: colors.text },
-  noticeBody: { marginTop: 4, fontSize: 13, color: colors.muted, lineHeight: 19 },
-  noticeAction: { marginTop: spacing.md, alignItems: "flex-start" },
-  empty: { marginTop: spacing.xxl, alignItems: "center" },
-  emptyTitle: { fontSize: 18, fontWeight: "500", color: colors.text },
-  emptyBody: { marginTop: spacing.sm, fontSize: 14, color: colors.muted },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: spacing.lg,
-    marginBottom: spacing.sm,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  rowPressed: { opacity: 0.7 },
-  status: { width: 7, height: 7, borderRadius: 4, marginRight: spacing.md },
-  rowBody: { flex: 1 },
-  rowTitle: { fontSize: 15, fontWeight: "500", color: colors.text },
-  rowMeta: { marginTop: 3, fontSize: 12, color: colors.muted },
-  chevron: { fontSize: 22, color: colors.faint, marginLeft: spacing.sm },
-  backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)" },
-  sheet: {
-    maxHeight: "70%",
-    backgroundColor: colors.bg,
-    borderTopLeftRadius: radius.lg,
-    borderTopRightRadius: radius.lg,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.xxl,
-  },
-  sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.md },
-  sheetTitle: { fontSize: 18, fontWeight: "600", color: colors.text },
-  sheetClose: { fontSize: 14, color: colors.muted },
-  projectList: { paddingBottom: spacing.xl, gap: spacing.sm },
-  projectRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  projectBody: { flex: 1 },
-  projectName: { fontSize: 15, fontWeight: "500", color: colors.text },
-  projectPath: { marginTop: 3, fontSize: 12, color: colors.muted },
-})
+const sessionsStyles = (colors: Palette) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.bg },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 8,
+      paddingBottom: 8,
+      gap: 4,
+    },
+    headerCenter: { flex: 1, alignItems: "center" },
+    title: { fontSize: 17, fontWeight: "700", color: colors.text },
+    subtitle: { marginTop: 2, fontSize: 11, color: colors.muted },
+    searchRow: { paddingHorizontal: 16, paddingBottom: 8 },
+    search: {
+      height: 40,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingHorizontal: 12,
+      borderRadius: 12,
+      backgroundColor: colors.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    searchInput: { flex: 1, fontSize: 13.5, color: colors.text, paddingVertical: 0 },
+    content: { paddingHorizontal: 16, paddingBottom: 32 },
+    groupHeader: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6, paddingHorizontal: 2 },
+    groupName: { flex: 1, fontSize: 12.5, fontWeight: "600", color: colors.muted },
+    groupCount: { fontSize: 11, color: colors.faint },
+    groupBody: {
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      overflow: "hidden",
+    },
+    row: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 13, paddingVertical: 11 },
+    rowDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: 38 },
+    rowTitle: { fontSize: 14, fontWeight: "500", color: colors.text },
+    rowMeta: { fontSize: 11, color: colors.faint, marginTop: 2 },
+    busyDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.accent },
+    newRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.border,
+    },
+  })

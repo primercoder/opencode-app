@@ -21,6 +21,7 @@ type HostState = {
   saveConnection(hostId: string, credentials: HostCredentials, transport?: string): Promise<void>
   touchHost(hostId: string, transport?: string): Promise<void>
   renameHost(hostId: string, name: string): Promise<void>
+  setTransports(hostId: string, transports: HostRecord["transports"]): Promise<void>
   removeHost(hostId: string): Promise<void>
   setActive(hostId: string | undefined): void
   getHost(hostId: string): HostRecord | undefined
@@ -96,6 +97,19 @@ export const useHosts = create<HostState>((set, get) => ({
     const trimmed = name.trim()
     if (!trimmed) return
     const hosts = get().hosts.map((host) => (host.id === hostId ? { ...host, name: trimmed } : host))
+    set({ hosts })
+    await saveHosts(hosts)
+  },
+
+  async setTransports(hostId, transports) {
+    const hosts = get().hosts.map((host) =>
+      host.id === hostId
+        ? {
+            ...host,
+            transports: transports.map((transport, index) => ({ ...transport, priority: index })),
+          }
+        : host,
+    )
     set({ hosts })
     await saveHosts(hosts)
   },

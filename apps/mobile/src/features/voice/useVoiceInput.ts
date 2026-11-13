@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react"
+import { useT } from "@/i18n"
 import { ensureWhisperModel, transcribePcm } from "./localWhisper"
 import { selectedMobileModel } from "./models"
 import { loadVoiceEnginePreference, type VoiceEnginePreference } from "./preferences"
@@ -12,7 +13,7 @@ export type HostTranscriber = (wav: Uint8Array, durationMs: number) => Promise<s
 
 export function useVoiceInput(
   onFinal: (text: string) => void,
-  options: { hostTranscribe?: HostTranscriber } = {},
+  options: { hostTranscribe?: HostTranscriber; preference?: VoiceEnginePreference } = {},
 ): {
   listening: boolean
   transcribing: boolean
@@ -22,6 +23,7 @@ export function useVoiceInput(
   stop: () => void
   clearError: () => void
 } {
+  const t = useT()
   const system = useDictation(onFinal)
   const pcm = usePcmDictation(onFinal)
   const [engine, setEngine] = useState<VoiceEngine | null>(null)
@@ -33,7 +35,8 @@ export function useVoiceInput(
     async (language = "zh-CN") => {
       setConfigurationError(null)
       const lang = language.toLowerCase().startsWith("zh") ? "zh" : language
-      const preference: VoiceEnginePreference = await loadVoiceEnginePreference().catch(() => "auto")
+      const preference: VoiceEnginePreference =
+        options.preference ?? (await loadVoiceEnginePreference().catch(() => "auto"))
       const model = await selectedMobileModel().catch(() => undefined)
       const host = hostRef.current
 
@@ -44,7 +47,7 @@ export function useVoiceInput(
       }
       if (preference === "local") {
         if (!model?.path) {
-          setConfigurationError("请先在设置中下载手机语音模型")
+          setConfigurationError(t("needPhoneModel"))
           return
         }
         setEngine("local")
@@ -56,7 +59,7 @@ export function useVoiceInput(
       }
       if (preference === "host") {
         if (!host) {
-          setConfigurationError("主机没有可用的语音模型")
+          setConfigurationError(t("hostNoModel"))
           return
         }
         setEngine("host")
@@ -80,7 +83,7 @@ export function useVoiceInput(
       setEngine("system")
       await system.start(language)
     },
-    [pcm.start, system.start],
+    [options.preference, pcm.start, system.start, t],
   )
 
   const stop = useCallback(() => {

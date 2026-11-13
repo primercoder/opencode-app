@@ -1,10 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { PermissionsAndroid, Platform } from "react-native"
 import LiveAudioStream from "@fugood/react-native-audio-pcm-stream"
+import { useT } from "@/i18n"
 import { decodeBase64 } from "@/lib/base64"
 
 let activeHandler: ((data: string) => void) | null = null
 let listenerInstalled = false
+
+/**
+ * The native module's `stop()` is documented as a promise but resolves to
+ * undefined on Android. Calling .catch on it crashes the JS thread on unmount.
+ */
+function stopStream(): void {
+  try {
+    const result = LiveAudioStream.stop() as unknown
+    if (result && typeof (result as Promise<unknown>).catch === "function") {
+      void (result as Promise<unknown>).catch(() => undefined)
+    }
+  } catch {
+    // ignore native stop failures
+  }
+}
 
 function installListener(): void {
   if (listenerInstalled) return
@@ -23,6 +39,7 @@ export function usePcmDictation(onFinal: (text: string) => void): {
   cancel: () => void
   clearError: () => void
 } {
+  const t = useT()
   const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -39,7 +56,7 @@ export function usePcmDictation(onFinal: (text: string) => void): {
   useEffect(() => {
     return () => {
       activeHandler = null
-      void LiveAudioStream.stop().catch(() => undefined)
+      stopStream()
     }
   }, [])
 
@@ -52,7 +69,7 @@ export function usePcmDictation(onFinal: (text: string) => void): {
       if (Platform.OS === "android") {
         const permission = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO)
         if (permission !== PermissionsAndroid.RESULTS.GRANTED) {
-          setError("需要麦克风权限才能听写")
+          setError(t("micPermission"))
           return
         }
       }
@@ -78,9 +95,9 @@ export function usePcmDictation(onFinal: (text: string) => void): {
     } catch (cause) {
       activeHandler = null
       setRecording(false)
-      setError(cause instanceof Error ? cause.message : "无法启动麦克风")
+      setError(cause instanceof Error ? cause.message : t("recognitionFailed"))
     }
-  }, [])
+  }, [t])
 
   const stop = useCallback(() => {
     if (!recording) return
@@ -91,13 +108,9 @@ export function usePcmDictation(onFinal: (text: string) => void): {
   }, [recording])
 
   const finish = async () => {
-    try {
-      await LiveAudioStream.stop()
-    } catch {
-      // ignore native stop failures
-    }
+    stopStream()
     if (bytes.current < 3_200) {
-      setError("没有听清，请重试")
+      setError(t("noSpeechHeard"))
       chunks.current = []
       bytes.current = 0
       return
@@ -120,7 +133,7 @@ export function usePcmDictation(onFinal: (text: string) => void): {
     }
     const rms = Math.sqrt(energy / Math.max(1, samples.length)) / 32768
     if (rms < 0.004) {
-      setError("没有听清，请重试")
+      setError(t("noSpeechHeard"))
       return
     }
 
@@ -128,9 +141,9 @@ export function usePcmDictation(onFinal: (text: string) => void): {
     try {
       const text = await activeTranscriber.current?.(samples, durationMs)
       if (text) onFinalRef.current(text)
-      else setError("没有听清，请重试")
+      else setError(t("noSpeechHeard"))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "语音识别失败")
+      setError(cause instanceof Error ? cause.message : t("recognitionFailed"))
     } finally {
       setTranscribing(false)
     }
@@ -142,7 +155,7 @@ export function usePcmDictation(onFinal: (text: string) => void): {
     setRecording(false)
     chunks.current = []
     bytes.current = 0
-    void LiveAudioStream.stop().catch(() => undefined)
+    stopStream()
   }, [])
 
   const clearError = useCallback(() => setError(null), [])

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import { networkInterfaces } from "node:os"
 import {
   encodePairingOffer,
@@ -20,7 +21,7 @@ import { resolveOpencodeTarget, type OpencodeTarget } from "./opencode.ts"
 import { HostModelManager } from "./asr/modelManager.ts"
 import { HostAsr, type AsrService } from "./asr/service.ts"
 import { registerRelayRoom, RelayHostClient } from "./relay.ts"
-import { ConnectionSession, type HostContext } from "./session.ts"
+import { ConnectionSession, type ClientInfo, type HostContext } from "./session.ts"
 
 export type HostOptions = {
   homeDir?: string
@@ -29,6 +30,7 @@ export type HostOptions = {
   name?: string
   opencodeUrl?: string
   opencodePassword?: string
+  /** Relay is used only when this is set; a saved room is never activated implicitly. */
   relay?: RelayConfig
   relaySecret?: string
   modelsDir?: string
@@ -40,15 +42,25 @@ export type HostOptions = {
 export type Host = {
   server: Bun.Server<unknown>
   port: number
+  hostname: string
   identity: Identity
   config: HostConfig
   target: OpencodeTarget
   relay?: RelayConfig
+  lanUrls: string[]
   modelsDir: string
   asr: AsrService
-  issuePairCode(scope?: DeviceScope): Promise<string>
+  clients(): ClientInfo[]
+  issuePairCode(scope?: DeviceScope, ttlMs?: number): Promise<string>
   pairingOffer(code: string, transportUrl?: string): Promise<string>
+  /** Stores the offer on the local HTTP server and returns a short QR URL. */
+  shortenOffer(offer: string, baseUrl?: string): string
   close(): Promise<void>
+}
+
+type PairPage = {
+  offer: string
+  expiresAt: number
 }
 
 export async function startHost(options: HostOptions = {}): Promise<Host> {
@@ -61,7 +73,9 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     name: options.name ?? process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
     lan: { hostname, port },
   })
-  const relayConfig = options.relay ?? config.relay
+  // Only an explicitly requested relay is activated. This prevents a stale
+  // room from a previous run from taking over a direct/LAN-only start.
+  const relayConfig = options.relay
   if (relayConfig) config.relay = relayConfig
   const target = await resolveOpencodeTarget({
     ...(options.opencodeUrl ? { url: options.opencodeUrl } : {}),
@@ -73,33 +87,73 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     ...(options.modelBaseUrl ? { baseUrl: options.modelBaseUrl } : {}),
   })
   const asr = options.asr ?? new HostAsr(modelManager, options.asrModelId)
+
+  const clientRegistry = new Map<number, ClientInfo>()
+  let nextClientId = 1
+  let server: Bun.Server<unknown>
+
   const ctx: HostContext = {
     identity,
     config,
     target,
     asr,
     lanUrls: [],
+    clients: {
+      register(info) {
+        const id = nextClientId++
+        clientRegistry.set(id, { ...info, id, connectedAt: Date.now(), lastSeenAt: Date.now() })
+        return id
+      },
+      touch(id) {
+        const current = clientRegistry.get(id)
+        if (current) current.lastSeenAt = Date.now()
+      },
+      unregister(id) {
+        clientRegistry.delete(id)
+      },
+    },
     async saveConfig() {
       await saveConfig(home, config)
     },
   }
 
+  const pairPages = new Map<string, PairPage>()
+
   let relayClient: RelayHostClient | undefined
   const sessions = new WeakMap<object, ConnectionSession>()
-  let server: Bun.Server<unknown>
+
   server = Bun.serve<unknown>({
     hostname,
     port,
     fetch(request, server) {
       const url = new URL(request.url)
-      if (url.pathname === "/health") return Response.json({ ok: true, v: 1 })
+      if (url.pathname === "/health") return Response.json({ ok: true, v: 1, version: "0.1.0" })
+      if (url.pathname.startsWith("/p/")) {
+        const id = url.pathname.slice("/p/".length)
+        const page = pairPages.get(id)
+        if (!page) return new Response("pairing offer not found", { status: 404 })
+        if (page.expiresAt <= Date.now()) {
+          pairPages.delete(id)
+          return new Response("pairing offer expired", { status: 410 })
+        }
+        return new Response(page.offer, {
+          headers: {
+            "content-type": "text/plain; charset=utf-8",
+            "cache-control": "no-store",
+          },
+        })
+      }
       if (url.pathname !== "/ws") return new Response("not found", { status: 404 })
       if (server.upgrade(request, { data: {} })) return
       return new Response("WebSocket upgrade required", { status: 426 })
     },
     websocket: {
       open(ws) {
-        sessions.set(ws, new ConnectionSession(ws, ctx))
+        const session = new ConnectionSession(ws, ctx, {
+          transport: "direct",
+          ...(ws.remoteAddress ? { remoteAddress: ws.remoteAddress } : {}),
+        })
+        sessions.set(ws, session)
       },
       message(ws, message) {
         const session = sessions.get(ws)
@@ -116,14 +170,15 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
 
   const actualPort = server.port ?? port
   config.lan = { hostname, port: actualPort }
-  ctx.lanUrls = lanUrls(hostname, actualPort)
+  const urls = lanUrls(hostname, actualPort)
+  ctx.lanUrls = urls
   await saveConfig(home, config)
 
   if (relayConfig) {
     const relaySecret = options.relaySecret ?? process.env.RELAY_REGISTRATION_SECRET
     relayClient = new RelayHostClient({
       config: relayConfig,
-      createSession: (socket) => new ConnectionSession(socket, ctx),
+      createSession: (socket) => new ConnectionSession(socket, ctx, { transport: "relay" }),
       onState: (state, detail) => {
         if (state === "reconnecting" || state === "closed") {
           console.warn(`[relay] ${state}${detail ? `: ${detail}` : ""}`)
@@ -161,39 +216,43 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     }
   }
 
-  return {
+  const host: Host = {
     server,
     port: actualPort,
+    hostname,
     identity,
     config,
     target,
     ...(relayConfig ? { relay: relayConfig } : {}),
+    lanUrls: urls,
     modelsDir: modelManager.modelsDir,
     asr,
-    async issuePairCode(scope: DeviceScope = "full") {
-      const { code } = addPendingPair(config, scope)
+    clients() {
+      return [...clientRegistry.values()].sort((left, right) => (left.connectedAt ?? 0) - (right.connectedAt ?? 0))
+    },
+    async issuePairCode(scope: DeviceScope = "full", ttlMs?: number) {
+      const { code } = addPendingPair(config, scope, ttlMs)
       await saveConfig(home, config)
       return code
     },
     async pairingOffer(code: string, transportUrl?: string) {
       const pending = config.pendingPairs.find((pair) => pair.codeHash === hashPairCode(code))
       if (!pending) throw new Error("pairing code not found")
-      const transports: Transport[] = [
-        {
-          kind: "lan",
-          url: transportUrl ?? ctx.lanUrls[0] ?? `ws://127.0.0.1:${actualPort}/ws`,
-          priority: 0,
-        },
-      ]
-      if (config.relay) {
+      const transports: Transport[] = []
+      const directUrl = transportUrl ?? urls[0]
+      if (directUrl) {
+        transports.push({ kind: "lan", url: directUrl, priority: 0 })
+      }
+      if (relayConfig) {
         transports.push({
           kind: "relay",
-          url: config.relay.url,
-          room: config.relay.room,
-          clientToken: config.relay.clientToken,
-          priority: 1,
+          url: relayConfig.url,
+          room: relayConfig.room,
+          clientToken: relayConfig.clientToken,
+          priority: transports.length,
         })
       }
+      if (transports.length === 0) throw new Error("no transport is available for pairing")
       const offer: PairingOffer = {
         v: 1,
         hostId: identity.hostId,
@@ -206,6 +265,21 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
       }
       return encodePairingOffer(offer, identity.publicKey)
     },
+    shortenOffer(offer, baseUrl) {
+      const now = Date.now()
+      for (const [key, page] of pairPages) {
+        if (page.expiresAt <= now) pairPages.delete(key)
+      }
+      while (pairPages.size >= 32) {
+        const oldest = pairPages.keys().next().value
+        if (oldest === undefined) break
+        pairPages.delete(oldest)
+      }
+      const id = randomBytes(9).toString("base64url")
+      pairPages.set(id, { offer, expiresAt: now + 10 * 60_000 })
+      const base = baseUrl ?? httpOrigin(urls[0] ?? `ws://127.0.0.1:${actualPort}/ws`)
+      return `${base}/p/${id}`
+    },
     async close() {
       asr.close()
       relayClient?.close()
@@ -213,6 +287,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
       server.stop(true)
     },
   }
+  return host
 }
 
 export function lanUrls(hostname: string, port: number): string[] {
@@ -222,4 +297,22 @@ export function lanUrls(hostname: string, port: number): string[] {
     .filter((entry) => entry.family === "IPv4" && !entry.internal)
     .map((entry) => `ws://${entry.address}:${port}/ws`)
   return addresses.length > 0 ? addresses : [`ws://127.0.0.1:${port}/ws`]
+}
+
+export function httpOrigin(wsUrl: string): string {
+  const url = new URL(wsUrl)
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:"
+  url.pathname = ""
+  url.search = ""
+  url.hash = ""
+  return url.toString().replace(/\/$/u, "")
+}
+
+/** Picks the most useful direct URL to show in a pairing offer. */
+export function directPairUrl(hostname: string, port: number): string {
+  if (hostname === "0.0.0.0" || hostname === "::") {
+    const urls = lanUrls(hostname, port)
+    return urls.find((url) => !url.includes("127.0.0.1")) ?? urls[0] ?? `ws://127.0.0.1:${port}/ws`
+  }
+  return `ws://${hostname}:${port}/ws`
 }

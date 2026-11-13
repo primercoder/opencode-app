@@ -22,20 +22,27 @@ export async function registerRelayRoom(input: RegisterRelayInput): Promise<Rela
   registration.search = ""
   registration.hash = ""
 
-  const response = await fetch(registration, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(input.secret ? { authorization: `Bearer ${input.secret}` } : {}),
-    },
-    body: JSON.stringify({
-      room,
-      hostToken,
-      clientToken,
-      ...(input.ttlSeconds ? { ttl: input.ttlSeconds } : {}),
-    }),
-    signal: AbortSignal.timeout(10_000),
-  })
+  let response: Response
+  try {
+    response = await fetch(registration, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(input.secret ? { authorization: `Bearer ${input.secret}` } : {}),
+      },
+      body: JSON.stringify({
+        room,
+        hostToken,
+        clientToken,
+        ...(input.ttlSeconds ? { ttl: input.ttlSeconds } : {}),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+  } catch (error) {
+    throw new Error(
+      `cannot reach relay ${input.relayUrl}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
 
   if (!response.ok) {
     const body = await response.text().catch(() => "")

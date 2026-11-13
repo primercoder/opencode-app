@@ -2,10 +2,10 @@ import { router, useLocalSearchParams } from "expo-router"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   ActivityIndicator,
+  Animated,
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,17 +13,20 @@ import {
   View,
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { Button } from "@/components/Button"
+import { BottomSheet } from "@/components/BottomSheet"
+import { Icon } from "@/components/Icon"
+import { MessageView } from "@/components/Message"
 import { PendingDock } from "@/components/PendingDock"
-import { SessionControls } from "@/components/SessionControls"
-import { useConnections } from "@/stores/connections"
-import { useHosts } from "@/stores/hosts"
+import { SessionDrawer } from "@/components/SessionDrawer"
+import { Badge, IconButton, Segmented } from "@/components/ui"
+import { useT } from "@/i18n"
 import {
   OpencodeClient,
+  sessionBusy,
   toMillis,
   type AgentInfo,
-  type AssistantContent,
   type FormInfo,
+  type McpServer,
   type ModelInfo,
   type PermissionRequest,
   type SessionInfo,
@@ -32,64 +35,109 @@ import {
 import type { FormAnswers } from "@/opencode/forms"
 import { ensureConnection, subscribeHostEvents } from "@/transport/runtimes"
 import { useVoiceInput } from "@/features/voice/useVoiceInput"
+import {
+  loadSessionVoiceEngine,
+  saveSessionVoiceEngine,
+  usePreferences,
+  type VoiceEnginePreference,
+} from "@/stores/preferences"
 import { useForeground } from "@/lib/useForeground"
-import { colors, radius, spacing } from "@/theme"
+import { useTheme, useThemedStyles, type Palette } from "@/theme"
+import { useConnections } from "@/stores/connections"
+import { useHosts } from "@/stores/hosts"
+
+type SheetMode = "main" | "agent" | "model"
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets()
   const params = useLocalSearchParams<{ hostId: string; sessionId: string }>()
-  const { hostId, sessionId } = params
-  const hydrate = useHosts((state) => state.hydrate)
-  const hydrated = useHosts((state) => state.hydrated)
-  const host = useHosts((state) => state.hosts.find((item) => item.id === hostId))
-  const connection = useConnections((state) => (hostId ? state.byHost[hostId] : undefined))
+  const hostId = params.hostId
+  const sessionId = params.sessionId
+  const { colors } = useTheme()
+  const t = useT()
+  const styles = useThemedStyles(chatStyles)
+
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [messages, setMessages] = useState<SessionMessage[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
   const [draft, setDraft] = useState("")
-  const [insertNotice, setInsertNotice] = useState(false)
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [permissions, setPermissions] = useState<PermissionRequest[]>([])
   const [forms, setForms] = useState<FormInfo[]>([])
   const [dockBusy, setDockBusy] = useState(false)
   const [olderCursor, setOlderCursor] = useState<string | undefined>(undefined)
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const [sheetMode, setSheetMode] = useState<SheetMode>("main")
+  const [agents, setAgents] = useState<AgentInfo[] | null>(null)
+  const [models, setModels] = useState<ModelInfo[] | null>(null)
+  const [mcp, setMcp] = useState<McpServer[] | null>(null)
+  const [optionError, setOptionError] = useState<string | null>(null)
+  const [optionsBusy, setOptionsBusy] = useState(false)
+  const [voiceOverride, setVoiceOverride] = useState<VoiceEnginePreference | undefined>(undefined)
+  const [modelQuery, setModelQuery] = useState("")
+  const [insertNotice, setInsertNotice] = useState(false)
+  const [showJump, setShowJump] = useState(false)
+  const [turnNotice, setTurnNotice] = useState(false)
+  const hostName = useHosts((state) => state.hosts.find((item) => item.id === hostId)?.name)
+  const notificationsEnabled = usePreferences((state) => state.notifications)
+
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const scrollRef = useRef<ScrollView>(null)
   const loadedRef = useRef(false)
   const atBottomRef = useRef(true)
+  const initialScrollRef = useRef(false)
+  const pendingOlder = useRef<{ height: number; y: number } | null>(null)
+  const contentHeightRef = useRef(0)
+  const scrollYRef = useRef(0)
 
   useEffect(() => {
-    if (!hydrated) {
-      void hydrate()
-      return
-    }
+    loadedRef.current = false
+    initialScrollRef.current = false
+    atBottomRef.current = true
+    setMessages(null)
+    setSession(null)
+    setOlderCursor(undefined)
+    setError(null)
+    setPermissions([])
+    setForms([])
+    setVoiceOverride(undefined)
+    setAgents(null)
+    setModels(null)
+    setMcp(null)
+    setSheetOpen(false)
+    void loadSessionVoiceEngine(sessionId).then(setVoiceOverride).catch(() => undefined)
+  }, [sessionId])
+
+  useEffect(() => {
     void ensureConnection(hostId).catch(() => undefined)
-  }, [hydrated, hydrate, hostId])
+  }, [hostId])
 
   useEffect(() => () => {
     if (noticeTimer.current) clearTimeout(noticeTimer.current)
   }, [])
 
-  const hostAsr = connection?.session?.asr?.host
+  const connectionRole = useConnections((state) => (hostId ? state.byHost[hostId] : undefined))
+  const hostAsrInfo = connectionRole?.session?.asr?.host
   const hostTranscribe =
-    hostAsr?.available === true
+    hostAsrInfo?.available === true
       ? async (wav: Uint8Array, durationMs: number): Promise<string> => {
           const runtime = await ensureConnection(hostId)
           const result = await runtime.transcribe({ audio: wav, mime: "audio/wav", durationMs, language: "zh" })
           return result.text
         }
       : undefined
-  const dictation = useVoiceInput((text) => {
-    setDraft((current) => {
-      if (!current) return text
-      return /[\s\n]$/u.test(current) ? `${current}${text}` : `${current} ${text}`
-    })
-    setInsertNotice(true)
-    if (noticeTimer.current) clearTimeout(noticeTimer.current)
-    noticeTimer.current = setTimeout(() => setInsertNotice(false), 3_000)
-  }, hostTranscribe ? { hostTranscribe } : {})
+
+  const dictation = useVoiceInput(
+    (text) => {
+      setDraft((current) => (current ? `${current.replace(/\s+$/u, "")} ${text}` : text))
+      setInsertNotice(true)
+      if (noticeTimer.current) clearTimeout(noticeTimer.current)
+      noticeTimer.current = setTimeout(() => setInsertNotice(false), 3_000)
+    },
+    { ...(hostTranscribe ? { hostTranscribe } : {}), ...(voiceOverride ? { preference: voiceOverride } : {}) },
+  )
 
   const load = useCallback(
     async (options: { silent?: boolean } = {}) => {
@@ -101,146 +149,46 @@ export default function ChatScreen() {
         const [detail, page, pendingPermissions, pendingForms] = await Promise.all([
           client.getSession(sessionId),
           client.listMessages(sessionId, { limit: 50, order: "desc" }),
-          client.listPermissions(sessionId),
-          client.listForms(sessionId),
+          client.listPermissions(sessionId).catch(() => []),
+          client.listForms(sessionId).catch(() => []),
         ])
         setSession(detail)
         setPermissions(pendingPermissions)
         setForms(pendingForms)
         const latest = [...page.data].reverse()
-        setMessages((current) => mergeMessages(latest, (current ?? []).filter((message) => !message.id.startsWith("local_"))))
+        setMessages((current) =>
+          mergeMessages(
+            latest,
+            (current ?? []).filter((message) => !message.id.startsWith("local_")),
+          ),
+        )
         const nextCursor = page.data.length >= 50 ? page.cursor?.next : undefined
-        if (!options.silent) setOlderCursor(nextCursor)
-        else setOlderCursor((current) => current ?? nextCursor)
+        setOlderCursor((current) => (options.silent ? (current ?? nextCursor) : nextCursor))
         if (!options.silent) loadedRef.current = true
-        if (!options.silent || atBottomRef.current) {
-          requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: false }))
-        }
       } catch (cause) {
-        if (!options.silent) setError(cause instanceof Error ? cause.message : "加载会话失败")
+        if (!options.silent) setError(cause instanceof Error ? cause.message : t("error"))
       }
     },
-    [hostId, sessionId],
+    [hostId, sessionId, t],
   )
 
   useEffect(() => {
-    if (connection?.status !== "ready" || loadedRef.current) return
-    void load()
-  }, [connection?.status, load])
-
-  useEffect(() => {
-    if (connection?.status !== "ready") return
+    if (!hostId) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const unsubscribe = subscribeHostEvents(hostId, (event) => {
-      if (!isSessionEvent(event.type)) return
+      if (!event.type || !/^(session|message|permission|form)\./u.test(event.type)) return
       if (timer) clearTimeout(timer)
-      timer = setTimeout(() => void load({ silent: true }), 400)
+      timer = setTimeout(() => void load({ silent: true }), 450)
     })
     return () => {
       unsubscribe()
       if (timer) clearTimeout(timer)
     }
-  }, [connection?.status, hostId, load])
+  }, [hostId, load, sessionId])
 
   useEffect(() => {
-    let active = true
-    let unsubscribe: (() => void) | undefined
-    void ensureConnection(hostId)
-      .then((runtime) => {
-        if (!active) return
-        unsubscribe = runtime.onStateChange((state) => {
-          if (state === "ready") void load({ silent: true })
-        })
-      })
-      .catch(() => undefined)
-    return () => {
-      active = false
-      unsubscribe?.()
-    }
-  }, [hostId, load])
-
-  const loadOlder = async () => {
-    if (!olderCursor || loadingOlder) return
-    setLoadingOlder(true)
-    try {
-      const runtime = await ensureConnection(hostId)
-      const page = await new OpencodeClient(runtime).listMessages(sessionId, {
-        limit: 50,
-        cursor: olderCursor,
-      })
-      const older = [...page.data].reverse()
-      setMessages((current) => mergeMessages(older, current ?? []))
-      setOlderCursor(page.data.length >= 50 ? page.cursor?.next : undefined)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "加载更早消息失败")
-    } finally {
-      setLoadingOlder(false)
-    }
-  }
-
-  const replyPermission = async (request: PermissionRequest, decision: "once" | "always" | "reject") => {
-    setDockBusy(true)
-    setError(null)
-    try {
-      const runtime = await ensureConnection(hostId)
-      await new OpencodeClient(runtime).replyPermission(sessionId, request.id, decision)
-      setPermissions((current) => current.filter((item) => item.id !== request.id))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "回复权限失败")
-    } finally {
-      setDockBusy(false)
-    }
-  }
-
-  const submitForm = async (form: FormInfo, answer: FormAnswers) => {
-    setDockBusy(true)
-    setError(null)
-    try {
-      const runtime = await ensureConnection(hostId)
-      await new OpencodeClient(runtime).replyForm(sessionId, form.id, answer)
-      setForms((current) => current.filter((item) => item.id !== form.id))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "提交表单失败")
-    } finally {
-      setDockBusy(false)
-    }
-  }
-
-  const cancelForm = async (form: FormInfo) => {
-    setDockBusy(true)
-    setError(null)
-    try {
-      const runtime = await ensureConnection(hostId)
-      await new OpencodeClient(runtime).cancelForm(sessionId, form.id)
-      setForms((current) => current.filter((item) => item.id !== form.id))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "取消表单失败")
-    } finally {
-      setDockBusy(false)
-    }
-  }
-
-  const loadAgents = async (): Promise<AgentInfo[]> => {
-    const runtime = await ensureConnection(hostId)
-    return new OpencodeClient(runtime).listAgents(session?.location?.directory)
-  }
-
-  const loadModels = async (): Promise<ModelInfo[]> => {
-    const runtime = await ensureConnection(hostId)
-    return new OpencodeClient(runtime).listModels(session?.location?.directory)
-  }
-
-  const selectAgent = async (agent: string) => {
-    const runtime = await ensureConnection(hostId)
-    await new OpencodeClient(runtime).switchAgent(sessionId, agent)
-    setSession((current) => (current ? { ...current, agent } : current))
-  }
-
-  const selectModel = async (model: { id: string; providerID: string; variant?: string }) => {
-    const runtime = await ensureConnection(hostId)
-    await new OpencodeClient(runtime).switchModel(sessionId, model)
-    setSession((current) => (current ? { ...current, model } : current))
-  }
+    void load()
+  }, [load])
 
   useForeground(
     useCallback(() => {
@@ -249,6 +197,141 @@ export default function ChatScreen() {
         .catch(() => undefined)
     }, [hostId, load]),
   )
+
+  const loadOlder = async () => {
+    if (!olderCursor || loadingOlder) return
+    setLoadingOlder(true)
+    try {
+      const runtime = await ensureConnection(hostId)
+      const page = await new OpencodeClient(runtime).listMessages(sessionId, { limit: 50, cursor: olderCursor })
+      pendingOlder.current = { height: contentHeightRef.current, y: scrollYRef.current }
+      const older = [...page.data].reverse()
+      setMessages((current) => mergeMessages(older, current ?? []))
+      setOlderCursor(page.data.length >= 50 ? page.cursor?.next : undefined)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setLoadingOlder(false)
+    }
+  }
+
+  const replyPermission = async (request: PermissionRequest, decision: "once" | "always" | "reject") => {
+    setDockBusy(true)
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).replyPermission(sessionId, request.id, decision)
+      setPermissions((current) => current.filter((item) => item.id !== request.id))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setDockBusy(false)
+    }
+  }
+
+  const submitForm = async (form: FormInfo, answer: FormAnswers) => {
+    setDockBusy(true)
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).replyForm(sessionId, form.id, answer)
+      setForms((current) => current.filter((item) => item.id !== form.id))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setDockBusy(false)
+    }
+  }
+
+  const cancelForm = async (form: FormInfo) => {
+    setDockBusy(true)
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).cancelForm(sessionId, form.id)
+      setForms((current) => current.filter((item) => item.id !== form.id))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setDockBusy(false)
+    }
+  }
+
+  const openSettings = async () => {
+    setSheetMode("main")
+    setSheetOpen(true)
+    if (agents && models && mcp) return
+    setOptionsBusy(true)
+    setOptionError(null)
+    try {
+      const runtime = await ensureConnection(hostId)
+      const client = new OpencodeClient(runtime)
+      const directory = session?.location?.directory
+      const [agentList, modelList, mcpList] = await Promise.all([
+        client.listAgents(directory),
+        client.listModels(directory),
+        client.listMcp(directory).catch(() => []),
+      ])
+      setAgents(agentList)
+      setModels(modelList)
+      setMcp(mcpList)
+    } catch (cause) {
+      setOptionError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setOptionsBusy(false)
+    }
+  }
+
+  const selectAgent = async (agentId: string) => {
+    setOptionsBusy(true)
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).switchAgent(sessionId, agentId)
+      setSession((current) => (current ? { ...current, agent: agentId } : current))
+      setSheetMode("main")
+    } catch (cause) {
+      setOptionError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setOptionsBusy(false)
+    }
+  }
+
+  const selectModel = async (model: ModelInfo) => {
+    setOptionsBusy(true)
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).switchModel(sessionId, {
+        id: model.modelID,
+        providerID: model.providerID,
+      })
+      setSession((current) =>
+        current ? { ...current, model: { id: model.modelID, providerID: model.providerID } } : current,
+      )
+      setSheetMode("main")
+    } catch (cause) {
+      setOptionError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setOptionsBusy(false)
+    }
+  }
+
+  const toggleMcp = async (server: McpServer) => {
+    const connected = server.status?.status === "connected"
+    setOptionsBusy(true)
+    setOptionError(null)
+    try {
+      const runtime = await ensureConnection(hostId)
+      const client = new OpencodeClient(runtime)
+      await client.setMcpConnected(server.name, !connected, session?.location?.directory)
+      setMcp(await client.listMcp(session?.location?.directory).catch(() => mcp ?? []))
+    } catch (cause) {
+      setOptionError(cause instanceof Error ? cause.message : t("error"))
+    } finally {
+      setOptionsBusy(false)
+    }
+  }
+
+  const chooseVoice = async (value: VoiceEnginePreference) => {
+    setVoiceOverride(value)
+    await saveSessionVoiceEngine(sessionId, value).catch(() => undefined)
+  }
 
   const send = async () => {
     const text = draft.trim()
@@ -262,14 +345,14 @@ export default function ChatScreen() {
       text,
       time: { created: Date.now() },
     }
+    atBottomRef.current = true
     setMessages((current) => [...(current ?? []), optimistic])
-    requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }))
     try {
       const runtime = await ensureConnection(hostId)
       await new OpencodeClient(runtime).prompt(sessionId, text)
       await load({ silent: true })
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "发送失败")
+      setError(cause instanceof Error ? cause.message : t("error"))
       setDraft(text)
       setMessages((current) => (current ?? []).filter((message) => message.id !== optimistic.id))
     } finally {
@@ -277,103 +360,190 @@ export default function ChatScreen() {
     }
   }
 
-  const refresh = async () => {
-    setRefreshing(true)
-    await load()
-    setRefreshing(false)
+  const stop = async () => {
+    try {
+      const runtime = await ensureConnection(hostId)
+      await new OpencodeClient(runtime).interrupt(sessionId)
+      await load({ silent: true })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("error"))
+    }
   }
 
-  const ready = connection?.status === "ready"
-  const readOnly = connection?.session?.device?.scope === "read"
-  const title = session?.title?.trim() || "会话"
+  const runningNow = sending || (session ? sessionBusy(session) : false)
+  const wasRunning = useRef(false)
+  useEffect(() => {
+    if (wasRunning.current && !runningNow && notificationsEnabled) {
+      setTurnNotice(true)
+      const timer = setTimeout(() => setTurnNotice(false), 4_000)
+      wasRunning.current = runningNow
+      return () => clearTimeout(timer)
+    }
+    wasRunning.current = runningNow
+  }, [runningNow, notificationsEnabled])
+
+  const ready = connectionRole?.status === "ready"
+  const readOnly = connectionRole?.session?.device?.scope === "read"
+  const running = runningNow
+  const title = session?.title?.trim() || t("sessions")
+  const agentName = session?.agent ?? t("defaultAgent")
+  const modelInfo = models?.find(
+    (model) => model.modelID === session?.model?.id && model.providerID === session?.model?.providerID,
+  )
+  const modelName = modelInfo?.name ?? session?.model?.id ?? t("defaultModel")
+  const filteredModels = (models ?? []).filter((model) => {
+    const query = modelQuery.trim().toLowerCase()
+    if (!query) return true
+    return (
+      model.name.toLowerCase().includes(query) ||
+      model.modelID.toLowerCase().includes(query) ||
+      model.providerID.toLowerCase().includes(query)
+    )
+  })
+
+  const onContentSizeChange = (_width: number, height: number) => {
+    contentHeightRef.current = height
+    if (pendingOlder.current) {
+      const delta = height - pendingOlder.current.height
+      if (delta > 0) scrollRef.current?.scrollTo({ y: pendingOlder.current.y + delta, animated: false })
+      pendingOlder.current = null
+      return
+    }
+    if (atBottomRef.current || !initialScrollRef.current) {
+      initialScrollRef.current = true
+      scrollRef.current?.scrollToEnd({ animated: false })
+    }
+  }
 
   return (
     <KeyboardAvoidingView
-      style={[styles.screen, { paddingTop: insets.top + spacing.md }]}
+      style={[styles.screen, { paddingTop: insets.top }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <View style={styles.header}>
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
-          <Text style={styles.backText}>‹ 会话</Text>
-        </Pressable>
+        <IconButton label={t("sessions")} onPress={() => setDrawerOpen(true)}>
+          <Icon name="menu" size={22} color={colors.text} />
+        </IconButton>
         <View style={styles.headerCenter}>
           <Text style={styles.title} numberOfLines={1}>
             {title}
           </Text>
-          <Text style={styles.subtitle} numberOfLines={1}>
-            {host?.name ?? "主机"} · {ready ? "端到端加密" : "未连接"}
-          </Text>
+          <View style={styles.headerMeta}>
+            {running ? <RunningDot /> : <View style={[styles.dot, { backgroundColor: ready ? colors.success : colors.faint }]} />}
+            <Text style={styles.subtitle} numberOfLines={1}>
+              {running ? t("running") : ready ? t("encrypted") : t("offline")}
+            </Text>
+          </View>
         </View>
         <View style={styles.headerActions}>
-          <Pressable
-            accessibilityRole="button"
+          <IconButton
+            label={t("review")}
             onPress={() =>
               router.push({
                 pathname: "/hosts/[hostId]/sessions/[sessionId]/review",
                 params: { hostId, sessionId, directory: session?.location?.directory ?? "" },
               })
             }
-            style={styles.headerAction}
           >
-            <Text style={styles.backText}>审阅</Text>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
+            <Icon name="eye" size={20} color={colors.muted} />
+          </IconButton>
+          <IconButton
+            label={t("diff")}
             onPress={() =>
               router.push({
                 pathname: "/hosts/[hostId]/sessions/[sessionId]/diff",
                 params: { hostId, sessionId },
               })
             }
-            style={styles.headerAction}
           >
-            <Text style={styles.backText}>Diff</Text>
-          </Pressable>
+            <Icon name="diff" size={20} color={colors.muted} />
+          </IconButton>
         </View>
       </View>
 
-      <SessionControls
-        session={session ?? { id: sessionId }}
-        disabled={!ready || !session}
-        loadAgents={loadAgents}
-        loadModels={loadModels}
-        onSelectAgent={selectAgent}
-        onSelectModel={selectModel}
-      />
-
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={styles.messages}
-        keyboardShouldPersistTaps="handled"
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} tintColor={colors.text} />}
-        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-        onScroll={(event) => {
-          const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent
-          atBottomRef.current = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 80
-        }}
-        scrollEventThrottle={100}
-      >
-        {!ready && connection?.status === "error" ? (
-          <View style={styles.notice}>
-            <Text style={styles.noticeTitle}>主机离线</Text>
-            <Text style={styles.noticeBody}>{connection.error?.message ?? "连接已断开"}</Text>
-            <View style={styles.noticeAction}>
-              <Button label="重试" onPress={() => void ensureConnection(hostId, { force: true }).catch(() => undefined)} />
+      <View style={{ flex: 1 }}>
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={styles.messages}
+          keyboardShouldPersistTaps="handled"
+          onContentSizeChange={onContentSizeChange}
+          onScroll={(event) => {
+            const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent
+            const near = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 90
+            atBottomRef.current = near
+            scrollYRef.current = contentOffset.y
+            setShowJump(!near)
+          }}
+          scrollEventThrottle={80}
+        >
+          {!ready ? (
+            <View style={styles.notice}>
+              <Text style={styles.noticeTitle}>{t("hostOffline")}</Text>
+              <Text style={styles.noticeBody}>{t("hostOfflineBody")}</Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void ensureConnection(hostId, { force: true }).catch(() => undefined)}
+                style={{ marginTop: 10, alignSelf: "flex-start" }}
+              >
+                <Text style={{ color: colors.accent, fontSize: 13, fontWeight: "600" }}>{t("retry")}</Text>
+              </Pressable>
             </View>
+          ) : null}
+
+          {turnNotice ? (
+          <View style={[styles.turnNotice, { backgroundColor: colors.accentSoft }]}>
+            <Icon name="check" size={13} color={colors.accent} />
+            <Text style={{ fontSize: 12, color: colors.accent, fontWeight: "600" }}>{t("turnCompleteNotice")}</Text>
           </View>
         ) : null}
-
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        {olderCursor && messages && messages.length > 0 ? (
-          <Pressable accessibilityRole="button" onPress={() => void loadOlder()} style={styles.olderButton}>
-            <Text style={styles.olderText}>{loadingOlder ? "加载中…" : "加载更早消息"}</Text>
+
+          {olderCursor && messages && messages.length > 0 ? (
+            <Pressable accessibilityRole="button" onPress={() => void loadOlder()} style={styles.olderButton}>
+              <Text style={styles.olderText}>{loadingOlder ? t("loadingOlder") : t("loadOlder")}</Text>
+            </Pressable>
+          ) : null}
+
+          {messages === null ? (
+            <View style={{ paddingTop: 60, alignItems: "center" }}>
+              <ActivityIndicator color={colors.accent} />
+            </View>
+          ) : null}
+          {messages?.length === 0 ? (
+            <Text style={styles.emptyMessages}>{t("noMessages")}</Text>
+          ) : null}
+
+          {messages?.map((message) => (
+            <MessageView key={message.id} message={message} />
+          ))}
+
+          {running ? (
+            <View style={styles.runningRow}>
+              <RunningDot />
+              <Text style={styles.runningText}>{t("running")}</Text>
+              <Pressable accessibilityRole="button" onPress={() => void stop()} style={styles.stopChip}>
+                <Icon name="stop" size={11} color={colors.danger} />
+                <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.danger }}>{t("stop")}</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </ScrollView>
+
+        {showJump && messages && messages.length > 0 ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              atBottomRef.current = true
+              setShowJump(false)
+              scrollRef.current?.scrollToEnd({ animated: true })
+            }}
+            style={[styles.jump, { backgroundColor: colors.surface, borderColor: colors.border }]}
+          >
+            <Icon name="chevronDown" size={16} color={colors.muted} />
+            <Text style={{ fontSize: 12, color: colors.muted, fontWeight: "500" }}>{t("scrollToBottom")}</Text>
           </Pressable>
         ) : null}
-        {messages === null ? <Text style={styles.loading}>正在加载消息…</Text> : null}
-        {messages?.length === 0 ? <Text style={styles.loading}>还没有消息。发送第一条消息开始。</Text> : null}
-
-        {messages?.map((message) => <MessageRow key={message.id} message={message} />)}
-      </ScrollView>
+      </View>
 
       <PendingDock
         permissions={permissions}
@@ -384,23 +554,23 @@ export default function ChatScreen() {
         onCancelForm={(form) => void cancelForm(form)}
       />
 
-      <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
+      <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
         {dictation.listening ? (
           <Pressable accessibilityRole="button" onPress={dictation.stop} style={styles.voiceBar}>
             <Text style={styles.voiceText}>
               {dictation.engine === "local"
-                ? "本地模型听写中…"
+                ? t("listeningLocal")
                 : dictation.engine === "host"
-                  ? "主机模型听写中…"
-                  : "正在听写…（系统语音识别）"}
+                  ? t("listeningHost")
+                  : t("listeningSystem")}
             </Text>
-            <Text style={styles.voiceStop}>停止</Text>
+            <Text style={styles.voiceStop}>{t("stop")}</Text>
           </Pressable>
         ) : null}
         {dictation.transcribing ? (
           <View style={styles.voiceBar}>
             <Text style={styles.voiceText}>
-              {dictation.engine === "host" ? "正在用主机模型识别…" : "正在用本地模型识别…"}
+              {dictation.engine === "host" ? t("transcribingHost") : t("transcribingLocal")}
             </Text>
             <ActivityIndicator size="small" color={colors.accent} />
           </View>
@@ -408,56 +578,316 @@ export default function ChatScreen() {
         {dictation.error ? (
           <Pressable accessibilityRole="button" onPress={dictation.clearError} style={styles.voiceBar}>
             <Text style={styles.voiceError}>{dictation.error}</Text>
-            <Text style={styles.voiceStop}>关闭</Text>
+            <Text style={styles.voiceStop}>{t("close")}</Text>
           </Pressable>
         ) : null}
-        {insertNotice ? <Text style={styles.insertNotice}>已插入，请确认后发送</Text> : null}
+        {insertNotice ? <Text style={styles.insertNotice}>{t("inserted")}</Text> : null}
+
         <View style={styles.composerRow}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={dictation.listening ? "停止听写" : "语音听写"}
+          <IconButton
+            label={t("dictation")}
+            active={dictation.listening}
             disabled={!ready || sending || readOnly || dictation.transcribing}
             onPress={() => (dictation.listening ? dictation.stop() : void dictation.start("zh-CN"))}
-            style={({ pressed }) => [
-              styles.mic,
-              dictation.listening && styles.micActive,
-              (!ready || sending || readOnly || dictation.transcribing) && styles.sendDisabled,
-              pressed && styles.sendPressed,
-            ]}
           >
-            <Text style={[styles.micText, dictation.listening && styles.micTextActive]}>🎤</Text>
-          </Pressable>
+            <Icon name="mic" size={20} color={dictation.listening ? colors.accent : colors.muted} />
+          </IconButton>
           <TextInput
             editable={ready && !sending && !readOnly}
             multiline
             onChangeText={setDraft}
-            placeholder={readOnly ? "只读设备无法发送消息" : ready ? "输入消息…" : "等待主机连接…"}
+            placeholder={readOnly ? t("readOnlyDevice") : ready ? t("messagePlaceholder") : t("waitingHost")}
             placeholderTextColor={colors.faint}
             style={styles.input}
             value={draft}
           />
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="发送"
+            accessibilityLabel={t("send")}
             disabled={!ready || sending || readOnly || draft.trim().length === 0}
             onPress={() => void send()}
             style={({ pressed }) => [
               styles.send,
-              (!ready || sending || readOnly || draft.trim().length === 0) && styles.sendDisabled,
-              pressed && styles.sendPressed,
+              (!ready || sending || readOnly || draft.trim().length === 0) && { opacity: 0.35 },
+              pressed && { opacity: 0.7 },
             ]}
           >
-            {sending ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.sendText}>发送</Text>}
+            {sending ? (
+              <ActivityIndicator color={colors.accentText} size="small" />
+            ) : (
+              <Icon name="send" size={18} color={colors.accentText} />
+            )}
           </Pressable>
         </View>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => void openSettings()}
+          style={({ pressed }) => [styles.settingsBar, pressed && { opacity: 0.7 }]}
+        >
+          <Icon name="sliders" size={15} color={colors.muted} />
+          <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.muted }}>{t("sessionSettings")}</Text>
+          <Text style={styles.settingsMeta} numberOfLines={1}>
+            {agentName} · {modelName}
+          </Text>
+          <Icon name="chevronRight" size={14} color={colors.faint} />
+        </Pressable>
       </View>
+
+      <SessionDrawer
+        visible={drawerOpen}
+        hostId={hostId}
+        hostName={hostName ?? t("sessions")}
+        currentSessionId={sessionId}
+        onClose={() => setDrawerOpen(false)}
+        onSelect={(next) =>
+          router.replace({ pathname: "/hosts/[hostId]/sessions/[sessionId]", params: { hostId, sessionId: next.id } })
+        }
+        onNewSession={() =>
+          router.push({ pathname: "/hosts/[hostId]/sessions", params: { hostId, new: "1" } })
+        }
+        onHosts={() => router.replace("/")}
+      />
+
+      <BottomSheet
+        visible={sheetOpen}
+        title={
+          sheetMode === "agent" ? t("agent") : sheetMode === "model" ? t("model") : t("sessionSettings")
+        }
+        onClose={() => setSheetOpen(false)}
+        maxHeight={640}
+      >
+        {sheetMode !== "main" ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setSheetMode("main")
+              setModelQuery("")
+            }}
+            style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 6 }}
+          >
+            <Icon name="back" size={16} color={colors.muted} />
+            <Text style={{ fontSize: 13, color: colors.muted }}>{t("back")}</Text>
+          </Pressable>
+        ) : null}
+
+        {optionsBusy ? <ActivityIndicator style={{ marginVertical: 12 }} color={colors.accent} /> : null}
+        {optionError ? <Text style={{ fontSize: 12.5, color: colors.danger, marginBottom: 8 }}>{optionError}</Text> : null}
+
+        {sheetMode === "main" ? (
+          <View style={{ gap: 4 }}>
+            <SheetRow
+              icon="spark"
+              label={t("agent")}
+              value={agentName}
+              onPress={() => setSheetMode("agent")}
+            />
+            <SheetRow icon="message" label={t("model")} value={modelName} onPress={() => setSheetMode("model")} />
+
+            <Text style={styles.sheetLabel}>{t("engine")}</Text>
+            <Segmented
+              value={voiceOverride ?? "auto"}
+              options={[
+                { value: "auto", label: t("engineAuto") },
+                { value: "local", label: t("engineLocal") },
+                { value: "host", label: t("engineHost") },
+              ]}
+              onChange={(value) => void chooseVoice(value)}
+            />
+            <Text style={{ fontSize: 11.5, color: colors.faint, marginTop: 4 }}>{t("engineAutoHint")}</Text>
+
+            <Text style={styles.sheetLabel}>{t("mcp")}</Text>
+            <Text style={{ fontSize: 11.5, color: colors.faint, marginBottom: 4 }}>{t("mcpHint")}</Text>
+            {mcp === null ? (
+              <Text style={{ fontSize: 12.5, color: colors.faint }}>{t("loading")}</Text>
+            ) : mcp.length === 0 ? (
+              <Text style={{ fontSize: 12.5, color: colors.faint }}>{t("noMcp")}</Text>
+            ) : (
+              mcp.map((server) => {
+                const status = server.status?.status ?? "unknown"
+                const connected = status === "connected"
+                return (
+                  <Pressable
+                    key={server.name}
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: connected }}
+                    disabled={optionsBusy}
+                    onPress={() => void toggleMcp(server)}
+                    style={({ pressed }) => [
+                      {
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 10,
+                        paddingVertical: 12,
+                        borderBottomWidth: StyleSheet.hairlineWidth,
+                        borderBottomColor: colors.border,
+                      },
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 14, fontWeight: "500", color: colors.text }}>
+                        {server.title?.trim() || server.name}
+                      </Text>
+                      <Text style={{ fontSize: 11.5, color: colors.faint, marginTop: 2 }}>{status}</Text>
+                    </View>
+                    <Badge text={connected ? t("on") : t("off")} tone={connected ? "success" : "neutral"} />
+                    <View
+                      style={{
+                        width: 40,
+                        height: 24,
+                        borderRadius: 12,
+                        padding: 3,
+                        backgroundColor: connected ? colors.accent : colors.surface2,
+                        alignItems: connected ? "flex-end" : "flex-start",
+                      }}
+                    >
+                      <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: "#FFFFFF" }} />
+                    </View>
+                  </Pressable>
+                )
+              })
+            )}
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setSheetOpen(false)
+                router.push({
+                  pathname: "/hosts/[hostId]/sessions/[sessionId]/review",
+                  params: { hostId, sessionId, directory: session?.location?.directory ?? "" },
+                })
+              }}
+              style={({ pressed }) => [styles.sheetAction, pressed && { opacity: 0.7 }]}
+            >
+              <Icon name="eye" size={18} color={colors.muted} />
+              <Text style={styles.sheetActionText}>{t("review")}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setSheetOpen(false)
+                router.push({ pathname: "/hosts/[hostId]/sessions/[sessionId]/diff", params: { hostId, sessionId } })
+              }}
+              style={({ pressed }) => [styles.sheetAction, pressed && { opacity: 0.7 }]}
+            >
+              <Icon name="diff" size={18} color={colors.muted} />
+              <Text style={styles.sheetActionText}>{t("diff")}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        {sheetMode === "agent" ? (
+          <View>
+            {(agents ?? []).filter((agent) => agent.mode !== "subagent").map((agent) => (
+              <Pressable
+                key={agent.id}
+                accessibilityRole="button"
+                accessibilityState={{ selected: agent.id === session?.agent }}
+                onPress={() => void selectAgent(agent.id)}
+                style={({ pressed }) => [styles.optionRow, pressed && { opacity: 0.7 }]}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14.5, fontWeight: "500", color: colors.text }}>{agent.name}</Text>
+                  {agent.description ? (
+                    <Text style={{ fontSize: 12, color: colors.faint, marginTop: 2 }} numberOfLines={2}>
+                      {agent.description}
+                    </Text>
+                  ) : null}
+                </View>
+                {agent.id === session?.agent ? <Icon name="check" size={18} color={colors.accent} /> : null}
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+
+        {sheetMode === "model" ? (
+          <View>
+            <TextInput
+              value={modelQuery}
+              onChangeText={setModelQuery}
+              placeholder={t("search")}
+              placeholderTextColor={colors.faint}
+              autoCapitalize="none"
+              style={styles.modelSearch}
+            />
+            {filteredModels.map((model) => {
+              const selected =
+                model.modelID === session?.model?.id && model.providerID === session?.model?.providerID
+              return (
+                <Pressable
+                  key={`${model.providerID}/${model.modelID}`}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  onPress={() => void selectModel(model)}
+                  style={({ pressed }) => [styles.optionRow, pressed && { opacity: 0.7 }]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 14.5, fontWeight: "500", color: colors.text }} numberOfLines={1}>
+                      {model.name}
+                    </Text>
+                    <Text style={{ fontSize: 11.5, color: colors.faint, marginTop: 2 }} numberOfLines={1}>
+                      {model.providerID} / {model.modelID}
+                    </Text>
+                  </View>
+                  {selected ? <Icon name="check" size={18} color={colors.accent} /> : null}
+                </Pressable>
+              )
+            })}
+          </View>
+        ) : null}
+      </BottomSheet>
     </KeyboardAvoidingView>
   )
 }
 
-function isSessionEvent(type: string | undefined): boolean {
-  if (!type) return false
-  return /^(message|session|permission|form)\./u.test(type)
+function SheetRow(props: {
+  icon: "spark" | "message"
+  label: string
+  value: string
+  onPress: () => void
+}) {
+  const { colors } = useTheme()
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={props.onPress}
+      style={({ pressed }) => [
+        {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 10,
+          paddingVertical: 12,
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: colors.border,
+        },
+        pressed && { opacity: 0.7 },
+      ]}
+    >
+      <Icon name={props.icon} size={18} color={colors.muted} />
+      <Text style={{ fontSize: 14.5, fontWeight: "500", color: colors.text }}>{props.label}</Text>
+      <Text style={{ flex: 1, textAlign: "right", fontSize: 13, color: colors.muted }} numberOfLines={1}>
+        {props.value}
+      </Text>
+      <Icon name="chevronRight" size={15} color={colors.faint} />
+    </Pressable>
+  )
+}
+
+function RunningDot() {
+  const { colors } = useTheme()
+  const opacity = useRef(new Animated.Value(1)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.25, duration: 650, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1, duration: 650, useNativeDriver: true }),
+      ]),
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [opacity])
+  return <Animated.View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.accent, opacity }} />
 }
 
 function mergeMessages(first: SessionMessage[], second: SessionMessage[]): SessionMessage[] {
@@ -466,238 +896,155 @@ function mergeMessages(first: SessionMessage[], second: SessionMessage[]): Sessi
   return [...byId.values()].sort((left, right) => toMillis(left.time?.created) - toMillis(right.time?.created))
 }
 
-function MessageRow(props: { message: SessionMessage }) {
-  const { message } = props
-
-  if (message.type === "user") {
-    return (
-      <View style={[styles.bubble, styles.userBubble]}>
-        <Text style={styles.userText}>{message.text ?? ""}</Text>
-      </View>
-    )
-  }
-
-  if (message.type === "assistant") {
-    const blocks = message.content ?? []
-    return (
-      <View style={styles.assistant}>
-        {blocks.map((block, index) => (
-          <ContentBlock key={index} block={block} />
-        ))}
-        {message.error?.message ? <Text style={styles.error}>{message.error.message}</Text> : null}
-      </View>
-    )
-  }
-
-  if (message.type === "idle") {
-    return <Text style={styles.systemLine}>{message.outcome === "interrupted" ? "已中断" : "本轮结束"}</Text>
-  }
-
-  if (message.type === "system" || message.type === "synthetic" || message.type === "skill") {
-    const text = message.text ?? message.description ?? message.name ?? message.type
-    return <Text style={styles.systemLine}>{text}</Text>
-  }
-
-  if (message.type === "shell") {
-    const text = (message as unknown as { command?: string }).command ?? "shell"
-    return (
-      <View style={styles.toolCard}>
-        <Text style={styles.toolName}>shell</Text>
-        <Text style={styles.toolText}>{text}</Text>
-      </View>
-    )
-  }
-
-  return null
+function basename(path: string): string {
+  const parts = path.split("/").filter(Boolean)
+  return parts[parts.length - 1] ?? path
 }
 
-function ContentBlock(props: { block: AssistantContent }) {
-  const { block } = props
-
-  if (block.type === "text") {
-    return <Text style={styles.assistantText}>{(block as { text: string }).text}</Text>
-  }
-
-  if (block.type === "reasoning") {
-    return <ReasoningBlock text={(block as { text: string }).text} />
-  }
-
-  if (block.type === "tool") {
-    const tool = block as {
-      name: string
-      state?: { status?: string; input?: unknown; error?: { message?: string } }
-    }
-    const status = tool.state?.status ?? "running"
-    return (
-      <View style={styles.toolCard}>
-        <View style={styles.toolHeader}>
-          <Text style={styles.toolName}>{tool.name}</Text>
-          <Text style={[styles.toolStatus, status === "error" && styles.toolStatusError]}>{statusLabel(status)}</Text>
-        </View>
-        {tool.state?.input !== undefined ? (
-          <Text style={styles.toolText} numberOfLines={4}>
-            {summarizeInput(tool.state.input)}
-          </Text>
-        ) : null}
-        {tool.state?.error?.message ? <Text style={styles.error}>{tool.state.error.message}</Text> : null}
-      </View>
-    )
-  }
-
-  return null
-}
-
-function ReasoningBlock(props: { text: string }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <View style={styles.reasoning}>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen((value) => !value)}>
-        <Text style={styles.reasoningToggle}>
-          {open ? "收起思考过程" : "思考过程"} · {props.text.length} 字
-        </Text>
-      </Pressable>
-      {open ? <Text style={styles.reasoningText}>{props.text}</Text> : null}
-    </View>
-  )
-}
-
-function summarizeInput(input: unknown): string {
-  if (typeof input === "string") return input
-  try {
-    const text = JSON.stringify(input)
-    return text.length > 500 ? `${text.slice(0, 500)}…` : text
-  } catch {
-    return String(input)
-  }
-}
-
-function statusLabel(status: string): string {
-  if (status === "completed") return "完成"
-  if (status === "error") return "失败"
-  if (status === "streaming") return "生成中"
-  return "运行中"
-}
-
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  back: { width: 64 },
-  headerActions: { flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: spacing.md, width: 88 },
-  headerAction: { paddingVertical: 2 },
-  backText: { fontSize: 15, color: colors.muted },
-  headerCenter: { flex: 1, alignItems: "center" },
-  title: { fontSize: 16, fontWeight: "600", color: colors.text },
-  subtitle: { marginTop: 2, fontSize: 11, color: colors.muted },
-  messages: { padding: spacing.lg, paddingBottom: spacing.xl, gap: spacing.md },
-  loading: { textAlign: "center", fontSize: 13, color: colors.faint, marginTop: spacing.lg },
-  olderButton: { alignSelf: "center", paddingVertical: spacing.sm, paddingHorizontal: spacing.md },
-  olderText: { fontSize: 13, color: colors.accent },
-  error: { fontSize: 13, color: colors.danger, lineHeight: 19 },
-  bubble: { maxWidth: "86%", paddingHorizontal: spacing.md, paddingVertical: spacing.sm + 2, borderRadius: radius.lg },
-  userBubble: { alignSelf: "flex-end", backgroundColor: colors.accent },
-  userText: { color: "#FFFFFF", fontSize: 15, lineHeight: 21 },
-  assistant: { alignSelf: "stretch", gap: spacing.sm },
-  assistantText: { fontSize: 15, lineHeight: 23, color: colors.text },
-  reasoning: {
-    borderLeftWidth: 2,
-    borderLeftColor: colors.border,
-    paddingLeft: spacing.md,
-    paddingVertical: 2,
-  },
-  reasoningToggle: { fontSize: 12, color: colors.faint, fontWeight: "500" },
-  reasoningText: { marginTop: 4, fontSize: 13, lineHeight: 20, color: colors.muted, fontStyle: "italic" },
-  systemLine: { textAlign: "center", fontSize: 12, color: colors.faint, marginVertical: spacing.xs },
-  toolCard: {
-    padding: spacing.md,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: 4,
-  },
-  toolHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  toolName: { fontSize: 13, fontWeight: "600", color: colors.text },
-  toolStatus: { fontSize: 11, color: colors.success },
-  toolStatusError: { color: colors.danger },
-  toolText: { fontSize: 12, lineHeight: 17, color: colors.muted, fontFamily: Platform.select({ android: "monospace", default: undefined }) },
-  notice: {
-    padding: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  noticeTitle: { fontSize: 15, fontWeight: "600", color: colors.text },
-  noticeBody: { marginTop: 4, fontSize: 13, color: colors.muted },
-  noticeAction: { marginTop: spacing.md, alignItems: "flex-start" },
-  composer: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    backgroundColor: colors.bg,
-    gap: spacing.sm,
-  },
-  composerRow: { flexDirection: "row", alignItems: "flex-end", gap: spacing.sm },
-  voiceBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surface,
-  },
-  voiceText: { fontSize: 13, color: colors.accent, fontWeight: "500" },
-  voiceError: { flex: 1, fontSize: 12, color: colors.danger },
-  voiceStop: { fontSize: 13, color: colors.muted },
-  insertNotice: { fontSize: 12, color: colors.success, paddingHorizontal: spacing.sm },
-  mic: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  micActive: { backgroundColor: colors.danger, borderColor: colors.danger },
-  micText: { fontSize: 18 },
-  micTextActive: { color: "#FFFFFF" },
-  input: {
-    flex: 1,
-    maxHeight: 120,
-    minHeight: 44,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm + 2,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    fontSize: 15,
-    lineHeight: 21,
-    color: colors.text,
-    textAlignVertical: "top",
-  },
-  send: {
-    minWidth: 64,
-    height: 44,
-    paddingHorizontal: spacing.md,
-    borderRadius: radius.full,
-    backgroundColor: colors.accent,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sendDisabled: { opacity: 0.35 },
-  sendPressed: { opacity: 0.7 },
-  sendText: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" },
-})
+const chatStyles = (colors: Palette) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.bg },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 8,
+      paddingBottom: 8,
+      gap: 4,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    headerCenter: { flex: 1, alignItems: "center" },
+    headerMeta: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 2 },
+    headerActions: { flexDirection: "row", alignItems: "center" },
+    title: { fontSize: 15.5, fontWeight: "600", color: colors.text },
+    subtitle: { fontSize: 11, color: colors.muted },
+    dot: { width: 6, height: 6, borderRadius: 3 },
+    messages: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28, gap: 14 },
+    emptyMessages: { fontSize: 14, color: colors.faint, textAlign: "center", marginTop: 60 },
+    error: { fontSize: 13, lineHeight: 19, color: colors.danger },
+    olderButton: { alignSelf: "center", paddingVertical: 6, paddingHorizontal: 12 },
+    olderText: { fontSize: 12.5, color: colors.accent, fontWeight: "500" },
+    notice: {
+      padding: 16,
+      borderRadius: 14,
+      backgroundColor: colors.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    noticeTitle: { fontSize: 14.5, fontWeight: "600", color: colors.text },
+    noticeBody: { marginTop: 4, fontSize: 12.5, lineHeight: 18, color: colors.muted },
+    runningRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6 },
+    runningText: { flex: 1, fontSize: 12.5, color: colors.muted },
+    stopChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 999,
+      backgroundColor: colors.dangerSoft,
+    },
+    jump: {
+      position: "absolute",
+      right: 18,
+      bottom: 12,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 999,
+      borderWidth: StyleSheet.hairlineWidth,
+    },
+    composer: {
+      paddingHorizontal: 12,
+      paddingTop: 8,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.border,
+      backgroundColor: colors.bg,
+      gap: 6,
+    },
+    composerRow: { flexDirection: "row", alignItems: "flex-end", gap: 4 },
+    input: {
+      flex: 1,
+      maxHeight: 132,
+      minHeight: 42,
+      paddingHorizontal: 14,
+      paddingTop: 10,
+      paddingBottom: 10,
+      borderRadius: 20,
+      backgroundColor: colors.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      fontSize: 15,
+      lineHeight: 21,
+      color: colors.text,
+      textAlignVertical: "top",
+    },
+    send: {
+      width: 42,
+      height: 42,
+      borderRadius: 21,
+      backgroundColor: colors.accent,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    settingsBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 8,
+    },
+    settingsMeta: { flex: 1, textAlign: "right", fontSize: 11.5, color: colors.faint },
+    voiceBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 10,
+      backgroundColor: colors.surface,
+    },
+    voiceText: { fontSize: 12.5, color: colors.accent, fontWeight: "500" },
+    voiceError: { flex: 1, fontSize: 12, color: colors.danger },
+    voiceStop: { fontSize: 12.5, color: colors.muted },
+    insertNotice: { fontSize: 11.5, color: colors.success, paddingHorizontal: 8 },
+    turnNotice: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      paddingVertical: 7,
+      borderRadius: 10,
+    },
+    sheetLabel: { fontSize: 12, fontWeight: "600", color: colors.faint, marginTop: 18, marginBottom: 6 },
+    sheetAction: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      paddingVertical: 13,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    sheetActionText: { fontSize: 14.5, fontWeight: "500", color: colors.text },
+    optionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    modelSearch: {
+      height: 40,
+      borderRadius: 10,
+      backgroundColor: colors.surface,
+      paddingHorizontal: 12,
+      fontSize: 13.5,
+      color: colors.text,
+      marginTop: 6,
+      marginBottom: 4,
+    },
+  })

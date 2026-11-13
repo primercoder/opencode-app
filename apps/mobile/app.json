@@ -2,7 +2,7 @@
   "expo": {
     "name": "OC Remote",
     "slug": "ocremote",
-    "version": "0.0.1",
+    "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "ocremote",
     "userInterfaceStyle": "automatic",
@@ -16,7 +16,12 @@
         "CAMERA",
         "POST_NOTIFICATIONS",
         "RECORD_AUDIO"
-      ]
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#EAF3FF"
+      },
+      "versionCode": 2
     },
     "plugins": [
       "expo-router",
@@ -32,10 +37,24 @@
         }
       ],
       "expo-secure-store",
-      "expo-speech-recognition"
+      "expo-speech-recognition",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain",
+          "backgroundColor": "#EAF3FF",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#0B0F17"
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "icon": "./assets/icon.png"
   }
 }

@@ -2,13 +2,43 @@ import { installRuntimePolyfills } from "@/polyfills"
 
 installRuntimePolyfills()
 
+import * as SplashScreen from "expo-splash-screen"
 import { router, Stack, useRootNavigationState } from "expo-router"
-import { useEffect, useRef } from "react"
-import { Linking, StatusBar } from "react-native"
+import { useEffect, useRef, useState } from "react"
+import { Linking, StatusBar, View } from "react-native"
 import { SafeAreaProvider } from "react-native-safe-area-context"
-import { colors } from "@/theme"
+import { ThemeProvider, useTheme } from "@/theme"
+import { usePreferences } from "@/stores/preferences"
+import { useHosts } from "@/stores/hosts"
+
+void SplashScreen.preventAutoHideAsync().catch(() => undefined)
 
 export default function RootLayout() {
+  const [ready, setReady] = useState(false)
+  const hydratePreferences = usePreferences((state) => state.hydrate)
+  const hydrateHosts = useHosts((state) => state.hydrate)
+
+  useEffect(() => {
+    Promise.all([hydratePreferences(), hydrateHosts()])
+      .catch(() => undefined)
+      .finally(() => setReady(true))
+  }, [hydratePreferences, hydrateHosts])
+
+  useEffect(() => {
+    if (ready) void SplashScreen.hideAsync().catch(() => undefined)
+  }, [ready])
+
+  return (
+    <SafeAreaProvider>
+      <ThemeProvider>
+        {ready ? <ThemedApp /> : <View style={{ flex: 1 }} />}
+      </ThemeProvider>
+    </SafeAreaProvider>
+  )
+}
+
+function ThemedApp() {
+  const { colors, scheme } = useTheme()
   const navigationState = useRootNavigationState()
   const initialHandled = useRef(false)
 
@@ -17,7 +47,7 @@ export default function RootLayout() {
 
     const handleUrl = (value: string | null) => {
       if (!value) return
-      if (value.startsWith("ocremote://pair")) {
+      if (value.startsWith("ocremote://pair") || value.startsWith("ocremote://p/")) {
         router.push({ pathname: "/hosts/add", params: { url: value } })
       }
     }
@@ -32,14 +62,18 @@ export default function RootLayout() {
   }, [navigationState?.key])
 
   return (
-    <SafeAreaProvider>
-      <StatusBar barStyle="dark-content" backgroundColor={colors.bg} />
+    <>
+      <StatusBar
+        barStyle={scheme === "dark" ? "light-content" : "dark-content"}
+        backgroundColor={colors.bg}
+      />
       <Stack
         screenOptions={{
           headerShown: false,
           contentStyle: { backgroundColor: colors.bg },
+          animation: "slide_from_right",
         }}
       />
-    </SafeAreaProvider>
+    </>
   )
 }

@@ -8,16 +8,21 @@ import { parsePatch, type DiffLineKind } from "@/opencode/diff"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 import { ensureConnection } from "@/transport/runtimes"
-import { colors, radius, spacing } from "@/theme"
+import { useT } from "@/i18n"
+import { radius, spacing, useTheme, useThemedStyles, type Palette } from "@/theme"
 
 export default function SessionDiffScreen() {
   const insets = useSafeAreaInsets()
+  const { colors } = useTheme()
+  const t = useT()
+  const styles = useThemedStyles(diffStyles)
   const params = useLocalSearchParams<{ hostId: string; sessionId: string }>()
   const { hostId, sessionId } = params
   const hydrate = useHosts((state) => state.hydrate)
   const hydrated = useHosts((state) => state.hydrated)
   const connection = useConnections((state) => (hostId ? state.byHost[hostId] : undefined))
   const [diffs, setDiffs] = useState<FileDiff[] | null>(null)
+  const [visibleFiles, setVisibleFiles] = useState(6)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -34,10 +39,11 @@ export default function SessionDiffScreen() {
     try {
       const runtime = await ensureConnection(hostId)
       setDiffs(await new OpencodeClient(runtime).sessionDiff(sessionId))
+      setVisibleFiles(6)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "加载 Diff 失败")
+      setError(cause instanceof Error ? cause.message : t("error"))
     }
-  }, [hostId, sessionId])
+  }, [hostId, sessionId, t])
 
   useEffect(() => {
     if (connection?.status !== "ready" || diffs !== null) return
@@ -57,18 +63,18 @@ export default function SessionDiffScreen() {
     <View style={[styles.screen, { paddingTop: insets.top + spacing.md }]}>
       <View style={styles.header}>
         <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
-          <Text style={styles.backText}>‹ 会话</Text>
+          <Text style={styles.backText}>‹ {t("sessions")}</Text>
         </Pressable>
         <View style={styles.headerCenter}>
-          <Text style={styles.title}>本轮 Diff</Text>
+          <Text style={styles.title}>{t("diffTitle")}</Text>
           {diffs ? (
             <Text style={styles.subtitle}>
-              最后修改 <Text style={styles.add}>+{additions}</Text> <Text style={styles.del}>−{deletions}</Text>
+              {t("diffSummary")} <Text style={styles.add}>+{additions}</Text> <Text style={styles.del}>−{deletions}</Text>
             </Text>
           ) : null}
         </View>
         <Pressable accessibilityRole="button" onPress={() => void refresh()} style={[styles.back, styles.refresh]}>
-          <Text style={styles.backText}>刷新</Text>
+          <Text style={styles.backText}>{t("refresh")}</Text>
         </Pressable>
       </View>
 
@@ -78,25 +84,40 @@ export default function SessionDiffScreen() {
       >
         {!connection || connection.status === "error" ? (
           <View style={styles.notice}>
-            <Text style={styles.noticeTitle}>主机未连接</Text>
-            <Text style={styles.noticeBody}>{connection?.error?.message ?? "请先返回会话并重试"}</Text>
+            <Text style={styles.noticeTitle}>{t("notConnectedShort")}</Text>
+            <Text style={styles.noticeBody}>{connection?.error?.message ?? t("returnToSession")}</Text>
             <View style={styles.noticeAction}>
-              <Button label="重试" onPress={() => void ensureConnection(hostId, { force: true }).catch(() => undefined)} />
+              <Button label={t("retry")} onPress={() => void ensureConnection(hostId, { force: true }).catch(() => undefined)} />
             </View>
           </View>
         ) : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
-        {diffs === null ? <Text style={styles.loading}>正在加载 Diff…</Text> : null}
-        {diffs?.length === 0 ? <Text style={styles.loading}>本轮没有文件改动。</Text> : null}
-        {diffs?.map((diff) => <DiffCard key={diff.file} diff={diff} />)}
+        {diffs === null ? <Text style={styles.loading}>{t("loadingDiff")}</Text> : null}
+        {diffs?.length === 0 ? <Text style={styles.loading}>{t("diffEmpty")}</Text> : null}
+        {diffs?.slice(0, visibleFiles).map((diff) => <DiffCard key={diff.file} diff={diff} />)}
+        {diffs && diffs.length > visibleFiles ? (
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setVisibleFiles((current) => current + 6)}
+            style={{ alignSelf: "center", paddingVertical: 10, paddingHorizontal: 14 }}
+          >
+            <Text style={{ fontSize: 13, color: colors.accent, fontWeight: "600" }}>
+              {t("showMoreFiles", { n: diffs.length - visibleFiles })}
+            </Text>
+          </Pressable>
+        ) : null}
       </ScrollView>
     </View>
   )
 }
 
 function DiffCard(props: { diff: FileDiff }) {
+  const { colors } = useTheme()
+  const styles = useThemedStyles(diffStyles)
+  const t = useT()
+  const [limit, setLimit] = useState(200)
   const lines = parsePatch(props.diff.patch)
-  const visible = lines.length > 1500 ? lines.slice(0, 1500) : lines
+  const visible = lines.slice(0, limit)
   return (
     <View style={styles.fileCard}>
       <View style={styles.fileHeader}>
@@ -110,14 +131,14 @@ function DiffCard(props: { diff: FileDiff }) {
       <ScrollView horizontal contentContainerStyle={styles.patchScroll} showsHorizontalScrollIndicator={false}>
         <View>
           {visible.map((line, index) => (
-            <View key={index} style={[styles.lineRow, lineBackground(line.kind)]}>
+            <View key={index} style={[styles.lineRow, lineBackground(line.kind, styles)]}>
               <Text style={styles.oldLineNumber}>{line.oldLine ?? ""}</Text>
               <Text style={styles.newLineNumber}>{line.newLine ?? ""}</Text>
-              <Text style={[styles.line, lineStyle(line.kind)]}>{line.text.length > 0 ? line.text : " "}</Text>
+              <Text style={[styles.line, lineStyle(line.kind, styles)]}>{line.text.length > 0 ? line.text : " "}</Text>
             </View>
           ))}
           {lines.length > visible.length ? (
-            <Text style={styles.truncated}>已省略 {lines.length - visible.length} 行，请在电脑上查看完整 Diff。</Text>
+            <Text style={styles.truncated}>…</Text>
           ) : null}
         </View>
       </ScrollView>
@@ -125,7 +146,7 @@ function DiffCard(props: { diff: FileDiff }) {
   )
 }
 
-function lineStyle(kind: DiffLineKind) {
+function lineStyle(kind: DiffLineKind, styles: ReturnType<typeof diffStyles>) {
   if (kind === "meta") return styles.lineMeta
   if (kind === "hunk") return styles.lineHunk
   if (kind === "add") return styles.lineAdd
@@ -133,7 +154,7 @@ function lineStyle(kind: DiffLineKind) {
   return undefined
 }
 
-function lineBackground(kind: DiffLineKind) {
+function lineBackground(kind: DiffLineKind, styles: ReturnType<typeof diffStyles>) {
   if (kind === "hunk") return styles.rowHunk
   if (kind === "add") return styles.rowAdd
   if (kind === "del") return styles.rowDel
@@ -142,7 +163,8 @@ function lineBackground(kind: DiffLineKind) {
 
 const mono = { fontFamily: "monospace" as const }
 
-const styles = StyleSheet.create({
+const diffStyles = (colors: Palette) =>
+  StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: "row",
@@ -219,7 +241,7 @@ const styles = StyleSheet.create({
   line: { fontSize: 11, lineHeight: 17, color: colors.text, ...mono, paddingRight: spacing.md },
   lineMeta: { color: colors.faint, fontWeight: "600" },
   lineHunk: { color: colors.accent },
-  lineAdd: { color: "#0B6B32" },
-  lineDel: { color: "#9B1C28" },
+  lineAdd: { color: colors.success },
+  lineDel: { color: colors.danger },
   truncated: { padding: spacing.md, fontSize: 12, color: colors.faint },
 })

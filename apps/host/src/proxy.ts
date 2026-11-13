@@ -79,21 +79,27 @@ export async function handleProxyRequest(input: {
       headers: pickResponseHeaders(response.headers),
     })
 
+    let seq = 0
+    // OCRP frames are capped at 1 MiB. Split strings so a large diff or file
+    // body cannot turn into a single oversized protected record.
+    const emit = (text: string) => {
+      if (!text) return
+      for (let offset = 0; offset < text.length; offset += 32_000) {
+        sender.chunk(request.id, seq++, text.slice(offset, offset + 32_000))
+      }
+    }
+
     if (response.body && (response.headers.get("content-type") ?? "").includes("text/event-stream")) {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
-      let seq = 0
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        const text = decoder.decode(value, { stream: true })
-        if (text) sender.chunk(request.id, seq++, text)
+        emit(decoder.decode(value, { stream: true }))
       }
-      const tail = decoder.decode()
-      if (tail) sender.chunk(request.id, seq++, tail)
+      emit(decoder.decode())
     } else {
-      const text = await response.text()
-      if (text) sender.chunk(request.id, 0, text)
+      emit(await response.text())
     }
     sender.control({ t: "end", id: request.id })
   } catch (error) {

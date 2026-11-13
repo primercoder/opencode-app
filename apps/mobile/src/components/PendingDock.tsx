@@ -2,7 +2,8 @@ import { Linking, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, Vi
 import { useEffect, useState } from "react"
 import type { FormField, FormInfo, FormValue, PermissionRequest } from "@/opencode/client"
 import { activeFields, buildAnswer, initialAnswers, validateForm, type FormAnswers } from "@/opencode/forms"
-import { colors, radius, spacing } from "@/theme"
+import { useT } from "@/i18n"
+import { radius, spacing, useTheme, useThemedStyles, type Palette } from "@/theme"
 
 export function PendingDock(props: {
   permissions: PermissionRequest[]
@@ -12,12 +13,14 @@ export function PendingDock(props: {
   onSubmitForm: (form: FormInfo, answer: FormAnswers) => void
   onCancelForm: (form: FormInfo) => void
 }) {
+  const t = useT()
+  const styles = useThemedStyles(pendingStyles)
   const permission = props.permissions[0]
   if (permission) {
     return (
       <View style={styles.dock}>
         <View style={styles.dockHeader}>
-          <Text style={styles.dockTitle}>需要确认</Text>
+          <Text style={styles.dockTitle}>{t("confirmationNeeded")}</Text>
           {props.permissions.length > 1 ? (
             <Text style={styles.queue}>
               1 / {props.permissions.length}
@@ -34,7 +37,7 @@ export function PendingDock(props: {
     return (
       <View style={styles.dock}>
         <View style={styles.dockHeader}>
-          <Text style={styles.dockTitle}>需要填写</Text>
+          <Text style={styles.dockTitle}>{t("formNeeded")}</Text>
           {props.forms.length > 1 ? <Text style={styles.queue}>1 / {props.forms.length}</Text> : null}
         </View>
         <FormCard
@@ -56,13 +59,15 @@ function PermissionCard(props: {
   busy: boolean
   onReply: (decision: "once" | "always" | "reject") => void
 }) {
+  const t = useT()
+  const styles = useThemedStyles(pendingStyles)
   const { permission } = props
   const resources = permission.resources.slice(0, 5)
   const more = permission.resources.length - resources.length
 
   return (
     <View style={styles.card}>
-      <Text style={styles.cardTitle}>{permissionTitle(permission.action)}</Text>
+      <Text style={styles.cardTitle}>{permissionTitle(permission.action, t)}</Text>
       {permission.message ? <Text style={styles.cardBody}>{permission.message}</Text> : null}
       {resources.length > 0 ? (
         <View style={styles.resources}>
@@ -71,13 +76,13 @@ function PermissionCard(props: {
               {resource}
             </Text>
           ))}
-          {more > 0 ? <Text style={styles.resourceMore}>还有 {more} 项</Text> : null}
+          {more > 0 ? <Text style={styles.resourceMore}>{t("moreItems", { n: more })}</Text> : null}
         </View>
       ) : null}
       <View style={styles.actions}>
-        <Action label="拒绝" variant="ghost" disabled={props.busy} onPress={() => props.onReply("reject")} />
-        <Action label="总是允许" variant="ghost" disabled={props.busy} onPress={() => props.onReply("always")} />
-        <Action label="允许一次" variant="primary" disabled={props.busy} onPress={() => props.onReply("once")} />
+        <Action label={t("reject")} variant="ghost" disabled={props.busy} onPress={() => props.onReply("reject")} />
+        <Action label={t("alwaysAllow")} variant="ghost" disabled={props.busy} onPress={() => props.onReply("always")} />
+        <Action label={t("allowOnce")} variant="primary" disabled={props.busy} onPress={() => props.onReply("once")} />
       </View>
     </View>
   )
@@ -89,6 +94,8 @@ function FormCard(props: {
   onSubmit: (answer: FormAnswers) => void
   onCancel: () => void
 }) {
+  const t = useT()
+  const styles = useThemedStyles(pendingStyles)
   const [answers, setAnswers] = useState<FormAnswers>(() => initialAnswers(props.form))
   const [error, setError] = useState<string | null>(null)
 
@@ -136,20 +143,23 @@ function FormCard(props: {
             style={styles.external}
           >
             <Text style={styles.externalText}>{field.title ?? field.url}</Text>
-            <Text style={styles.externalHint}>在浏览器中打开</Text>
+            <Text style={styles.externalHint}>{t("openInBrowser")}</Text>
           </Pressable>
         ))}
       </ScrollView>
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <View style={styles.actions}>
-        <Action label="取消" variant="ghost" disabled={props.busy} onPress={props.onCancel} />
-        <Action label={props.busy ? "提交中…" : "提交"} variant="primary" disabled={props.busy} onPress={submit} />
+        <Action label={t("cancel")} variant="ghost" disabled={props.busy} onPress={props.onCancel} />
+        <Action label={props.busy ? t("submitting") : t("submit")} variant="primary" disabled={props.busy} onPress={submit} />
       </View>
     </View>
   )
 }
 
 function FieldInput(props: { field: FormField; value: FormValue | undefined; onChange: (value: FormValue | undefined) => void }) {
+  const { colors } = useTheme()
+  const t = useT()
+  const styles = useThemedStyles(pendingStyles)
   const { field } = props
   const label = field.title ?? field.key
 
@@ -254,6 +264,7 @@ function FieldInput(props: { field: FormField; value: FormValue | undefined; onC
 }
 
 function Action(props: { label: string; variant: "primary" | "ghost"; disabled: boolean; onPress: () => void }) {
+  const styles = useThemedStyles(pendingStyles)
   return (
     <Pressable
       accessibilityRole="button"
@@ -271,16 +282,17 @@ function Action(props: { label: string; variant: "primary" | "ghost"; disabled: 
   )
 }
 
-function permissionTitle(action: string): string {
+function permissionTitle(action: string, t: ReturnType<typeof useT>): string {
   const value = action.toLowerCase()
-  if (value.includes("bash") || value.includes("shell") || value.includes("command")) return "运行命令"
-  if (value.includes("edit") || value.includes("write") || value.includes("patch")) return "修改文件"
-  if (value.includes("read")) return "读取文件"
-  if (value.includes("webfetch") || value.includes("fetch")) return "访问网络"
-  return action || "执行操作"
+  if (value.includes("bash") || value.includes("shell") || value.includes("command")) return t("permRunCommand")
+  if (value.includes("edit") || value.includes("write") || value.includes("patch")) return t("permEditFile")
+  if (value.includes("read")) return t("permReadFile")
+  if (value.includes("webfetch") || value.includes("fetch")) return t("permNetwork")
+  return action || t("permAction")
 }
 
-const styles = StyleSheet.create({
+const pendingStyles = (colors: Palette) =>
+  StyleSheet.create({
   dock: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,

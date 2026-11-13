@@ -2,23 +2,37 @@ import { router, useLocalSearchParams } from "expo-router"
 import { useEffect, useState } from "react"
 import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { Button } from "@/components/Button"
+import type { Transport } from "@ocremote/protocol"
+import { Icon } from "@/components/Icon"
+import { Button, Card, Divider, IconButton, SectionLabel, Segmented } from "@/components/ui"
+import { useT } from "@/i18n"
 import { useHosts } from "@/stores/hosts"
-import { ensureConnection } from "@/transport/runtimes"
-import { colors, radius, spacing } from "@/theme"
+import { closeRuntime, ensureConnection } from "@/transport/runtimes"
+import { useTheme, useThemedStyles, type Palette } from "@/theme"
 
 export default function EditHostScreen() {
   const insets = useSafeAreaInsets()
+  const { colors } = useTheme()
+  const t = useT()
+  const styles = useThemedStyles(editStyles)
   const params = useLocalSearchParams<{ hostId: string }>()
   const hostId = params.hostId
   const hydrate = useHosts((state) => state.hydrate)
   const hydrated = useHosts((state) => state.hydrated)
   const host = useHosts((state) => state.hosts.find((item) => item.id === hostId))
   const renameHost = useHosts((state) => state.renameHost)
+  const setTransports = useHosts((state) => state.setTransports)
   const removeHost = useHosts((state) => state.removeHost)
+
   const [name, setName] = useState(host?.name ?? "")
-  const [saving, setSaving] = useState(false)
-  const [testing, setTesting] = useState(false)
+  const [routes, setRoutes] = useState<Transport[]>(host?.transports ?? [])
+  const [mode, setMode] = useState<"none" | "direct" | "relay">("none")
+  const [directUrl, setDirectUrl] = useState("ws://")
+  const [relayUrl, setRelayUrl] = useState("wss://")
+  const [relayRoom, setRelayRoom] = useState("")
+  const [relayToken, setRelayToken] = useState("")
+  const [formError, setFormError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testFailed, setTestFailed] = useState(false)
 
@@ -27,57 +41,105 @@ export default function EditHostScreen() {
   }, [hydrated, hydrate])
 
   useEffect(() => {
-    if (host) setName(host.name)
-  }, [host?.id, host?.name])
+    if (!host) return
+    setName(host.name)
+    setRoutes(host.transports)
+  }, [host?.id])
 
   if (!hydrated) return <View style={styles.screen} />
 
   if (!host) {
     return (
-      <View style={[styles.screen, styles.centered, { paddingTop: insets.top }]}>
-        <Text style={styles.emptyTitle}>主机不存在</Text>
-        <View style={styles.emptyAction}>
-          <Button label="返回" onPress={() => router.replace("/")} />
+      <View style={[styles.screen, { paddingTop: insets.top + 40, alignItems: "center" }]}>
+        <Text style={styles.emptyTitle}>{t("hostMissing")}</Text>
+        <View style={{ marginTop: 20 }}>
+          <Button label={t("backToHosts")} onPress={() => router.replace("/")} />
         </View>
       </View>
     )
   }
 
-  const save = async () => {
-    setSaving(true)
+  const save = async (options: { silent?: boolean } = {}) => {
+    setBusy(true)
+    setFormError(null)
     try {
-      await renameHost(host.id, name)
-      Alert.alert("已保存", "主机名称已更新。")
+      if (name.trim() && name.trim() !== host.name) await renameHost(host.id, name.trim())
+      await setTransports(host.id, routes)
+      closeRuntime(host.id)
+      if (!options.silent) {
+        setTestResult(null)
+        setTestFailed(false)
+      }
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : t("error"))
     } finally {
-      setSaving(false)
+      setBusy(false)
     }
   }
 
   const test = async () => {
-    setTesting(true)
-    setTestResult(null)
+    setBusy(true)
     setTestFailed(false)
-    const startedAt = Date.now()
+    setTestResult(null)
     try {
+      await save({ silent: true })
+      const started = Date.now()
       const runtime = await ensureConnection(host.id, { force: true })
       const response = await runtime.request({ method: "GET", path: "/api/info", timeoutMs: 8_000 })
-      if (response.status !== 200) throw new Error(`opencode 返回 HTTP ${response.status}`)
-      setTestResult(`连接成功 · ${Date.now() - startedAt} ms`)
+      if (response.status !== 200) throw new Error(`opencode HTTP ${response.status}`)
+      setTestResult(t("testOk", { ms: Date.now() - started }))
     } catch (cause) {
       setTestFailed(true)
-      setTestResult(cause instanceof Error ? cause.message : "连接失败")
+      setTestResult(cause instanceof Error ? cause.message : t("connectionFailed"))
     } finally {
-      setTesting(false)
+      setBusy(false)
+    }
+  }
+
+  const addRoute = () => {
+    setFormError(null)
+    if (mode === "direct") {
+      const url = directUrl.trim()
+      if (!/^wss?:\/\/\S+$/u.test(url)) {
+        setFormError(t("directHint"))
+        return
+      }
+      setRoutes((current) => [...current, { kind: "lan", url, priority: current.length }])
+      setMode("none")
+      setDirectUrl("ws://")
+      return
+    }
+    if (mode === "relay") {
+      const url = relayUrl.trim()
+      if (!/^wss?:\/\/\S+$/u.test(url) || !relayRoom.trim() || !relayToken.trim()) {
+        setFormError(t("error"))
+        return
+      }
+      setRoutes((current) => [
+        ...current,
+        {
+          kind: "relay",
+          url,
+          room: relayRoom.trim(),
+          clientToken: relayToken.trim(),
+          priority: current.length,
+        },
+      ])
+      setMode("none")
+      setRelayUrl("wss://")
+      setRelayRoom("")
+      setRelayToken("")
     }
   }
 
   const confirmRemove = () => {
-    Alert.alert("移除主机", `移除“${host.name}”？本机保存的设备令牌也会删除，但不会撤销主机端授权。`, [
-      { text: "取消", style: "cancel" },
+    Alert.alert(t("removeHost"), t("removeHostConfirm", { name: host.name }), [
+      { text: t("cancel"), style: "cancel" },
       {
-        text: "移除",
+        text: t("remove"),
         style: "destructive",
         onPress: () => {
+          closeRuntime(host.id)
           void removeHost(host.id).then(() => router.replace("/"))
         },
       },
@@ -86,137 +148,206 @@ export default function EditHostScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={[styles.screen, { paddingTop: insets.top + spacing.md }]}
+      style={[styles.screen, { paddingTop: insets.top }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <View style={styles.header}>
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
-          <Text style={styles.backText}>‹ 返回</Text>
-        </Pressable>
-        <Text style={styles.title}>主机设置</Text>
-        <View style={styles.back} />
+        <IconButton label={t("back")} onPress={() => router.back()}>
+          <Icon name="back" size={22} color={colors.text} />
+        </IconButton>
+        <Text style={styles.title}>{t("hostSettings")}</Text>
+        <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.label}>名称</Text>
-        <View style={styles.nameRow}>
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <SectionLabel>{t("name")}</SectionLabel>
+        <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
           <TextInput
             onChangeText={setName}
-            placeholder="主机名称"
+            placeholder={t("name")}
             placeholderTextColor={colors.faint}
             style={styles.input}
             value={name}
           />
-          <Button label={saving ? "保存中…" : "保存"} onPress={() => void save()} disabled={saving || name.trim() === host.name} />
+          <Button
+            label={busy ? t("loading") : t("save")}
+            size="sm"
+            disabled={busy || !name.trim() || name.trim() === host.name}
+            onPress={() => void save()}
+          />
         </View>
 
-        <Text style={styles.label}>主机指纹</Text>
-        <View style={styles.card}>
-          <Text style={styles.fingerprint}>{formatFingerprint(host.fingerprint)}</Text>
-          <Text style={styles.hint}>请与电脑上显示的指纹核对。指纹不一致时不要连接。</Text>
-        </View>
-
-        <Text style={styles.label}>连接方式</Text>
-        <View style={styles.card}>
-          {host.transports.map((transport, index) => (
-            <View key={`${transport.kind}-${index}`} style={[styles.transport, index > 0 && styles.transportBorder]}>
-              <View style={styles.transportHeader}>
-                <Text style={styles.transportKind}>{transportLabel(transport.kind)}</Text>
-                <Text style={styles.transportPriority}>优先级 {transport.priority}</Text>
+        <SectionLabel>{t("connectionMethods")}</SectionLabel>
+        {routes.length === 0 ? <Text style={styles.hint}>{t("noTransports")}</Text> : null}
+        <Card>
+          {routes.map((route, index) => (
+            <View key={`${route.kind}-${index}`}>
+              {index > 0 ? <Divider inset={16} /> : null}
+              <View style={styles.routeRow}>
+                <View style={[styles.routeIcon, { backgroundColor: colors.surface2 }]}>
+                  <Icon name={route.kind === "relay" ? "globe" : "wifi"} size={16} color={colors.muted} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.routeKind}>
+                    {route.kind === "relay" ? t("relay") : route.kind === "custom" ? t("custom") : t("direct")}
+                  </Text>
+                  <Text style={styles.routeUrl} numberOfLines={2}>
+                    {route.url}
+                  </Text>
+                  {route.kind === "relay" ? (
+                    <Text style={styles.routeMeta}>
+                      {t("room")} {route.room}
+                    </Text>
+                  ) : null}
+                </View>
+                <IconButton
+                  label={t("removeTransport")}
+                  onPress={() => setRoutes((current) => current.filter((_, item) => item !== index))}
+                >
+                  <Icon name="trash" size={17} color={colors.faint} />
+                </IconButton>
               </View>
-              <Text style={styles.transportUrl} numberOfLines={2}>
-                {transport.url}
-              </Text>
-              {transport.kind === "relay" ? <Text style={styles.transportMeta}>房间 {transport.room}</Text> : null}
             </View>
           ))}
+        </Card>
+
+        <View style={{ marginTop: 10 }}>
+          <Segmented
+            value={mode === "none" ? "add" : mode}
+            options={[
+              { value: "add", label: t("add") },
+              { value: "direct", label: t("addDirect") },
+              { value: "relay", label: t("addRelayMethod") },
+            ]}
+            onChange={(value) => {
+              setMode(value === "add" ? "none" : value)
+              setFormError(null)
+            }}
+          />
         </View>
 
-        <View style={styles.testRow}>
-          <Button label={testing ? "测试中…" : "测试连接"} variant="outline" onPress={() => void test()} disabled={testing} />
-          {testResult ? <Text style={[styles.testResult, testFailed && styles.testFailed]}>{testResult}</Text> : null}
+        {mode === "direct" ? (
+          <Card style={{ padding: 14, gap: 8, marginTop: 10 }}>
+            <Text style={styles.formLabel}>{t("address")}</Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setDirectUrl}
+              placeholder="ws://192.168.1.23:8787/ws"
+              placeholderTextColor={colors.faint}
+              style={styles.input}
+              value={directUrl}
+            />
+            <Text style={styles.hint}>{t("directHint")}</Text>
+            <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+              <Button label={t("add")} size="sm" onPress={addRoute} />
+            </View>
+          </Card>
+        ) : null}
+
+        {mode === "relay" ? (
+          <Card style={{ padding: 14, gap: 8, marginTop: 10 }}>
+            <Text style={styles.formLabel}>{t("relayUrl")}</Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setRelayUrl}
+              placeholder="wss://relay.example/ws"
+              placeholderTextColor={colors.faint}
+              style={styles.input}
+              value={relayUrl}
+            />
+            <Text style={styles.formLabel}>{t("room")}</Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setRelayRoom}
+              style={styles.input}
+              value={relayRoom}
+            />
+            <Text style={styles.formLabel}>{t("token")}</Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setRelayToken}
+              secureTextEntry
+              style={styles.input}
+              value={relayToken}
+            />
+            <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+              <Button label={t("add")} size="sm" onPress={addRoute} />
+            </View>
+          </Card>
+        ) : null}
+
+        {formError ? <Text style={styles.error}>{formError}</Text> : null}
+
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16 }}>
+          <Button label={busy ? t("testing") : t("testConnection")} size="sm" variant="outline" disabled={busy} onPress={() => void test()} />
+          <Button label={t("save")} size="sm" disabled={busy} onPress={() => void save()} />
+          {testResult ? (
+            <Text style={[styles.testResult, testFailed && { color: colors.danger }]} numberOfLines={2}>
+              {testResult}
+            </Text>
+          ) : null}
         </View>
 
-        <Text style={styles.security}>
-          设备令牌保存在 Android 系统安全存储中。撤销授权请在电脑上运行 `ocremote devices revoke &lt;id&gt;`。
-        </Text>
+        <SectionLabel>{t("hostFingerprint")}</SectionLabel>
+        <Card style={{ padding: 16 }}>
+          <Text style={styles.fingerprint}>{formatFingerprint(host.fingerprint)}</Text>
+          <Text style={styles.hint}>{t("verifyFingerprint")}</Text>
+        </Card>
 
-        <View style={styles.dangerZone}>
-          <Text style={styles.dangerTitle}>移除主机</Text>
-          <Text style={styles.dangerBody}>删除本机的主机记录和设备令牌，不会撤销主机端授权。</Text>
-          <View style={styles.dangerAction}>
-            <Button label="移除这台主机" variant="outline" onPress={confirmRemove} />
+        <Card style={{ marginTop: 28, borderColor: colors.danger, padding: 16, gap: 6 }}>
+          <Text style={{ fontSize: 15, fontWeight: "600", color: colors.danger }}>{t("removeHost")}</Text>
+          <Text style={styles.hint}>{t("removeHostBody")}</Text>
+          <View style={{ marginTop: 8, alignSelf: "flex-start" }}>
+            <Button label={t("removeHostAction")} size="sm" variant="danger" onPress={confirmRemove} />
           </View>
-        </View>
+        </Card>
       </ScrollView>
     </KeyboardAvoidingView>
   )
-}
-
-function transportLabel(kind: string): string {
-  if (kind === "lan") return "局域网"
-  if (kind === "relay") return "中继"
-  return "自定义"
 }
 
 function formatFingerprint(value: string): string {
   return value.toUpperCase().match(/.{1,4}/gu)?.join(" ") ?? value.toUpperCase()
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingHorizontal: spacing.lg },
-  centered: { alignItems: "center", justifyContent: "center" },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingBottom: spacing.lg },
-  back: { width: 64 },
-  backText: { fontSize: 15, color: colors.muted },
-  title: { fontSize: 18, fontWeight: "600", color: colors.text },
-  content: { paddingBottom: spacing.xxl },
-  label: { marginTop: spacing.lg, marginBottom: spacing.sm, fontSize: 12, fontWeight: "600", color: colors.muted },
-  nameRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  input: {
-    flex: 1,
-    minHeight: 44,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    paddingHorizontal: spacing.md,
-    fontSize: 15,
-    color: colors.text,
-  },
-  card: {
-    padding: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: spacing.sm,
-  },
-  fingerprint: { fontSize: 17, fontWeight: "600", letterSpacing: 1.4, color: colors.text },
-  hint: { fontSize: 12, lineHeight: 18, color: colors.faint },
-  transport: { gap: 3, paddingVertical: spacing.xs },
-  transportBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingTop: spacing.md },
-  transportHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  transportKind: { fontSize: 14, fontWeight: "600", color: colors.text },
-  transportPriority: { fontSize: 11, color: colors.faint },
-  transportUrl: { fontSize: 12, color: colors.muted, fontFamily: "monospace" },
-  transportMeta: { fontSize: 11, color: colors.faint, fontFamily: "monospace" },
-  testRow: { marginTop: spacing.lg, flexDirection: "row", alignItems: "center", gap: spacing.md, flexWrap: "wrap" },
-  testResult: { flex: 1, fontSize: 12, color: colors.success },
-  testFailed: { color: colors.danger },
-  security: { marginTop: spacing.xl, fontSize: 12, lineHeight: 18, color: colors.faint },
-  dangerZone: {
-    marginTop: spacing.xxl,
-    padding: spacing.lg,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: "rgba(217,46,60,0.25)",
-    backgroundColor: "rgba(217,46,60,0.04)",
-    gap: spacing.sm,
-  },
-  dangerTitle: { fontSize: 15, fontWeight: "600", color: colors.danger },
-  dangerBody: { fontSize: 12, lineHeight: 18, color: colors.muted },
-  dangerAction: { marginTop: spacing.sm, alignItems: "flex-start" },
-  emptyTitle: { fontSize: 20, fontWeight: "500", color: colors.text },
-  emptyAction: { marginTop: spacing.xl },
-})
+const editStyles = (colors: Palette) =>
+  StyleSheet.create({
+    screen: { flex: 1, backgroundColor: colors.bg },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: 8,
+      paddingBottom: 8,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    title: { fontSize: 17, fontWeight: "700", color: colors.text },
+    content: { paddingHorizontal: 16, paddingBottom: 44 },
+    input: {
+      flex: 1,
+      minHeight: 42,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      borderRadius: 10,
+      backgroundColor: colors.surface,
+      paddingHorizontal: 12,
+      fontSize: 14,
+      color: colors.text,
+    },
+    hint: { fontSize: 11.5, lineHeight: 17, color: colors.faint },
+    routeRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14 },
+    routeIcon: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+    routeKind: { fontSize: 13.5, fontWeight: "600", color: colors.text },
+    routeUrl: { fontSize: 11.5, color: colors.muted, marginTop: 2, fontFamily: "monospace" },
+    routeMeta: { fontSize: 11, color: colors.faint, marginTop: 2 },
+    formLabel: { fontSize: 11.5, fontWeight: "600", color: colors.faint },
+    error: { fontSize: 12.5, color: colors.danger, marginTop: 8 },
+    testResult: { flex: 1, fontSize: 11.5, color: colors.success },
+    fingerprint: { fontSize: 17, fontWeight: "700", letterSpacing: 1.4, color: colors.text },
+    emptyTitle: { fontSize: 19, fontWeight: "600", color: colors.text },
+  })

@@ -18,7 +18,8 @@ import { buildReviewPrompt, selectionRange, type ReviewComment } from "@/opencod
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 import { ensureConnection } from "@/transport/runtimes"
-import { colors, radius, spacing } from "@/theme"
+import { useT } from "@/i18n"
+import { radius, spacing, useTheme, useThemedStyles, type Palette } from "@/theme"
 
 type OpenFile = {
   path: string
@@ -28,6 +29,9 @@ type OpenFile = {
 
 export default function ReviewScreen() {
   const insets = useSafeAreaInsets()
+  const { colors } = useTheme()
+  const t = useT()
+  const styles = useThemedStyles(reviewStyles)
   const params = useLocalSearchParams<{ hostId: string; sessionId: string; directory?: string }>()
   const { hostId, sessionId } = params
   const hydrate = useHosts((state) => state.hydrate)
@@ -99,9 +103,11 @@ export default function ReviewScreen() {
     try {
       const runtime = await ensureConnection(hostId)
       const result = await new OpencodeClient(runtime).readFile(directory, entry.path)
+      // opencode often serves source files as application/octet-stream, so
+      // relying on the MIME type alone marks every file as binary.
+      const contentType = result.contentType ?? ""
       const binary =
-        result.content.includes("\u0000") ||
-        Boolean(result.contentType && !result.contentType.startsWith("text/") && !result.contentType.includes("json") && !result.contentType.includes("javascript"))
+        result.content.includes("\u0000") || /^(image|audio|video|font)\//u.test(contentType)
       setFile({ path: entry.path, lines: result.content.split("\n"), binary })
       setAnchor(null)
       setRange(null)
@@ -176,12 +182,12 @@ export default function ReviewScreen() {
     >
       <View style={styles.header}>
         <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
-          <Text style={styles.backText}>‹ 会话</Text>
+          <Text style={styles.backText}>‹ {t("sessions")}</Text>
         </Pressable>
         <View style={styles.headerCenter}>
-          <Text style={styles.title}>代码审阅</Text>
+          <Text style={styles.title}>{t("reviewTitle")}</Text>
           <Text style={styles.subtitle} numberOfLines={1}>
-            {comments.length > 0 ? `${comments.length} 条评论待发送` : "只读"}
+            {comments.length > 0 ? `${t("commentsPending", { n: comments.length })}` : t("readOnly")}
           </Text>
         </View>
         <Pressable
@@ -190,13 +196,13 @@ export default function ReviewScreen() {
           disabled={comments.length === 0 || sending || readOnly}
           style={styles.send}
         >
-          {sending ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={[styles.sendText, (comments.length === 0 || readOnly) && styles.sendDisabled]}>发送</Text>}
+          {sending ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={[styles.sendText, (comments.length === 0 || readOnly) && styles.sendDisabled]}>{t("send")}</Text>}
         </Pressable>
       </View>
 
       <View style={styles.breadcrumb}>
         <Pressable accessibilityRole="button" onPress={() => (file ? setFile(null) : currentPath ? void loadDirectory(parentPath) : undefined)}>
-          <Text style={styles.crumb}>{file ? "‹ 文件列表" : currentPath ? "‹ 上一级" : "项目根"}</Text>
+          <Text style={styles.crumb}>{file ? t("fileList") : currentPath ? t("parentDir") : t("projectRoot")}</Text>
         </Pressable>
         <Text style={styles.path} numberOfLines={1}>
           {file?.path ?? (currentPath || directory)}
@@ -206,7 +212,7 @@ export default function ReviewScreen() {
       {error ? (
         <View style={styles.errorRow}>
           <Text style={styles.error}>{error}</Text>
-          {entries === null ? <Button label="重试" variant="outline" onPress={() => void loadDirectory(currentPath)} /> : null}
+          {entries === null ? <Button label={t("retry")} variant="outline" onPress={() => void loadDirectory(currentPath)} /> : null}
         </View>
       ) : null}
 
@@ -214,8 +220,8 @@ export default function ReviewScreen() {
         <FileView file={file} range={range} anchor={anchor} onSelectLine={selectLine} />
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
-          {loading && entries === null ? <Text style={styles.loading}>正在加载…</Text> : null}
-          {entries?.length === 0 ? <Text style={styles.loading}>目录为空</Text> : null}
+          {loading && entries === null ? <Text style={styles.loading}>{t("loading")}</Text> : null}
+          {entries?.length === 0 ? <Text style={styles.loading}>{t("directoryEmpty")}</Text> : null}
           {entries?.map((entry) => (
             <Pressable
               key={entry.path}
@@ -227,7 +233,7 @@ export default function ReviewScreen() {
               <Text style={styles.entryName} numberOfLines={1}>
                 {basename(entry.path)}
               </Text>
-              <Text style={styles.entryType}>{entry.type === "directory" ? "目录" : "文件"}</Text>
+              <Text style={styles.entryType}>{entry.type === "directory" ? t("directory") : t("file")}</Text>
             </Pressable>
           ))}
         </ScrollView>
@@ -239,7 +245,7 @@ export default function ReviewScreen() {
             <Pressable
               key={`${comment.path}-${comment.selection.startLine}-${index}`}
               accessibilityRole="button"
-              accessibilityLabel="删除评论"
+              accessibilityLabel={t("deleteComment")}
               onPress={() => setComments((current) => current.filter((_, position) => position !== index))}
               style={styles.commentChip}
             >
@@ -254,22 +260,22 @@ export default function ReviewScreen() {
       {range && file ? (
         <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
           <Text style={styles.selection}>
-            第 {range.start}–{range.end} 行
+            {t("lineRange", { start: range.start, end: range.end })}
           </Text>
           <TextInput
             multiline
             onChangeText={setDraft}
-            placeholder="写下对这一行的评论…"
+            placeholder={t("commentPlaceholder")}
             placeholderTextColor={colors.faint}
             style={styles.input}
             value={draft}
           />
-          <Button label="添加评论" onPress={addComment} disabled={draft.trim().length === 0} />
+          <Button label={t("addComment")} onPress={addComment} disabled={draft.trim().length === 0} />
         </View>
       ) : (
         <View style={[styles.hintBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
           <Text style={styles.hintText}>
-            {file ? "点选起始行，再点结束行即可评论。" : "选择文件查看内容；评论会作为 prompt 发送。"}
+            {file ? t("reviewHintStart") : t("reviewHintPick")}
           </Text>
         </View>
       )}
@@ -283,8 +289,10 @@ function FileView(props: {
   anchor: number | null
   onSelectLine: (line: number) => void
 }) {
+  const t = useT()
+  const styles = useThemedStyles(reviewStyles)
   if (props.file.binary) {
-    return <Text style={styles.loading}>这是二进制文件，手机端暂不预览。</Text>
+    return <Text style={styles.loading}>{t("binaryPreview")}</Text>
   }
   const lines = props.file.lines.slice(0, 3000)
   return (
@@ -309,7 +317,7 @@ function FileView(props: {
             )
           })}
           {props.file.lines.length > lines.length ? (
-            <Text style={styles.truncated}>仅显示前 3000 行。</Text>
+            <Text style={styles.truncated}>…</Text>
           ) : null}
         </View>
       </ScrollView>
@@ -331,7 +339,8 @@ function basename(path: string): string {
 
 const mono = { fontFamily: "monospace" as const }
 
-const styles = StyleSheet.create({
+const reviewStyles = (colors: Palette) =>
+  StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   header: {
     flexDirection: "row",

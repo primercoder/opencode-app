@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { parsePairingOffer } from "@ocremote/protocol"
 import {
   base64UrlDecode,
   base64UrlEncode,
@@ -144,6 +145,84 @@ describe("host LAN server", () => {
     expect(result.t).toBe("asr.result")
     expect(result.text).toBe("你好")
     expect(Array.from(received ?? [])).toEqual([1, 2, 3, 4])
+  })
+
+  test("tracks multiple clients and removes them on close", async () => {
+    const home = await mkdtemp(join(tmpdir(), "ocremote-host-clients-"))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return Response.json({ version: "clients-test" })
+      },
+    })
+    cleanups.push(() => opencode.stop(true))
+    const host = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${opencode.port}`,
+      opencodePassword: "x",
+    })
+    cleanups.push(() => host.close())
+
+    const first = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    cleanups.push(() => first.close())
+    await first.pair(await host.issuePairCode())
+    const second = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    cleanups.push(() => second.close())
+    await second.pair(await host.issuePairCode())
+
+    expect(host.clients()).toHaveLength(2)
+    expect(host.clients().every((client) => client.transport === "direct")).toBe(true)
+
+    first.close()
+    await Bun.sleep(100)
+    expect(host.clients()).toHaveLength(1)
+  })
+
+  test("ignores a saved relay room when relay is not requested", async () => {
+    const home = await mkdtemp(join(tmpdir(), "ocremote-host-direct-"))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return Response.json({ version: "direct-test" })
+      },
+    })
+    cleanups.push(() => opencode.stop(true))
+    const first = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${opencode.port}`,
+      opencodePassword: "x",
+    })
+    await first.close()
+
+    const configPath = join(home, "config.json")
+    const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>
+    config.relay = {
+      url: "ws://127.0.0.1:1/ws",
+      room: "room_stale",
+      hostToken: "host-stale",
+      clientToken: "client-stale",
+    }
+    await writeFile(configPath, JSON.stringify(config, null, 2))
+
+    const host = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${opencode.port}`,
+      opencodePassword: "x",
+    })
+    cleanups.push(() => host.close())
+    expect(host.relay).toBeUndefined()
+    const offer = parsePairingOffer(await host.pairingOffer(await host.issuePairCode()))
+    expect(offer.transports.map((transport) => transport.kind)).toEqual(["lan"])
   })
 
   test("cancels an in-flight upstream request", async () => {

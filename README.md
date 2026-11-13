@@ -11,7 +11,7 @@ P0 foundation and the first encrypted vertical slice are in place:
 - `packages/protocol`: OCRP frames, pairing offers, Noise NK, protected records, tests.
 - `apps/host`: opencode discovery, device pairing/auth, LAN WebSocket server, HTTP/SSE proxy, relay host client.
 - `apps/relay`: Go WebSocket relay with rooms, bearer/query tokens, host/client forwarding and backpressure.
-- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, host home, pairing by paste or QR scan, session search, project-aware new sessions, chat, permissions/forms, model/agent picker, diff viewer with line numbers, read-only review with line comments, and hybrid voice dictation (phone whisper model / host SenseVoice / system recognizer).
+- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, QR/paste pairing (including short HTTP pairing links), project/session drawer, Markdown chat with collapsible tools and a live running state, a bottom session-settings sheet (agent, model, MCP, dictation engine), diff viewer with paging, read-only review with line comments, general settings (theme, language, notifications, voice models), and hybrid voice dictation (phone whisper model / host SenseVoice / system recognizer).
 - `apps/host`: also runs local SenseVoice speech recognition through sherpa-onnx; models are downloaded or imported by the user, never bundled.
 
 Not implemented yet: notifications, background service, offline cache, image/file preview rendering.
@@ -62,30 +62,36 @@ Relay tests:
 cd apps/relay && go test ./...
 ```
 
-Start the LAN host (needs a running opencode):
+Start the host (needs a running opencode). Release builds use one command and
+do not require Bun:
 
 ```bash
-cd apps/host
-bun run src/index.ts start --lan --pair
+./ocremote start --listen 0.0.0.0:8787 --pair
 ```
 
-`--pair` prints a QR and pairing link. For a separate pairing code before startup:
+`start` detaches by default. Manage it with `./ocremote status`, `./ocremote
+clients`, and `./ocremote stop`. Use `--foreground` for tmux/systemd. The default
+listen address is `127.0.0.1:8787` (local only); use `0.0.0.0:8787` for the LAN,
+or a single card such as `192.168.1.23:8787`.
+
+`--pair` prints a compact QR that points at a short local URL; the full pairing
+link is printed below it for pasting. A running host can issue another code with:
 
 ```bash
-bun run src/index.ts pair --lan
-bun run src/index.ts start --lan
+./ocremote pair --read-only
 ```
 
-With a relay (register a room once, then reuse it):
+Relay is a separate mode and is used only when requested:
 
 ```bash
-bun run src/index.ts start --lan --pair \
-  --relay-url ws://127.0.0.1:26379/ws \
+./ocremote start --listen 0.0.0.0:8787 --pair \
+  --relay ws://127.0.0.1:26379/ws \
   --relay-secret dev-secret
 ```
 
-The pairing QR then contains both LAN and relay transports. Rooms are stored in
-`~/.config/ocremote/config.json`; pass `--relay-new-room` to register a fresh room.
+The pairing QR then offers direct first and relay second. A saved room is never
+activated implicitly: starting without `--relay` ignores it. Rooms are stored in
+`~/.config/ocremote/config.json`; pass `--relay-new-room` for a fresh room.
 Relay rooms are in-memory, so a relay restart loses them. When
 `RELAY_REGISTRATION_SECRET` (or `--relay-secret`) is available, the host
 re-registers the same room and tokens before reconnecting, and paired clients
@@ -158,24 +164,40 @@ is empty by default.
 Host:
 
 ```bash
-cd apps/host
-bun run src/index.ts asr list
-bun run src/index.ts asr install host-sense-voice-int8 \
+./ocremote asr list
+./ocremote asr install host-sense-voice-int8 \
   --model-server http://127.0.0.1:9000
-bun run src/index.ts asr test \
+./ocremote asr test \
   --file path/to/16k-mono.wav
 ```
 
 Start the host with the installed model directory if needed:
 
 ```bash
-bun run src/index.ts start --lan --models-dir ~/.local/share/ocremote/models
+./ocremote start --listen 0.0.0.0:8787 --models-dir ~/.local/share/ocremote/models
 ```
 
 The phone prefers a local model, then a host model, then the Android system
 recognizer. Recognized text is only inserted into the input box; it is never
 sent automatically. Relay nodes never receive ASR frames as anything but
 ciphertext and have no ASR capability.
+
+## Release 0.1.0
+
+`dist/` contains:
+
+```text
+ocremote-0.1.0-arm64-v8a.apk           real phones (arm64)
+ocremote-0.1.0-x86_64.apk              emulator (x86_64)
+ocremote-host-0.1.0-linux-x64.tar.gz   self-contained host (bundled Bun + sherpa-onnx)
+ocremote-relay-0.1.0-linux-amd64       static relay
+ocremote-relay-0.1.0-linux-arm64       static relay
+SHA256SUMS, RELEASE.txt
+```
+
+The host archive needs no Bun installation: extract it and run `./ocremote`.
+Android builds still use the Expo debug keystore; replace it with a production
+keystore before distributing.
 
 ## Security model
 

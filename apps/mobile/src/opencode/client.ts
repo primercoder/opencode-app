@@ -58,6 +58,12 @@ export type ModelInfo = {
   cost?: { input: number; output: number }[]
 }
 
+export type McpServer = {
+  name: string
+  title?: string
+  status?: { status: string; error?: string }
+}
+
 export type FsEntry = {
   path: string
   type: "file" | "directory"
@@ -181,6 +187,17 @@ export class OpencodeClient {
 
   async switchModel(sessionId: string, model: { id: string; providerID: string; variant?: string }): Promise<void> {
     await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/model`, { model })
+  }
+
+  async listMcp(directory?: string): Promise<McpServer[]> {
+    const result = await this.raw<{ data: McpServer[] }>("GET", withDirectory("/api/mcp", directory))
+    return result.data
+  }
+
+  async setMcpConnected(name: string, connected: boolean, directory?: string): Promise<void> {
+    const action = connected ? "connect" : "disconnect"
+    const path = withDirectory(`/api/experimental/mcp/${encodeURIComponent(name)}/${action}`, directory)
+    await this.raw<unknown>("POST", path)
   }
 
   async listSessions(input: { limit?: number; order?: "asc" | "desc"; search?: string } = {}): Promise<Page<SessionInfo>> {
