@@ -11,6 +11,7 @@ import {
   type OcrpControlFrame,
 } from "@ocremote/protocol"
 import { addDevice, consumePendingPair, createDevice, findDevice, verifyDeviceToken } from "./pairing.ts"
+import { AsrError, type AsrService } from "./asr/service.ts"
 import { handleProxyRequest } from "./proxy.ts"
 import type { DeviceScope, HostConfig, Identity } from "./config.ts"
 import type { OpencodeTarget } from "./opencode.ts"
@@ -18,6 +19,14 @@ import type { OpencodeTarget } from "./opencode.ts"
 const PROLOGUE = new TextEncoder().encode("ocremote/1")
 const PROTOCOL_VERSION = 1
 const HOST_VERSION = "0.0.1"
+
+type AsrRequest = {
+  chunks: Uint8Array[]
+  bytes: number
+  startedAt: number
+  modelId?: string
+  language?: string
+}
 
 export type SessionSocket = {
   send(data: string | Uint8Array): void
@@ -29,6 +38,7 @@ export type HostContext = {
   config: HostConfig
   target: OpencodeTarget
   lanUrls: string[]
+  asr: AsrService
   saveConfig(): Promise<void>
   onAuthenticated?(deviceId: string): void
 }
@@ -41,6 +51,8 @@ export class ConnectionSession {
   private scope: DeviceScope | undefined
   private closed = false
   private readonly aborts = new Map<number, AbortController>()
+  private readonly asrRequests = new Map<number, AsrRequest>()
+  private static readonly MAX_ASR_BYTES = 5 * 1024 * 1024
 
   constructor(
     private readonly ws: SessionSocket,
@@ -105,6 +117,7 @@ export class ConnectionSession {
 
   close(): void {
     this.closed = true
+    this.asrRequests.clear()
     for (const controller of this.aborts.values()) controller.abort()
     this.aborts.clear()
   }
@@ -119,6 +132,18 @@ export class ConnectionSession {
         return
       case "ping":
         this.sendControl({ t: "pong", id: value.id, ts: value.ts, hostTs: Date.now() })
+        return
+      case "asr.start":
+        this.handleAsrStart(value)
+        return
+      case "asr.chunk":
+        this.handleAsrChunk(value)
+        return
+      case "asr.end":
+        await this.handleAsrEnd(value)
+        return
+      case "asr.cancel":
+        this.asrRequests.delete(numberValue(value.id))
         return
       case "cancel": {
         const id = typeof value.id === "number" ? value.id : -1
@@ -162,6 +187,7 @@ export class ConnectionSession {
       this.sendControl({
         t: "paired",
         ...this.hostInfo(),
+        ...(await this.asrInfo()),
         device: { id: created.device.id, name: created.device.name, scope: created.device.scope },
         token: created.token,
       })
@@ -186,6 +212,7 @@ export class ConnectionSession {
     this.sendControl({
       t: "welcome",
       ...this.hostInfo(),
+      ...(await this.asrInfo()),
       device: { id: device.id, name: device.name, scope: device.scope },
     })
   }
@@ -229,6 +256,109 @@ export class ConnectionSession {
     }
   }
 
+  private async asrInfo(): Promise<Record<string, unknown>> {
+    return {
+      asr: {
+        host: await this.ctx.asr.capabilities(),
+        relay: { available: false, reason: "relay-asr-forbidden" },
+      },
+    }
+  }
+
+  private handleAsrStart(value: OcrpControlFrame): void {
+    const id = numberValue(value.id)
+    if (id < 0) {
+      this.sendAsrError(-1, "ASR_BAD_AUDIO", "invalid ASR request id")
+      return
+    }
+    if (this.asrRequests.size > 0) {
+      this.sendAsrError(id, "ASR_BUSY", "another transcription is already active")
+      return
+    }
+    const mime = typeof value.mime === "string" ? value.mime : "audio/wav"
+    if (!mime.startsWith("audio/wav") && !mime.startsWith("audio/x-wav")) {
+      this.sendAsrError(id, "ASR_BAD_AUDIO", "only 16 kHz mono WAV audio is supported")
+      return
+    }
+    const durationMs = typeof value.durationMs === "number" ? value.durationMs : 0
+    if (durationMs > 60_000) {
+      this.sendAsrError(id, "ASR_TOO_LARGE", "audio exceeds 60 seconds")
+      return
+    }
+    this.asrRequests.set(id, {
+      chunks: [],
+      bytes: 0,
+      startedAt: Date.now(),
+      ...(typeof value.model === "string" ? { modelId: value.model } : {}),
+      ...(typeof value.language === "string" ? { language: value.language } : {}),
+    })
+  }
+
+  private handleAsrChunk(value: OcrpControlFrame): void {
+    const id = numberValue(value.id)
+    const request = this.asrRequests.get(id)
+    if (!request) return
+    if (typeof value.data !== "string") {
+      this.asrRequests.delete(id)
+      this.sendAsrError(id, "ASR_BAD_AUDIO", "invalid audio chunk")
+      return
+    }
+    let chunk: Uint8Array
+    try {
+      chunk = new Uint8Array(Buffer.from(value.data, "base64"))
+    } catch {
+      this.asrRequests.delete(id)
+      this.sendAsrError(id, "ASR_BAD_AUDIO", "invalid base64 audio chunk")
+      return
+    }
+    request.bytes += chunk.byteLength
+    if (request.bytes > ConnectionSession.MAX_ASR_BYTES) {
+      this.asrRequests.delete(id)
+      this.sendAsrError(id, "ASR_TOO_LARGE", "audio exceeds 5 MiB")
+      return
+    }
+    request.chunks.push(chunk)
+  }
+
+  private async handleAsrEnd(value: OcrpControlFrame): Promise<void> {
+    const id = numberValue(value.id)
+    const request = this.asrRequests.get(id)
+    if (!request) {
+      this.sendAsrError(id, "ASR_BAD_AUDIO", "ASR request was not started")
+      return
+    }
+    this.asrRequests.delete(id)
+    const audio = new Uint8Array(request.bytes)
+    let offset = 0
+    for (const chunk of request.chunks) {
+      audio.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    try {
+      const result = await this.ctx.asr.transcribe(audio, {
+        ...(request.modelId ? { modelId: request.modelId } : {}),
+        ...(request.language ? { language: request.language } : {}),
+      })
+      this.sendControl({
+        t: "asr.result",
+        id,
+        engine: result.engine,
+        model: result.model,
+        text: result.text,
+        ...(result.language ? { language: result.language } : {}),
+        segments: result.segments,
+        durationMs: result.durationMs,
+      })
+    } catch (error) {
+      const failure = error instanceof AsrError ? error : new AsrError("ASR_FAILED", String(error))
+      this.sendAsrError(id, failure.code, failure.message)
+    }
+  }
+
+  private sendAsrError(id: number, code: string, message: string): void {
+    this.sendControl({ t: "asr.error", id, code, message })
+  }
+
   private hostInfo(): Record<string, unknown> {
     return {
       v: PROTOCOL_VERSION,
@@ -258,4 +388,8 @@ export class ConnectionSession {
     this.closed = true
     this.ws.close(1008, message.slice(0, 120))
   }
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : -1
 }

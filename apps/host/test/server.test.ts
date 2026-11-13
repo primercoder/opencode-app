@@ -99,6 +99,53 @@ describe("host LAN server", () => {
     await expect(client.request("POST", "/api/session")).rejects.toThrow(/read-only/u)
   })
 
+  test("transcribes WAV audio through asr control frames", async () => {
+    const home = await mkdtemp(join(tmpdir(), "ocremote-host-asr-"))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return Response.json({ version: "asr-test" })
+      },
+    })
+    cleanups.push(() => opencode.stop(true))
+
+    let received: Uint8Array | undefined
+    const host = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${opencode.port}`,
+      opencodePassword: "test-password",
+      asr: {
+        async capabilities() {
+          return { available: true, engine: "stub", models: [{ id: "stub-model", name: "Stub" }] }
+        },
+        async transcribe(wav) {
+          received = wav
+          return { text: "你好", engine: "stub", model: "stub-model", durationMs: 120, segments: [] }
+        },
+        close() {},
+      },
+    })
+    cleanups.push(() => host.close())
+
+    const client = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    cleanups.push(() => client.close())
+    const paired = await client.pair(await host.issuePairCode())
+    expect(paired.asr.host.available).toBe(true)
+
+    client.sendControl({ t: "asr.start", id: 99, mime: "audio/wav", durationMs: 120, language: "zh" })
+    client.sendControl({ t: "asr.chunk", id: 99, data: Buffer.from([1, 2, 3, 4]).toString("base64") })
+    client.sendControl({ t: "asr.end", id: 99 })
+
+    const result = await client.receiveFor(99)
+    expect(result.t).toBe("asr.result")
+    expect(result.text).toBe("你好")
+    expect(Array.from(received ?? [])).toEqual([1, 2, 3, 4])
+  })
+
   test("cancels an in-flight upstream request", async () => {
     const home = await mkdtemp(join(tmpdir(), "ocremote-host-cancel-"))
     cleanups.push(() => rm(home, { recursive: true, force: true }))
@@ -217,6 +264,7 @@ async function connectClient(url: string, hostPublicKey: Uint8Array) {
     close: () => ws.close(),
     closed,
     sendControl,
+    receiveFor,
     async pair(code: string) {
       sendControl({
         t: "hello",

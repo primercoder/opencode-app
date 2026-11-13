@@ -1,3 +1,4 @@
+import { encodeBase64 } from "@/lib/base64"
 import {
   base64UrlDecode,
   base64UrlEncode,
@@ -57,13 +58,34 @@ export type PairedDevice = {
   scope: string
 }
 
+export type HostAsrCapabilities = {
+  available: boolean
+  engine?: string
+  maxAudioSeconds?: number
+  streaming?: boolean
+  models?: Array<{ id: string; name: string; languages?: string[]; sizeMB?: number; loaded?: boolean }>
+}
+
 export type HostSession = {
   host: HostInfo
   opencode: OpencodeInfo
   capabilities: string[]
   lanUrls: string[]
+  asr?: {
+    host?: HostAsrCapabilities
+    relay?: { available: boolean; reason?: string }
+  }
   device?: PairedDevice
   token?: string
+}
+
+export type AsrResult = {
+  text: string
+  engine: string
+  model?: string
+  language?: string
+  durationMs: number
+  segments?: Array<{ startMs: number; endMs: number; text: string }>
 }
 
 export type HostCredentials = {
@@ -135,6 +157,12 @@ type HandshakeWaiter = {
   reject(error: Error): void
 }
 
+type AsrWaiter = {
+  resolve(value: AsrResult): void
+  reject(error: Error): void
+  timer: ReturnType<typeof setTimeout> | null
+}
+
 type ConnectWaiter = {
   resolve(value: HostSession): void
   reject(error: Error): void
@@ -167,6 +195,7 @@ export class HostRuntime {
   private latencyValue: number | undefined
   private nextId = 1
   private readonly pending = new Map<number, PendingRequest>()
+  private readonly asrPending = new Map<number, AsrWaiter>()
   private readonly pings = new Map<number, { sentAt: number; timer: ReturnType<typeof setTimeout> }>()
   private readonly handshakeQueue: string[] = []
   private handshakeWaiter: HandshakeWaiter | undefined
@@ -245,6 +274,7 @@ export class HostRuntime {
     this.closeSocket()
     const error = new HostError("network", "connection closed")
     this.rejectPending(error)
+    this.rejectAsr(error)
     this.rejectHandshake(error)
     if (this.connectWaiter) {
       const waiter = this.connectWaiter
@@ -260,6 +290,71 @@ export class HostRuntime {
 
   async stream(input: StreamInput): Promise<void> {
     await this.sendRequest(input, input.onChunk)
+  }
+
+  async transcribe(input: {
+    audio: Uint8Array
+    mime?: string
+    durationMs: number
+    model?: string
+    language?: string
+    signal?: AbortSignal
+    timeoutMs?: number
+  }): Promise<AsrResult> {
+    if (this.stateValue !== "ready" || !this.sendCipher) throw new HostError("network", "not connected")
+    if (input.audio.byteLength === 0) throw new HostError("protocol", "empty audio")
+    const id = this.nextId++
+    const promise = new Promise<AsrResult>((resolve, reject) => {
+      const timer = setTimeout(
+        () => {
+          this.asrPending.delete(id)
+          this.sendControl({ t: "asr.cancel", id })
+          reject(new HostError("timeout", "speech recognition timed out"))
+        },
+        input.timeoutMs ?? 120_000,
+      )
+      this.asrPending.set(id, { resolve, reject, timer })
+    })
+
+    const onAbort = () => {
+      const waiter = this.asrPending.get(id)
+      if (!waiter) return
+      this.asrPending.delete(id)
+      if (waiter.timer) clearTimeout(waiter.timer)
+      this.sendControl({ t: "asr.cancel", id })
+      waiter.reject(new HostError("cancelled", "speech recognition cancelled"))
+    }
+    input.signal?.addEventListener("abort", onAbort, { once: true })
+
+    try {
+      this.sendControl({
+        t: "asr.start",
+        id,
+        engine: "host",
+        mime: input.mime ?? "audio/wav",
+        durationMs: input.durationMs,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.language ? { language: input.language } : {}),
+      })
+      const chunkSize = 32 * 1024
+      for (let offset = 0; offset < input.audio.byteLength; offset += chunkSize) {
+        this.sendControl({
+          t: "asr.chunk",
+          id,
+          data: encodeBase64(input.audio.subarray(offset, offset + chunkSize)),
+        })
+      }
+      this.sendControl({ t: "asr.end", id })
+    } catch (error) {
+      const waiter = this.asrPending.get(id)
+      if (waiter) {
+        this.asrPending.delete(id)
+        if (waiter.timer) clearTimeout(waiter.timer)
+      }
+      throw asHostError(error)
+    }
+
+    return promise
   }
 
   updateCandidates(candidates: string[]): void {
@@ -477,6 +572,12 @@ export class HostRuntime {
       case "pong":
         this.handlePong(value)
         return
+      case "asr.result":
+        this.handleAsrResult(value)
+        return
+      case "asr.error":
+        this.handleAsrError(value)
+        return
       case "ping":
         this.sendControl({ t: "pong", id: value.id, ts: value.ts, hostTs: Date.now() })
         return
@@ -535,6 +636,42 @@ export class HostRuntime {
     const code = typeof value.code === "string" ? value.code : undefined
     pending.reject(
       new HostError(code?.startsWith("AUTH") ? "auth" : "protocol", typeof value.message === "string" ? value.message : "request failed", {
+        ...(code ? { code } : {}),
+      }),
+    )
+  }
+
+  private handleAsrResult(value: OcrpControlFrame): void {
+    const id = numberValue(value.id)
+    const waiter = this.asrPending.get(id)
+    if (!waiter) return
+    this.asrPending.delete(id)
+    if (waiter.timer) clearTimeout(waiter.timer)
+    waiter.resolve({
+      text: stringValue(value.text),
+      engine: stringValue(value.engine),
+      ...(typeof value.model === "string" ? { model: value.model } : {}),
+      ...(typeof value.language === "string" ? { language: value.language } : {}),
+      durationMs: numberValue(value.durationMs),
+      segments: Array.isArray(value.segments)
+        ? value.segments.filter(isRecord).map((segment) => ({
+            startMs: numberValue(segment.startMs),
+            endMs: numberValue(segment.endMs),
+            text: stringValue(segment.text),
+          }))
+        : [],
+    })
+  }
+
+  private handleAsrError(value: OcrpControlFrame): void {
+    const id = numberValue(value.id)
+    const waiter = this.asrPending.get(id)
+    if (!waiter) return
+    this.asrPending.delete(id)
+    if (waiter.timer) clearTimeout(waiter.timer)
+    const code = typeof value.code === "string" ? value.code : undefined
+    waiter.reject(
+      new HostError("protocol", typeof value.message === "string" ? value.message : "speech recognition failed", {
         ...(code ? { code } : {}),
       }),
     )
@@ -657,6 +794,7 @@ export class HostRuntime {
     const wasReady = this.stateValue === "ready" || this.stateValue === "reconnecting"
     this.closeSocket()
     this.rejectPending(error)
+    this.rejectAsr(error)
     if (this.connectWaiter) {
       const waiter = this.connectWaiter
       this.connectWaiter = undefined
@@ -697,6 +835,14 @@ export class HostRuntime {
     const waiter = this.handshakeWaiter
     this.handshakeWaiter = undefined
     waiter?.reject(error)
+  }
+
+  private rejectAsr(error: HostError): void {
+    for (const waiter of this.asrPending.values()) {
+      if (waiter.timer) clearTimeout(waiter.timer)
+      waiter.reject(error)
+    }
+    this.asrPending.clear()
   }
 
   private rejectPending(error: HostError): void {
@@ -873,6 +1019,45 @@ function parseSession(value: OcrpControlFrame): HostSession {
     },
     capabilities: Array.isArray(value.capabilities) ? value.capabilities.filter((item): item is string => typeof item === "string") : [],
     lanUrls: Array.isArray(value.lanUrls) ? value.lanUrls.filter((item): item is string => typeof item === "string") : [],
+    ...(isRecord(value.asr)
+      ? {
+          asr: {
+            ...(isRecord(value.asr.host)
+              ? {
+                  host: {
+                    available: value.asr.host.available === true,
+                    ...(typeof value.asr.host.engine === "string" ? { engine: value.asr.host.engine } : {}),
+                    ...(typeof value.asr.host.maxAudioSeconds === "number"
+                      ? { maxAudioSeconds: value.asr.host.maxAudioSeconds }
+                      : {}),
+                    ...(typeof value.asr.host.streaming === "boolean" ? { streaming: value.asr.host.streaming } : {}),
+                    ...(Array.isArray(value.asr.host.models)
+                      ? {
+                          models: value.asr.host.models.filter(isRecord).map((model) => ({
+                            id: stringValue(model.id),
+                            name: stringValue(model.name),
+                            ...(Array.isArray(model.languages)
+                              ? { languages: model.languages.filter((item): item is string => typeof item === "string") }
+                              : {}),
+                            ...(typeof model.sizeMB === "number" ? { sizeMB: model.sizeMB } : {}),
+                            ...(typeof model.loaded === "boolean" ? { loaded: model.loaded } : {}),
+                          })),
+                        }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(isRecord(value.asr.relay)
+              ? {
+                  relay: {
+                    available: value.asr.relay.available === true,
+                    ...(typeof value.asr.relay.reason === "string" ? { reason: value.asr.relay.reason } : {}),
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
     ...(device ? { device } : {}),
     ...(typeof value.token === "string" ? { token: value.token } : {}),
   }

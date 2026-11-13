@@ -16,7 +16,9 @@
     "env:check": "bash scripts/check-env.sh",
     "env:bench": "bash scripts/bench-network.sh",
     "test:relay": "cd apps/relay && go test ./...",
-    "smoke:opencode": "bun run scripts/ocremote-smoke.ts"
+    "smoke:opencode": "bun run scripts/ocremote-smoke.ts",
+    "models:fetch": "bash scripts/fetch-dev-models.sh",
+    "models:serve": "bun run scripts/model-server.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",

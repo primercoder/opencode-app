@@ -11,9 +11,10 @@ P0 foundation and the first encrypted vertical slice are in place:
 - `packages/protocol`: OCRP frames, pairing offers, Noise NK, protected records, tests.
 - `apps/host`: opencode discovery, device pairing/auth, LAN WebSocket server, HTTP/SSE proxy, relay host client.
 - `apps/relay`: Go WebSocket relay with rooms, bearer/query tokens, host/client forwarding and backpressure.
-- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, host home, pairing by paste or QR scan, session search, project-aware new sessions, chat, permissions/forms, model/agent picker, diff viewer with line numbers, read-only review with line comments, and local speech-to-text dictation.
+- `apps/mobile`: encrypted HostRuntime (Noise NK, auth, requests, SSE), persisted hosts/tokens, host home, pairing by paste or QR scan, session search, project-aware new sessions, chat, permissions/forms, model/agent picker, diff viewer with line numbers, read-only review with line comments, and hybrid voice dictation (phone whisper model / host SenseVoice / system recognizer).
+- `apps/host`: also runs local SenseVoice speech recognition through sherpa-onnx; models are downloaded or imported by the user, never bundled.
 
-Not implemented yet: host-side ASR, notifications, background service, offline cache, image/file preview rendering.
+Not implemented yet: notifications, background service, offline cache, image/file preview rendering.
 
 ## Layout
 
@@ -136,12 +137,53 @@ adb reverse tcp:26379 tcp:26379   # when testing through toxiproxy/relay
 The release APKs are smoke-tested on the x86_64 emulator over both LAN and relay
 (including relay restart recovery). See the local setup log for details.
 
+## Speech models
+
+Models are not bundled into the APK or host binary. The phone uses a small
+Whisper GGML model; the host uses a larger SenseVoice ONNX model.
+
+Development uses a local model server so both sides exercise the same download
+path without hitting upstream sites:
+
+```bash
+bun run models:fetch   # downloads dev models with SHA-256 verification
+bun run models:serve   # http://0.0.0.0:9000/models/...
+```
+
+Phone: Settings -> Voice models -> set the model server to
+`http://10.0.2.2:9000` (emulator) or your LAN IP, then download/import.
+Release builds use the upstream URLs in `packages/models`; the runtime override
+is empty by default.
+
+Host:
+
+```bash
+cd apps/host
+bun run src/index.ts asr list
+bun run src/index.ts asr install host-sense-voice-int8 \
+  --model-server http://127.0.0.1:9000
+bun run src/index.ts asr test \
+  --file path/to/16k-mono.wav
+```
+
+Start the host with the installed model directory if needed:
+
+```bash
+bun run src/index.ts start --lan --models-dir ~/.local/share/ocremote/models
+```
+
+The phone prefers a local model, then a host model, then the Android system
+recognizer. Recognized text is only inserted into the input box; it is never
+sent automatically. Relay nodes never receive ASR frames as anything but
+ciphertext and have no ASR capability.
+
 ## Security model
 
 - opencode stays on `127.0.0.1`; the host reads its service registration and keeps its password local.
 - Phones pair with a one-time code and receive a device token; the host stores only token hashes.
 - Noise NK authenticates the host with the static key from the QR and encrypts every OCRP frame.
-- The relay sees rooms, roles, sizes and timing, never prompts, code or tokens.
+- The relay sees rooms, roles, sizes and timing, never prompts or code. Relay client tokens are sent in the WebSocket URL query (or Authorization header for non-browser clients); use `wss://` in production so the token is protected by TLS.
+- A packet capture of a relay session was checked during development: prompt text, assistant text, session titles and the opencode password were absent; application frames were opaque Noise records. The initial Noise handshake is the only plaintext JSON (base64), containing no application data.
 - Relay/ASR/code-review boundaries follow `opencode-remote-mobile-development-guide.md` (local-only document).
 
 ## License

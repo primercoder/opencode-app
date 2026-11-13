@@ -29,7 +29,12 @@ export default function HostListScreen() {
     <View style={[styles.screen, { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom }]}>
       <View style={styles.header}>
         <Text style={styles.title}>主机</Text>
-        <Button label="添加主机" onPress={() => router.push("/hosts/add")} />
+        <View style={styles.headerActions}>
+          <Pressable accessibilityRole="button" onPress={() => router.push("/settings")} style={styles.settingsButton}>
+            <Text style={styles.settingsText}>语音模型</Text>
+          </Pressable>
+          <Button label="添加主机" onPress={() => router.push("/hosts/add")} />
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -125,6 +130,9 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
   },
   title: { fontSize: 28, fontWeight: "600", color: colors.text },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  settingsButton: { paddingVertical: spacing.sm },
+  settingsText: { fontSize: 13, color: colors.muted, fontWeight: "500" },
   content: { paddingBottom: spacing.xxl },
   empty: {
     marginTop: spacing.xxl * 2,

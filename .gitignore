@@ -80,3 +80,6 @@ Thumbs.db
 .dev-data/
 *.pid
 *.sock
+
+# Downloaded development models
+/dev-models/

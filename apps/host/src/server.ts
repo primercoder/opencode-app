@@ -17,6 +17,8 @@ import {
 } from "./config.ts"
 import { addPendingPair, hashPairCode } from "./pairing.ts"
 import { resolveOpencodeTarget, type OpencodeTarget } from "./opencode.ts"
+import { HostModelManager } from "./asr/modelManager.ts"
+import { HostAsr, type AsrService } from "./asr/service.ts"
 import { registerRelayRoom, RelayHostClient } from "./relay.ts"
 import { ConnectionSession, type HostContext } from "./session.ts"
 
@@ -29,6 +31,10 @@ export type HostOptions = {
   opencodePassword?: string
   relay?: RelayConfig
   relaySecret?: string
+  modelsDir?: string
+  modelBaseUrl?: string
+  asrModelId?: string
+  asr?: AsrService
 }
 
 export type Host = {
@@ -38,6 +44,8 @@ export type Host = {
   config: HostConfig
   target: OpencodeTarget
   relay?: RelayConfig
+  modelsDir: string
+  asr: AsrService
   issuePairCode(scope?: DeviceScope): Promise<string>
   pairingOffer(code: string, transportUrl?: string): Promise<string>
   close(): Promise<void>
@@ -60,10 +68,16 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     ...(options.opencodePassword ? { password: options.opencodePassword } : {}),
   })
 
+  const modelManager = new HostModelManager({
+    ...(options.modelsDir ? { modelsDir: options.modelsDir } : {}),
+    ...(options.modelBaseUrl ? { baseUrl: options.modelBaseUrl } : {}),
+  })
+  const asr = options.asr ?? new HostAsr(modelManager, options.asrModelId)
   const ctx: HostContext = {
     identity,
     config,
     target,
+    asr,
     lanUrls: [],
     async saveConfig() {
       await saveConfig(home, config)
@@ -154,6 +168,8 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     config,
     target,
     ...(relayConfig ? { relay: relayConfig } : {}),
+    modelsDir: modelManager.modelsDir,
+    asr,
     async issuePairCode(scope: DeviceScope = "full") {
       const { code } = addPendingPair(config, scope)
       await saveConfig(home, config)
@@ -191,6 +207,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
       return encodePairingOffer(offer, identity.publicKey)
     },
     async close() {
+      asr.close()
       relayClient?.close()
       await saveConfig(home, config)
       server.stop(true)

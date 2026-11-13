@@ -31,7 +31,7 @@ import {
 } from "@/opencode/client"
 import type { FormAnswers } from "@/opencode/forms"
 import { ensureConnection, subscribeHostEvents } from "@/transport/runtimes"
-import { useDictation } from "@/features/voice/useDictation"
+import { useVoiceInput } from "@/features/voice/useVoiceInput"
 import { useForeground } from "@/lib/useForeground"
 import { colors, radius, spacing } from "@/theme"
 
@@ -72,7 +72,16 @@ export default function ChatScreen() {
     if (noticeTimer.current) clearTimeout(noticeTimer.current)
   }, [])
 
-  const dictation = useDictation((text) => {
+  const hostAsr = connection?.session?.asr?.host
+  const hostTranscribe =
+    hostAsr?.available === true
+      ? async (wav: Uint8Array, durationMs: number): Promise<string> => {
+          const runtime = await ensureConnection(hostId)
+          const result = await runtime.transcribe({ audio: wav, mime: "audio/wav", durationMs, language: "zh" })
+          return result.text
+        }
+      : undefined
+  const dictation = useVoiceInput((text) => {
     setDraft((current) => {
       if (!current) return text
       return /[\s\n]$/u.test(current) ? `${current}${text}` : `${current} ${text}`
@@ -80,7 +89,7 @@ export default function ChatScreen() {
     setInsertNotice(true)
     if (noticeTimer.current) clearTimeout(noticeTimer.current)
     noticeTimer.current = setTimeout(() => setInsertNotice(false), 3_000)
-  })
+  }, hostTranscribe ? { hostTranscribe } : {})
 
   const load = useCallback(
     async (options: { silent?: boolean } = {}) => {
@@ -378,9 +387,23 @@ export default function ChatScreen() {
       <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
         {dictation.listening ? (
           <Pressable accessibilityRole="button" onPress={dictation.stop} style={styles.voiceBar}>
-            <Text style={styles.voiceText}>正在听写…（系统语音识别）</Text>
+            <Text style={styles.voiceText}>
+              {dictation.engine === "local"
+                ? "本地模型听写中…"
+                : dictation.engine === "host"
+                  ? "主机模型听写中…"
+                  : "正在听写…（系统语音识别）"}
+            </Text>
             <Text style={styles.voiceStop}>停止</Text>
           </Pressable>
+        ) : null}
+        {dictation.transcribing ? (
+          <View style={styles.voiceBar}>
+            <Text style={styles.voiceText}>
+              {dictation.engine === "host" ? "正在用主机模型识别…" : "正在用本地模型识别…"}
+            </Text>
+            <ActivityIndicator size="small" color={colors.accent} />
+          </View>
         ) : null}
         {dictation.error ? (
           <Pressable accessibilityRole="button" onPress={dictation.clearError} style={styles.voiceBar}>
@@ -393,12 +416,12 @@ export default function ChatScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={dictation.listening ? "停止听写" : "语音听写"}
-            disabled={!ready || sending || readOnly}
+            disabled={!ready || sending || readOnly || dictation.transcribing}
             onPress={() => (dictation.listening ? dictation.stop() : void dictation.start("zh-CN"))}
             style={({ pressed }) => [
               styles.mic,
               dictation.listening && styles.micActive,
-              (!ready || sending || readOnly) && styles.sendDisabled,
+              (!ready || sending || readOnly || dictation.transcribing) && styles.sendDisabled,
               pressed && styles.sendPressed,
             ]}
           >
