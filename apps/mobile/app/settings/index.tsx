@@ -17,7 +17,7 @@ import {
   type DownloadProgress,
   type MobileModelStatus,
 } from "@/features/voice/models"
-import { ensureWhisperModel, transcribeFile } from "@/features/voice/localWhisper"
+import { ensureWhisperModel, releaseWhisperModel, transcribeFile } from "@/features/voice/localWhisper"
 import {
   loadVoiceEnginePreference,
   saveVoiceEnginePreference,
@@ -83,6 +83,7 @@ export default function SettingsScreen() {
     setError(null)
     try {
       await removeMobileModel(model.spec)
+      await releaseWhisperModel()
       await reload()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "删除模型失败")
