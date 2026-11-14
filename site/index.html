@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="zh-CN" data-type="software" data-radius="soft">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OC Remote — 用 Android 远程控制 opencode</title>
+    <meta
+      name="description"
+      content="OC Remote 用 Android 手机远程操作电脑上的 opencode。实时会话、命令面板、代码审阅和语音；直连或自建中继，数据端到端加密。"
+    />
+    <meta name="page-type" content="software" />
+    <meta name="site-kind" content="software" />
+    <meta name="theme-color" content="#f6f6f2" />
+    <meta property="og:title" content="OC Remote — 把 opencode 装进口袋" />
+    <meta
+      property="og:description"
+      content="Android 远程控制 opencode。实时会话、命令面板、代码审阅、语音输入和多端同步。"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="assets/og.png" />
+    <link rel="icon" href="assets/icon.png" />
+    <link rel="stylesheet" href="assets/site.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">跳到正文</a>
+
+    <header class="site-nav">
+      <div class="wrap nav-row">
+        <a class="brand" href="index.html" aria-label="OC Remote 首页">
+          <img src="assets/icon.png" alt="" width="30" height="30" />
+          <span class="brand-name"><strong>OC Remote</strong><span>for opencode</span></span>
+        </a>
+        <nav class="nav-links" id="site-menu" aria-label="主导航">
+          <a href="index.html#features">功能</a>
+          <a href="index.html#platforms">三端</a>
+          <a href="index.html#security">安全</a>
+          <a href="quick-start.html">快速开始</a>
+          <a href="faq.html">FAQ</a>
+        </nav>
+        <div class="nav-actions">
+          <div class="lang-switch" aria-label="语言">
+            <a href="index.html" aria-current="true">中</a>
+            <a href="en/index.html">EN</a>
+          </div>
+          <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub 仓库" rel="noreferrer">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" />
+            </svg>
+          </a>
+          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.1 <span class="arrow">↓</span></a>
+          <button class="nav-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="site-menu">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero">
+        <div class="wrap hero-grid">
+          <div class="hero-copy enter">
+            <p class="eyebrow"><span class="dot"></span>OPENCODE REMOTE · ANDROID</p>
+            <h1>把 opencode<br /><span class="accent">装进口袋。</span></h1>
+            <p class="lede">
+              电脑上的会话继续跑，手机随时接手。读流式输出，换 Agent 和模型，跑斜杠命令，
+              审阅文件、写行内评论，或者直接用语音说。
+            </p>
+            <div class="hero-actions">
+              <a class="btn btn-primary" href="https://github.com/primercoder/opencode-app/releases/latest">下载 Android APK <span class="arrow">↓</span></a>
+              <a class="btn btn-outline" href="quick-start.html">三步连接 <span class="arrow">→</span></a>
+            </div>
+            <dl class="hero-facts">
+              <div><dt>加密</dt><dd>Noise NK 端到端</dd></div>
+              <div><dt>主机</dt><dd>Linux x64 / arm64</dd></div>
+              <div><dt>许可</dt><dd>Apache-2.0</dd></div>
+            </dl>
+          </div>
+
+          <div class="hero-stage" aria-label="OC Remote 手机端和主机端界面">
+            <div class="terminal-shell hero-terminal">
+              <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote — host</span></div>
+              <img src="assets/screenshots/host-terminal.webp" alt="OC Remote 主机端启动和状态输出" width="1439" height="620" />
+            </div>
+            <figure class="phone hero-phone">
+              <img src="assets/screenshots/session_main.webp" alt="OC Remote 手机端会话界面，显示实时消息和工具调用" width="760" height="1680" />
+            </figure>
+            <div class="e2ee-chip">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                <rect x="5" y="10" width="14" height="10" rx="2.5" />
+                <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+              </svg>
+              NOISE NK · E2EE
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="features">
+        <div class="wrap">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker"><span>01</span> / 会话体验</p>
+              <h2>不是缩小的桌面，<br />是重排过的远程会话。</h2>
+            </div>
+            <p>
+              手机端保留了会话的节奏：流式文字、思考过程、工具调用、排队输入和运行状态。
+              需要的时候，再展开 Agent、模型、MCP、Skill 和听写设置。
+            </p>
+          </div>
+
+          <div class="bento">
+            <article class="card card-wide card-split">
+              <div class="card-copy">
+                <h3>设置就在会话里</h3>
+                <p>底部面板切换 Agent、模型、思考深度、MCP 和 Skill，不离开当前对话。会话运行中继续输入，会自动排队。</p>
+              </div>
+              <div class="card-visual">
+                <figure class="phone phone--sm phone--xs">
+                  <img src="assets/screenshots/session_settings_bar.webp" alt="会话底部设置面板" width="760" height="1680" />
+                </figure>
+              </div>
+            </article>
+
+            <article class="card card-narrow">
+              <div class="card-copy">
+                <h3>命令，还是原来的名字</h3>
+                <p>对齐 opencode TUI：/models、/agents、/skills、/status。终端专属命令会置灰，不会假装能用。</p>
+              </div>
+              <div class="card-visual">
+                <div class="command-mock" aria-label="手机端命令面板示例">
+                  <div class="line"><code>/models</code><span class="dim">切换模型</span></div>
+                  <div class="line"><code>/agents</code><span class="dim">切换 Agent</span></div>
+                  <div class="line"><code>/skills</code><span class="dim">附加到下一次发送</span></div>
+                  <div class="line"><code>/status</code><span class="dim">查看会话状态</span></div>
+                  <div class="line"><code>/help</code><span class="dim">查看全部命令</span></div>
+                  <div class="line muted"><code>/terminal</code><span class="dim">手机端不支持</span></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="card card-narrow card-split">
+              <div class="card-copy">
+                <h3>审阅不用来回传文件</h3>
+                <p>浏览项目文件、切换换行、选中行区间写评论；评论会合成一条 review prompt 发回会话。</p>
+              </div>
+              <div class="card-visual">
+                <figure class="phone phone--sm phone--xs">
+                  <img src="assets/screenshots/browse_files.webp" alt="手机端代码审阅文件列表" width="760" height="1680" />
+                </figure>
+              </div>
+            </article>
+
+            <article class="card card-wide">
+              <div class="card-copy">
+                <h3>会话状态跟着所有端走</h3>
+                <p>其他终端切了 Agent 或模型，手机状态栏自动变化；手机改了设置，服务端事件也会带到其他客户端。</p>
+              </div>
+              <div class="card-visual">
+                <div class="sync-visual" aria-label="多端同步事件示例">
+                  <div class="sync-event"><span>session.agent.selected</span><strong>build → <em>plan</em></strong></div>
+                  <div class="sync-event"><span>session.model.selected</span><strong>DeepSeek V4.1 <em class="live">Flash</em></strong></div>
+                  <div class="sync-event"><span>session.deleted</span><strong>回到空会话页</strong></div>
+                  <div class="sync-event"><span>mcp.status.changed</span><strong>面板自动刷新</strong></div>
+                  <div class="sync-event"><span>session.skill.activated</span><strong>Skill 已附加</strong></div>
+                  <div class="sync-event"><span>session.compaction.ended</span><strong>上下文已压缩</strong></div>
+                  <div class="sync-phone"><span class="mini-dot"></span><b>手机停留在当前会话，无需切页</b><small>~1s</small></div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section platforms" id="platforms">
+        <div class="wrap">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker"><span>02</span> / 三端接力</p>
+              <h2>主机在电脑上，<br />会话在手机里。</h2>
+            </div>
+            <p>
+              主机端负责连接本机 opencode，手机端负责操作会话，中继端只负责把加密帧送到更远的网络。
+              三端可以分开部署，也可以只走局域网直连。
+            </p>
+          </div>
+
+          <div class="platform-grid">
+            <article class="platform-card dark">
+              <div class="platform-head">
+                <div><h3>主机端</h3><p>和 opencode 一起运行，保留本机密码。</p><ul class="platform-points"><li>读取本机服务注册</li><li>Noise NK 静态身份</li><li>只保存设备令牌哈希</li></ul></div>
+                <span class="platform-tag">LINUX</span>
+              </div>
+              <div class="platform-visual">
+                <div class="terminal-shell">
+                  <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote</span></div>
+                  <img src="assets/screenshots/host-terminal.webp" alt="主机端 ocremote status 输出" width="1439" height="620" />
+                </div>
+              </div>
+              <div class="platform-command">./ocremote start --listen 0.0.0.0:8787 --pair</div>
+            </article>
+
+            <article class="platform-card">
+              <div class="platform-head">
+                <div><h3>手机端</h3><p>扫码或粘贴配对链接，指纹核对后连接。</p><ul class="platform-points"><li>扫码 / 粘贴链接</li><li>核对主机指纹</li><li>令牌进入 SecureStore</li></ul></div>
+                <span class="platform-tag">ANDROID</span>
+              </div>
+              <div class="platform-visual">
+                <div class="phone-wrap">
+                  <figure class="phone phone--sm">
+                    <img src="assets/screenshots/add_host.webp" alt="手机端添加主机和配对界面" width="760" height="1680" />
+                  </figure>
+                </div>
+              </div>
+              <div class="platform-command">OC Remote → 添加主机 → 连接并配对</div>
+            </article>
+
+            <article class="platform-card dark">
+              <div class="platform-head">
+                <div><h3>中继端</h3><p>可选。只转发密文，适合手机和电脑不在同一网络。</p><ul class="platform-points"><li>自动生成并校验 TLS</li><li>一次性邀请</li><li>BoltDB 持久化 subject</li></ul></div>
+                <span class="platform-tag">OPTIONAL</span>
+              </div>
+              <div class="platform-visual">
+                <div class="terminal-shell">
+                  <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote-relay</span></div>
+                  <img src="assets/screenshots/relay-terminal.webp" alt="中继端初始化和管理命令输出" width="1439" height="600" />
+                </div>
+              </div>
+              <div class="platform-command">./ocremote-relay init --data-dir ./data</div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section security" id="security">
+        <div class="wrap">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker"><span>03</span> / 安全模型</p>
+              <h2>代码不离开<br />你自己的链路。</h2>
+            </div>
+            <p>
+              opencode 继续只监听 127.0.0.1。手机与主机之间使用 Noise NK；中继看到的是房间、身份和时间元数据，应用数据只有密文。
+            </p>
+          </div>
+
+          <div class="security-grid">
+            <div class="diagram" aria-label="手机与主机之间的端到端加密示意">
+              <div class="diagram-row">
+                <div class="node"><small>ANDROID</small><strong>手机端</strong><span>会话 · 命令 · 审阅</span></div>
+                <div class="link-line">NOISE NK</div>
+                <div class="node"><small>LOCALHOST</small><strong>主机端</strong><span>opencode · 设备令牌</span></div>
+              </div>
+              <div class="relay-line"><span>可选中继 · 只转发密文</span></div>
+            </div>
+
+            <ul class="security-list">
+              <li><span class="num">01</span><div><strong>一次性配对</strong><p>主机生成短时配对码，手机核对主机指纹后获得设备令牌；主机只保存令牌哈希。</p></div></li>
+              <li><span class="num">02</span><div><strong>每条连接重新握手</strong><p>X25519 临时密钥、ChaCha20-Poly1305、SHA-256；控制帧和 HTTP/SSE 负载都在受保护记录内。</p></div></li>
+              <li><span class="num">03</span><div><strong>发布版不信任测试 CA</strong><p>Release APK 只使用 Android 系统 CA 库；QA APK 才额外信任开发测试 CA，二者分开构建。</p></div></li>
+            </ul>
+          </div>
+          <p style="margin: 28px 0 0"><a class="inline-cta" href="security.html">查看完整安全模型 <span>→</span></a></p>
+        </div>
+      </section>
+
+      <section class="section gallery" id="screens">
+        <div class="wrap">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker"><span>04</span> / 界面</p>
+              <h2>真实界面，<br />没有演示滤镜。</h2>
+            </div>
+            <p>
+              浅色、深色、侧边栏、审阅和 Diff 都是 Android 客户端的实际页面。状态栏里的主机名和会话内容来自一次性测试环境。
+            </p>
+          </div>
+
+          <div class="gallery-grid">
+            <figure class="phone phone--xs"><img src="assets/screenshots/host_list.webp" alt="手机端主机列表" width="760" height="1680" /></figure>
+            <figure class="phone phone--xs"><img src="assets/screenshots/session_sidebar.webp" alt="手机端会话侧边栏" width="760" height="1680" /></figure>
+            <figure class="phone phone--xs"><img src="assets/screenshots/diff.webp" alt="手机端 Diff 查看界面" width="760" height="1680" /></figure>
+            <figure class="phone phone--xs"><img src="assets/screenshots/light_style.webp" alt="手机端浅色主题设置" width="760" height="1680" /></figure>
+            <figure class="phone phone--xs"><img src="assets/screenshots/black_style.webp" alt="手机端深色主题设置" width="760" height="1680" /></figure>
+            <figure class="phone phone--xs"><img src="assets/screenshots/select_comment_text.webp" alt="手机端选中代码行并添加评论" width="760" height="1680" /></figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="download" id="download">
+        <div class="wrap download-grid">
+          <div>
+            <p class="section-kicker"><span>05</span> / 下载</p>
+            <h2>从手机开始，<br />电脑保持工作。</h2>
+            <p class="lede">下载 0.1.1，安装与设备架构匹配的 APK。主机端自带 Bun 和 sherpa-onnx；中继端是静态二进制。</p>
+            <a class="btn btn-primary" href="https://github.com/primercoder/opencode-app/releases/latest">打开最新 Release <span class="arrow">↗</span></a>
+            <p class="download-note">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16v.1" /></svg>
+              当前 APK 使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。Release APK 不包含 QA 测试 CA。
+            </p>
+          </div>
+          <div class="download-list" aria-label="0.1.1 下载文件">
+            <div class="download-row"><div><strong>Android · arm64-v8a</strong><span>真机、平板 · 87 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-0.1.1-android-arm64-v8a.apk">APK ↗</a></div>
+            <div class="download-row"><div><strong>Android · x86_64</strong><span>模拟器、x86_64 设备 · 87 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-0.1.1-android-x86_64.apk">APK ↗</a></div>
+            <div class="download-row"><div><strong>Host · Linux x64</strong><span>自带 Bun + sherpa-onnx · 60 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-host-0.1.1-linux-x64.tar.gz">tar.gz ↗</a></div>
+            <div class="download-row"><div><strong>Host · Linux arm64</strong><span>自带 arm64 Bun + sherpa-onnx · 63 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-host-0.1.1-linux-arm64.tar.gz">tar.gz ↗</a></div>
+            <div class="download-row"><div><strong>Relay · Linux x64</strong><span>静态 Go 二进制 · 8.2 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-relay-0.2.0-linux-amd64">binary ↗</a></div>
+            <div class="download-row"><div><strong>Relay · Linux arm64</strong><span>静态 Go 二进制 · 7.7 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-relay-0.2.0-linux-arm64">binary ↗</a></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer-row">
+          <div class="footer-brand"><img src="assets/icon.png" alt="" width="22" height="22" />OC Remote</div>
+          <nav class="footer-links" aria-label="页脚">
+            <a href="quick-start.html">快速开始</a>
+            <a href="security.html">安全模型</a>
+            <a href="faq.html">FAQ</a>
+            <a href="https://github.com/primercoder/opencode-app">GitHub</a>
+            <a href="https://github.com/primercoder/opencode-app/releases/latest">Release</a>
+            <a href="en/index.html">English</a>
+          </nav>
+        </div>
+        <div class="footer-base">
+          <span>© 2026 primercoder · Apache-2.0</span>
+          <span>非官方 opencode 客户端 · 与 opencode 项目无隶属关系</span>
+        </div>
+      </div>
+    </footer>
+
+    <script src="assets/site.js"></script>
+  </body>
+</html>

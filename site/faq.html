@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN" data-type="software" data-radius="soft">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>常见问题 — OC Remote</title>
+    <meta name="description" content="OC Remote 的安装、配对、中继 TLS、斜杠命令、下载架构和发布签名问题。" />
+    <meta name="page-type" content="software" />
+    <meta name="site-kind" content="software" />
+    <meta name="theme-color" content="#f6f6f2" />
+    <link rel="icon" href="assets/icon.png" />
+    <link rel="stylesheet" href="assets/site.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">跳到正文</a>
+    <header class="site-nav">
+      <div class="wrap nav-row">
+        <a class="brand" href="index.html" aria-label="OC Remote 首页"><img src="assets/icon.png" alt="" width="30" height="30" /><span class="brand-name"><strong>OC Remote</strong><span>for opencode</span></span></a>
+        <nav class="nav-links" id="site-menu" aria-label="主导航"><a href="index.html#features">功能</a><a href="index.html#platforms">三端</a><a href="index.html#security">安全</a><a href="quick-start.html">快速开始</a><a href="faq.html">FAQ</a></nav>
+        <div class="nav-actions">
+          <div class="lang-switch" aria-label="语言"><a href="faq.html" aria-current="true">中</a><a href="en/faq.html">EN</a></div>
+          <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub 仓库" rel="noreferrer"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" /></svg></a>
+          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.1 <span class="arrow">↓</span></a>
+          <button class="nav-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="site-menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="page-hero">
+        <div class="wrap">
+          <p class="eyebrow"><span class="dot"></span>HELP · FAQ</p>
+          <h1>先看这里，再开终端。</h1>
+          <p class="lede">安装、配对、TLS、命令和发布签名的高频问题。没有找到答案时，带日志和复现步骤去 GitHub Issues。</p>
+        </div>
+      </section>
+
+      <section class="prose">
+        <div class="wrap faq-grid">
+          <aside class="faq-side">
+            <h2>常见问题</h2>
+            <p>回答尽量短，命令保持可复制。APK 和主机包都来自同一个 Release 版本。</p>
+            <a class="inline-cta" href="https://github.com/primercoder/opencode-app/issues">报告问题 <span>↗</span></a>
+          </aside>
+
+          <div>
+            <section class="faq-group" aria-labelledby="faq-install">
+              <h2 id="faq-install">安装与配对</h2>
+              <div class="accordion">
+                <details>
+                  <summary>应该下载哪个 APK？</summary>
+                  <p>真机和平板使用 <code>android-arm64-v8a.apk</code>；x86_64 模拟器使用 <code>android-x86_64.apk</code>。装错架构通常会在安装阶段报 ABI 不匹配。</p>
+                </details>
+                <details>
+                  <summary>手机提示连接失败，但电脑上 opencode 正在运行。</summary>
+                  <p>先确认主机用了 <code>--listen 0.0.0.0:8787</code> 或指定了手机可访问的网卡地址，而不是默认的 <code>127.0.0.1</code>。再检查电脑防火墙是否允许 TCP 8787，手机是否在同一网络。</p>
+                </details>
+                <details>
+                  <summary>配对码过期了怎么办？</summary>
+                  <p>在电脑上运行 <code>./ocremote pair</code> 生成新码，然后在手机上重新添加主机。配对码默认 5 分钟过期；终端里可以用 <code>--ttl</code> 调整。</p>
+                </details>
+                <details>
+                  <summary>为什么手机上显示的主机指纹要和电脑核对？</summary>
+                  <p>指纹对应主机的 Noise 静态公钥。逐段核对可以避免连接到伪造主机；指纹不一致时不要继续配对。</p>
+                </details>
+              </div>
+            </section>
+
+            <section class="faq-group" aria-labelledby="faq-session">
+              <h2 id="faq-session">会话与命令</h2>
+              <div class="accordion">
+                <details>
+                  <summary>手机端支持哪些斜杠命令？</summary>
+                  <p>核心命令包括 <code>/models</code>、<code>/agents</code>、<code>/mcps</code>、<code>/skills</code>、<code>/variants</code>、<code>/sessions</code>、<code>/new</code>、<code>/compact</code>、<code>/status</code>、<code>/diff</code> 和 <code>/help</code>。<code>/init</code>、<code>/review</code>、<code>/goal</code> 等服务端命令会继续发给 opencode。</p>
+                </details>
+                <details>
+                  <summary>为什么有些命令是灰色的？</summary>
+                  <p>它们依赖终端、编辑器、worktree 或桌面能力，手机端不会执行。置灰是为了明确不可用，而不是发送请求后返回 404。</p>
+                </details>
+                <details>
+                  <summary>运行中发消息会怎样？</summary>
+                  <p>消息会进入队列，当前任务结束后自动发送。输入框上方可以看到排队数量，也可以取消排队项。</p>
+                </details>
+                <details>
+                  <summary>其他终端改了 Agent 或模型，手机需要刷新吗？</summary>
+                  <p>不需要。手机会通过事件流刷新当前会话，状态栏和设置面板会自动更新；其他端也能收到手机发起的变更事件。</p>
+                </details>
+              </div>
+            </section>
+
+            <section class="faq-group" aria-labelledby="faq-tls">
+              <h2 id="faq-tls">中继与 TLS</h2>
+              <div class="accordion">
+                <details id="tls">
+                  <summary>中继是必须的吗？</summary>
+                  <p>不是。同一局域网优先直连；中继用于手机和电脑不在同一网络、或者需要穿透 NAT 的场景。中继只转发加密帧。</p>
+                </details>
+                <details>
+                  <summary>Release APK 报 TLS 证书错误。</summary>
+                  <p>Release APK 只信任 Android 系统 CA 库，不包含开发测试 CA。给自签中继安装 CA 到系统信任库，或者改用公共 CA 签发的证书。</p>
+                </details>
+                <details>
+                  <summary>主机登记中继失败。</summary>
+                  <p>确认 host invite 没有被使用过，并且主机和 Android 设备的时钟正确。自签中继需要给主机传 <code>--relay-ca</code>；公共 CA 可以省略。</p>
+                </details>
+                <details>
+                  <summary>中继能看到我的代码吗？</summary>
+                  <p>看不到应用数据。中继能看到房间、subject 身份、连接时间和帧大小等元数据，但会话、文件和工具内容都在 Noise 密文里。</p>
+                </details>
+              </div>
+            </section>
+
+            <section class="faq-group" aria-labelledby="faq-release">
+              <h2 id="faq-release">Release 与构建</h2>
+              <div class="accordion">
+                <details>
+                  <summary>为什么 APK 用 debug keystore？</summary>
+                  <p>当前发布包仍使用 Expo debug keystore 签名，便于测试安装。正式分发前需要替换生产 keystore，并重新生成 Release。</p>
+                </details>
+                <details>
+                  <summary>主机端有 arm64 包吗？</summary>
+                  <p>有。<code>ocremote-host-0.1.1-linux-arm64.tar.gz</code> 内置 arm64 Bun 和 sherpa-onnx；x64 主机使用对应的 <code>linux-x64</code> 包。</p>
+                </details>
+                <details>
+                  <summary>怎么校验下载文件？</summary>
+                  <p>从 Release 下载 <code>SHA256SUMS</code>，和构建产物放在同一目录，执行 <code>sha256sum -c SHA256SUMS</code>。</p>
+                </details>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer-row">
+          <div class="footer-brand"><img src="assets/icon.png" alt="" width="22" height="22" />OC Remote</div>
+          <nav class="footer-links" aria-label="页脚"><a href="index.html">首页</a><a href="quick-start.html">快速开始</a><a href="security.html">安全模型</a><a href="https://github.com/primercoder/opencode-app">GitHub</a><a href="en/faq.html">English</a></nav>
+        </div>
+        <div class="footer-base"><span>© 2026 primercoder · Apache-2.0</span><span>非官方 opencode 客户端 · 与 opencode 项目无隶属关系</span></div>
+      </div>
+    </footer>
+    <script src="assets/site.js"></script>
+  </body>
+</html>
