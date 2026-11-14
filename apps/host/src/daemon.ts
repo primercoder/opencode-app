@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-export const HOST_VERSION = "0.1.0"
+export const HOST_VERSION = "0.1.1"
 
 export type HostState = {
   pid: number

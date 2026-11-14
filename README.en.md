@@ -54,9 +54,10 @@ Release assets name the operating system and CPU architecture in the filename.
 
 | Asset | OS | CPU / target | Use |
 |---|---|---|---|
-| `ocremote-0.1.0-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
-| `ocremote-0.1.0-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
-| `ocremote-host-0.1.0-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
+| `ocremote-0.1.1-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
+| `ocremote-0.1.1-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
+| `ocremote-host-0.1.1-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
+| `ocremote-host-0.1.1-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
 | `ocremote-relay-0.2.0-linux-amd64` | Linux | x86_64 | Relay binary |
 | `ocremote-relay-0.2.0-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README + CA install script |
 | `ocremote-relay-0.2.0-linux-arm64` | Linux | arm64 | Relay binary |
@@ -71,7 +72,7 @@ distributing them to end users.
 1. **Start the host** next to a running opencode server:
 
    ```bash
-   tar xzf ocremote-host-0.1.0-linux-x64.tar.gz
+   tar xzf ocremote-host-0.1.1-linux-x64.tar.gz   # use linux-arm64 on arm64
    cd ocremote
    ./ocremote start --listen 0.0.0.0:8787 --pair
    ```
@@ -93,11 +94,11 @@ relay.
 
 Use the APK matching the device:
 
-- `ocremote-0.1.0-android-arm64-v8a.apk` for real Android devices.
-- `ocremote-0.1.0-android-x86_64.apk` for an x86_64 emulator.
+- `ocremote-0.1.1-android-arm64-v8a.apk` for real Android devices.
+- `ocremote-0.1.1-android-x86_64.apk` for an x86_64 emulator.
 
 ```bash
-adb install ocremote-0.1.0-android-arm64-v8a.apk
+adb install ocremote-0.1.1-android-arm64-v8a.apk
 ```
 
 ### Add a host
@@ -164,10 +165,10 @@ box and is never sent automatically.
 
 ### Install and run
 
-The Linux x64 archive is self-contained (Bun and sherpa-onnx included):
+The Linux x64/arm64 archives are self-contained (Bun and sherpa-onnx included):
 
 ```bash
-tar xzf ocremote-host-0.1.0-linux-x64.tar.gz
+tar xzf ocremote-host-0.1.1-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start --listen 0.0.0.0:8787 --pair
 ```

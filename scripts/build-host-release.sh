@@ -44,7 +44,11 @@ if [[ -z "$SHERPA_NODE" ]]; then
   exit 1
 fi
 cp -R "$(dirname "$SHERPA_NODE")" "$WORK/app/node_modules/sherpa-onnx-node"
-SHERPA_NATIVE="$(find "$ROOT/node_modules" -maxdepth 6 -type d -name "sherpa-onnx-linux-$NPM_ARCH" -print -quit 2>/dev/null || true)"
+if [[ "$ARCH" == "arm64" && -n "${SHERPA_ARM64_DIR:-}" ]]; then
+  SHERPA_NATIVE="$SHERPA_ARM64_DIR"
+else
+  SHERPA_NATIVE="$(find "$ROOT/node_modules" -maxdepth 6 -type d -name "sherpa-onnx-linux-$NPM_ARCH" -print -quit 2>/dev/null || true)"
+fi
 if [[ -z "$SHERPA_NATIVE" ]]; then
   echo "sherpa-onnx-linux-$NPM_ARCH is missing; cannot ship host ASR for $PLATFORM." >&2
   exit 1
