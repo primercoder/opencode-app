@@ -1,160 +1,97 @@
 # OC Remote
 
-Remote control for [opencode](https://opencode.ai) from Android.
+[English](README.en.md) | 简体中文
 
-The host runs next to opencode on your computer. The phone connects directly on
-the LAN or through an optional relay. Every application frame is protected
-end-to-end with **Noise NK**; the relay only forwards ciphertext.
+用 Android 手机远程操作电脑上的 [opencode](https://opencode.ai)。
 
-## Contents
+主机端运行在 opencode 旁边；手机可以在局域网直连，也可以通过自建中继连接。所有应用数据都使用 **Noise NK 端到端加密**，中继只转发密文。
 
-- [What it does](#what-it-does)
-- [Release downloads](#release-downloads)
-- [Quick start](#quick-start)
-- [Android app](#android-app)
-- [Host](#host)
-- [Relay](#relay)
-- [Security model](#security-model)
-- [Build from source](#build-from-source)
-- [Project layout](#project-layout)
-- [Configuration reference](#configuration-reference)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+## 功能
 
-## What it does
+| 能力 | 说明 |
+|---|---|
+| 会话 | 查看项目与会话，实时接收文本、思考过程和工具调用 |
+| 输入 | 发送消息、排队输入、停止任务、跟踪后台工具和子代理 |
+| 会话设置 | 切换 Agent、模型、思考深度、MCP、Skill 和听写引擎 |
+| 命令 | 支持 `/new`、`/review`、`/goal`、`/compact` 等斜杠命令，以及 `!ls` shell 命令 |
+| 代码审阅 | 文件浏览器、文件类型图标、换行切换、行级评论、Diff 查看 |
+| 语音 | 手机 Whisper、主机 SenseVoice、Android 系统识别三选一或自动回退 |
+| 连接 | 局域网直连或自建中继；配对码一次性有效；支持设备撤销 |
 
-OC Remote turns an Android phone into a remote client for a local opencode 2.x
-server:
+opencode 始终只监听 `127.0.0.1`。主机读取本机服务注册信息，opencode 密码不会离开电脑。
 
-- Browse projects and sessions in a single workspace.
-- Read streaming assistant output, reasoning and tool calls; long activity runs
-  collapse and text is paced like a chat client.
-- Send messages, queue input while an agent is working, stop running work and
-  follow background tools/subagents.
-- Choose agent, model, reasoning depth, MCP servers, skills and dictation engine
-  from the bottom session panel.
-- Run slash commands (`/new`, `/review`, `/goal`, `/compact`, ...) and shell
-  commands (`!ls`).
-- Review project files with file-type icons, a fixed root path, parent-directory
-  navigation, text/binary detection and a wrap toggle.
-- View session diffs and attach line comments to a review prompt.
-- Use hybrid voice input: phone Whisper model, host SenseVoice model, or the
-  Android system recognizer.
-- Connect over LAN directly or through a self-hosted relay with automatic TLS
-  and one-time enrollment links.
+## 下载
 
-The opencode server stays bound to `127.0.0.1`; the host reads its local service
-registration and keeps the opencode password on the computer.
+Release 资源文件名包含操作系统和 CPU 架构。
 
-## Release downloads
-
-Release assets name the operating system and CPU architecture in the filename.
-
-| Asset | OS | CPU / target | Use |
+| 文件 | 平台 | 架构 | 用途 |
 |---|---|---|---|
-| `ocremote-0.1.0-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
-| `ocremote-0.1.0-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
-| `ocremote-host-0.1.0-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
-| `ocremote-relay-0.2.0-linux-amd64` | Linux | x86_64 | Relay binary |
-| `ocremote-relay-0.2.0-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README + CA install script |
-| `ocremote-relay-0.2.0-linux-arm64` | Linux | arm64 | Relay binary |
-| `ocremote-relay-0.2.0-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README + CA install script |
+| `ocremote-0.1.0-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
+| `ocremote-0.1.0-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
+| `ocremote-host-0.1.0-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
+| `ocremote-relay-0.2.0-linux-amd64` | Linux | x86_64 | 中继二进制 |
+| `ocremote-relay-0.2.0-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 + CA 安装脚本 |
+| `ocremote-relay-0.2.0-linux-arm64` | Linux | arm64 | 中继二进制 |
+| `ocremote-relay-0.2.0-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 + CA 安装脚本 |
 
-`SHA256SUMS` verifies every asset. The release APKs are currently signed with
-the Expo debug keystore; replace it with a production keystore before
-distributing them to end users.
+`SHA256SUMS` 可校验全部资源。当前 APK 仍使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。
 
-## Quick start
+## 快速开始
 
-1. **Start the host** next to a running opencode server:
+| 端 | 操作 |
+|---|---|
+| 手机 | 安装与设备架构匹配的 APK |
+| 主机 | 解压 `ocremote-host-*.tar.gz`，运行 `./ocremote start --listen 0.0.0.0:8787 --pair` |
+| 配对 | 手机扫码或粘贴主机打印的配对链接 |
+| 中继（可选） | 启动中继，用 host invite 登记主机，再用新的配对码连接手机 |
 
-   ```bash
-   tar xzf ocremote-host-0.1.0-linux-x64.tar.gz
-   cd ocremote
-   ./ocremote start --listen 0.0.0.0:8787 --pair
-   ```
+直连和中继互不依赖。只有启动主机时显式传入 `--relay-link` 或 `--relay`，才会使用已保存的中继。
 
-2. **Install the Android APK** matching the phone/emulator architecture, open
-   OC Remote, and scan the host's QR code or paste the pairing link.
+## Android 手机端
 
-3. **Optional relay**: start the relay, enroll the host with its one-time host
-   invite, then use the host's next pairing code. The phone enrolls with the
-   relay automatically.
-
-Direct and relay routing are independent. A saved relay is only used when the
-host is started with `--relay-link`/`--relay`; direct mode never waits for a
-relay.
-
-## Android app
-
-### Install
-
-Use the APK matching the device:
-
-- `ocremote-0.1.0-android-arm64-v8a.apk` for real Android devices.
-- `ocremote-0.1.0-android-x86_64.apk` for an x86_64 emulator.
+### 安装与配对
 
 ```bash
 adb install ocremote-0.1.0-android-arm64-v8a.apk
 ```
 
-### Add a host
+1. 打开 OC Remote，点右上角 **+**。
+2. 扫描主机二维码，或选择 **粘贴链接**。
+3. 核对手机上显示的主机指纹与电脑一致。
+4. 点 **连接并配对**。配对码带中继线路时，手机会自动登记中继。
+5. 设备令牌和中继凭据保存在 Android SecureStore。
 
-1. Open the app and tap **+**.
-2. Scan the host QR code, or use **Paste link**.
-3. Compare the displayed host fingerprint with the fingerprint shown on the
-   computer.
-4. Tap **Connect and pair**. If the pairing code includes a relay route, the
-   phone enrolls with the relay automatically.
-5. The device token and relay subject secret are stored in Android SecureStore.
+### 会话界面
 
-The app remembers the last session per host. The first visit starts empty; later
-visits reopen the last session you were reading.
+| 区域 | 作用 |
+|---|---|
+| 左侧抽屉 | 切换会话、新建会话、进入主机设置 |
+| 顶部 | 主机状态、代码审阅、Diff |
+| 消息区 | 流式文本、思考与工具折叠、压缩状态 |
+| 输入区 | 消息、语音、排队提示、发送/停止 |
+| 底部状态栏 | Agent、模型、思考深度、上下文用量；点按打开会话设置 |
 
-### Workspace
+从屏幕左侧向右滑可以跟手拉出会话抽屉，向左滑回退。
 
-- Left drawer: switch sessions, create a session, or open host settings.
-- Header: host status, review and diff entry points.
-- Composer: message input, voice input, queue indicator and send/stop.
-- Bottom status strip: agent, model, reasoning depth, context usage and percent;
-  swipe horizontally to read long values, tap to open session settings.
-- Session settings: agent, provider/model tree, reasoning depth, MCP servers,
-  skills, dictation engine.
-- Background tasks: running tools, shells and subagents; view or stop supported
-  tasks.
+### 命令
 
-### Commands
+| 输入 | 行为 |
+|---|---|
+| `/` | 打开命令面板 |
+| `/compact` | 压缩当前会话上下文 |
+| `/new`、`/sessions`、`/agent`、`/model`、`/reasoning`、`/mcp`、`/skills`、`/stop`、`/help` | 执行手机端操作 |
+| `/init`、`/review`、`/goal`、其他服务端命令 | 调用 opencode 命令接口 |
+| `!命令` | 在会话工作目录执行 shell 命令 |
 
-- `/` at the start of an empty message opens the command palette.
-- Built-in commands include `/new`, `/sessions`, `/agent`, `/model`,
-  `/reasoning`, `/mcp`, `/skills`, `/compact`, `/stop`, `/help`.
-- Server commands from opencode are also listed, such as `/init`, `/review` and
-  `/goal`.
-- `!command` runs a shell command in the session working directory and shows
-  the command, exit code and output.
-- While a session is active, normal messages are queued and sent when the
-  session becomes idle.
+会话运行中继续发送普通消息会排队，等当前任务结束后自动发送。
 
-### Code review
+### 语音
 
-- File browser: fixed project root path, file-type icons, current-directory
-  parent row, cached directory navigation and FlatList rendering.
-- File preview: text/binary detection is supplied by the host; long lines can
-  be wrapped with the wrap icon.
-- Select a line range and add comments; **Send** creates one review prompt.
+语音模型不打包进 APK，需要单独下载或导入。优先级为：手机 Whisper → 主机 SenseVoice → Android 系统识别。识别结果只插入输入框，不会自动发送。
 
-### Voice
+## 主机端
 
-Voice models are downloaded or imported separately; they are not bundled in the
-APK. The phone prefers the local Whisper model, then the host SenseVoice model,
-then the Android system recognizer. Recognized text is inserted into the input
-box and is never sent automatically.
-
-## Host
-
-### Install and run
-
-The Linux x64 archive is self-contained (Bun and sherpa-onnx included):
+### 安装与运行
 
 ```bash
 tar xzf ocremote-host-0.1.0-linux-x64.tar.gz
@@ -162,7 +99,7 @@ cd ocremote
 ./ocremote start --listen 0.0.0.0:8787 --pair
 ```
 
-`start` detaches by default. Manage it with:
+自带 Bun 和 sherpa-onnx，无需额外安装运行时。`start` 默认后台运行。
 
 ```bash
 ./ocremote status
@@ -170,36 +107,26 @@ cd ocremote
 ./ocremote stop
 ```
 
-Use `--foreground` for tmux/systemd:
+调试或交给 systemd/tmux 时使用前台模式：
 
 ```bash
 ./ocremote start --foreground --listen 0.0.0.0:8787
 ```
 
-The default listen address is `127.0.0.1:8787` (local only). Use
-`0.0.0.0:8787` for phones on the LAN, or bind one card:
+默认监听 `127.0.0.1:8787`；手机在局域网访问时使用 `0.0.0.0:8787` 或指定网卡地址。
 
-```bash
-./ocremote start --listen 192.168.1.23:8787 --pair
-```
+### 配对与设备
 
-### Pairing
+| 命令 | 作用 |
+|---|---|
+| `./ocremote pair` | 生成新的只写配对码 |
+| `./ocremote pair --read-only` | 生成只读配对码 |
+| `./ocremote devices list` | 查看已配对设备 |
+| `./ocremote devices revoke <id>` | 撤销设备授权 |
 
-`--pair` prints a QR plus a full pairing link. A running host can issue another
-code with:
+配对码一次性有效，默认 5 分钟过期。
 
-```bash
-./ocremote pair
-./ocremote pair --read-only
-./ocremote pair --relay
-```
-
-Pair codes are one-time and expire after 5 minutes by default (`--ttl` changes
-this).
-
-### Relay mode
-
-Enroll the host with a one-time relay host invite:
+### 中继模式
 
 ```bash
 ./ocremote start --listen 0.0.0.0:8787 --pair \
@@ -207,27 +134,15 @@ Enroll the host with a one-time relay host invite:
   --relay-ca ./data/tls/ca.crt
 ```
 
-- `--relay-link` consumes the invite and saves the long-lived host subject.
-- `--relay-ca` verifies a self-signed relay. Omit it when the relay uses a
-  public CA trusted by the system.
-- Once connected, the relay gives the host a one-time phone invite; the host
-  inserts it into the pairing code.
-- A saved relay subject is reused only when `--relay`/`--relay-link` is
-  explicitly passed.
+| 参数 | 作用 |
+|---|---|
+| `--relay-link` | 消耗一次性 host invite，保存长期主机身份 |
+| `--relay-ca` | 校验自签中继；公共 CA 可省略 |
+| 保存后的中继 | 只有显式传 `--relay` / `--relay-link` 才启用 |
 
-### Devices
+主机连上中继后，中继会下发一次性手机 invite，主机把它写进配对码。
 
-```bash
-./ocremote devices list
-./ocremote devices revoke <device-id>
-```
-
-Deleting the host's local host record on the phone does not revoke the device on
-the computer; use `devices revoke` for that.
-
-### Speech models
-
-Models are not bundled:
+### 语音模型
 
 ```bash
 ./ocremote asr list
@@ -236,125 +151,98 @@ Models are not bundled:
 ./ocremote asr test --file path/to/16k-mono.wav
 ```
 
-The host uses the model as a dictation backend for connected phones.
+### 文件位置
 
-### Host files
-
-| Path | Purpose |
+| 路径 | 内容 |
 |---|---|
-| `~/.config/ocremote/identity.json` | Host Noise static key pair (0600) |
-| `~/.config/ocremote/config.json` | Device hashes, pending pair hashes, relay subject and room (0600) |
-| `~/.local/state/ocremote/host.log` | Host log |
-| `OCREMOTE_HOME` | Override the config/identity directory |
+| `~/.config/ocremote/identity.json` | 主机 Noise 静态密钥（0600） |
+| `~/.config/ocremote/config.json` | 设备哈希、待配对哈希、中继身份和房间（0600） |
+| `~/.local/state/ocremote/host.log` | 主机日志 |
+| `OCREMOTE_HOME` | 覆盖配置和身份目录 |
 
-## Relay
+## 中继端
 
-The relay is a Go binary. It only forwards encrypted application frames and does
-not run opencode, ASR or model logic.
+中继是 Go 单文件程序，只转发加密帧，不运行 opencode、ASR 或模型逻辑。
 
-### Run with defaults
+### 默认启动
 
 ```bash
 ./ocremote-relay
 ```
 
-This starts **wss:// on `:8443`**, creates TLS files in `./data/tls/` on first
-run, and prints a one-time host invite when no host has enrolled yet.
+默认启动 **wss:// `:8443`**，首次运行在 `./data/tls/` 生成 TLS 文件，并打印一次性 host invite。
 
-Generated TLS files:
+| 文件 | 内容 |
+|---|---|
+| `data/tls/ca.crt` | CA 证书 |
+| `data/tls/ca.key` | CA 私钥（0600） |
+| `data/tls/relay.crt` | 服务器证书 |
+| `data/tls/relay.key` | 服务器私钥（0600） |
 
-```text
-data/tls/ca.crt       CA certificate
-data/tls/ca.key       CA private key (0600)
-data/tls/relay.crt    server certificate
-data/tls/relay.key    server private key (0600)
-```
-
-The server certificate covers localhost, the machine hostname, local addresses
-and the public URL host. Install the CA on Android once if phones should trust
-this relay:
+自签中继需要在 Android 上安装 CA：
 
 ```bash
 ./install-android-ca.sh ./data/tls/ca.crt
 ```
 
-Release APKs use the Android system trust store. The QA test APK trusts the
-development test CA directly; the release APK never includes that CA.
+Release APK 只信任 Android 系统 CA 库；QA APK 额外信任开发测试 CA，Release 不包含测试 CA。
 
-### First host invite
+### 初始化与管理
 
 ```bash
 ./ocremote-relay init --data-dir ./data \
   --public-url wss://relay.example/ws
-```
 
-`init` also creates/validates TLS. The host uses the printed link with
-`--relay-link`. When the host connects, the relay returns a one-time phone invite
-which the host embeds in its pairing code.
-
-### Manage
-
-```bash
 ./ocremote-relay admin --data-dir ./data status
 ./ocremote-relay admin --data-dir ./data subjects
 ./ocremote-relay admin --data-dir ./data invites
 ./ocremote-relay admin --data-dir ./data rooms
 ./ocremote-relay admin --data-dir ./data add-host --name office
-./ocremote-relay admin --data-dir ./data add-client --name phone  # legacy manual invite
 ./ocremote-relay admin --data-dir ./data revoke <subject-id>
 ```
 
-Invites are single-use. Subjects remain valid until revoked and are stored in
-`data/relay.db` (BoltDB), so host and phone authorizations survive relay
-restarts. WebSocket authentication uses a first-frame `relay.hello`; tokens are
-never placed in the URL.
+| 规则 | 说明 |
+|---|---|
+| invite | 一次性使用 |
+| subject | 长期有效，直到主动撤销 |
+| 持久化 | `data/relay.db`（BoltDB），重启不丢失 |
+| 认证 | 首帧 `relay.hello`，token 不放在 URL |
+| TLS | 用户证书优先；完整文件复用；部分或无效文件报错；`--rotate-tls` 显式重建 |
 
-### Custom TLS
+### 自定义证书
 
 ```bash
 ./ocremote-relay serve --data-dir ./data --listen :8443 \
   --tls-cert relay.crt --tls-key relay.key --tls-ca ca.crt
 ```
 
-- User-provided cert/key always take precedence over `data/tls`.
-- Complete, valid files in `data/tls` are reused and never overwritten.
-- Partial or invalid files are an error; use `--rotate-tls` to rebuild
-  explicitly.
-- `--no-tls` is only for local development.
+启动前会校验 PEM 格式、证书/私钥匹配、有效期、CA 链、serverAuth 用途和 SAN 覆盖。
 
-The relay validates PEM format, certificate/key matching, expiry, CA chain,
-serverAuth usage and SAN coverage before starting.
+## 安全模型
 
-## Security model
+| 层面 | 机制 |
+|---|---|
+| 配对 | 主机 Noise 静态公钥 + 一次性配对码；主机只保存设备令牌哈希 |
+| 应用数据 | Noise NK，X25519 临时密钥，ChaCha20-Poly1305，SHA-256 |
+| 直连 | `ws://` 传输 + Noise 端到端加密 |
+| 中继 | 手机↔中继、主机↔中继使用 `wss://`；手机↔主机仍是 Noise 端到端加密 |
+| 中继可见信息 | 房间、身份、时间等元数据；应用数据只有密文 |
+| 静态凭据 | 主机文件 0600；中继保存哈希；手机使用 Android SecureStore |
 
-- **Pairing**: host Noise static public key, one-time pairing code, device info;
-  host returns a random device token. Host stores only token hashes.
-- **Noise NK**: X25519 ephemeral keys per connection, ChaCha20-Poly1305,
-  SHA-256. Every OCRP control frame and proxied HTTP/SSE/file payload is inside a
-  protected record.
-- **Direct**: `ws://` transport plus Noise E2EE.
-- **Relay**: `wss://` TLS between phone↔relay and host↔relay, plus Noise E2EE
-  between phone and host. The relay sees rooms, identities and timing metadata,
-  but only Noise ciphertext for application data.
-- **Keys at rest**: host identity/config are mode 0600; relay BoltDB stores
-  token/secret hashes; phone credentials live in Android SecureStore.
-- **Release vs QA CA**: release APKs trust only the Android system CA store and
-  do not bundle the development test CA. QA builds additionally trust
-  `relay_test_ca.pem`. This affects TLS trust only; Noise remains end-to-end
-  encrypted in both builds.
+## 技术路线
 
+| 模块 | 技术 |
+|---|---|
+| 协议 | TypeScript，OCRP 帧、Noise NK、受保护记录、配对与中继链接 |
+| 主机 | Bun + TypeScript，局域网 WebSocket、HTTP/SSE 代理、中继主机客户端 |
+| 中继 | Go，WebSocket 房间转发、首帧认证、BoltDB、Admin API、自动 TLS |
+| 手机 | Expo / React Native（Android），Expo Router、Zustand、SecureStore |
+| 流式渲染 | SSE 事件 → 帧式呈现控制器 → 文本/思考/工具分块渲染 |
+| 文件审阅 | 主机侧文件类型与二进制判定，手机端 FlatList 浏览与行评论 |
 
-## Build from source
+## 构建与测试
 
-### Requirements
-
-- Node 26
-- Bun 1.4+
-- Go 1.24+
-- JDK 21
-- Android SDK 35/36 for Android builds
-
-### Install and test
+需要 Node 26、Bun 1.4+、Go 1.24+、JDK 21、Android SDK 35/36。
 
 ```bash
 bun install
@@ -363,116 +251,25 @@ bun run typecheck
 cd apps/relay && go test ./...
 ```
 
-### Run in development
+开发运行：
 
 ```bash
 bun run host start --listen 0.0.0.0:8787 --pair
-
-cd apps/relay
-go run ./cmd/relay
-
-cd apps/mobile
-bunx expo run:android
+cd apps/relay && go run ./cmd/relay
+cd apps/mobile && bunx expo run:android
 ```
 
-### Build release artifacts
+## 故障排查
 
-```bash
-./scripts/build-host-release.sh x64
-# Linux arm64 host builds require an arm64 Bun runtime.
-
-cd apps/relay
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-0.2.0-linux-amd64 ./cmd/relay
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-0.2.0-linux-arm64 ./cmd/relay
-
-cd apps/mobile
-bunx expo prebuild --platform android --clean
-cd android
-./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a
-./gradlew :app:assembleRelease -PreactNativeArchitectures=x86_64
-```
-
-Rename the generated APKs to include the OS and CPU architecture, then update
-`dist/SHA256SUMS` and `dist/RELEASE.txt`.
-
-## Project layout
-
-```text
-packages/protocol/   OCRP frames, Noise NK, pairing and relay link schemas
-apps/host/           Bun host companion and local opencode proxy
-apps/relay/          Go relay with BoltDB, invites, subjects and TLS
-apps/mobile/         Expo / React Native Android app
-scripts/             build, TLS and development helpers
-dist/                release artifacts (generated)
-```
-
-## Configuration reference
-
-### Host environment
-
-| Variable | Meaning |
+| 现象 | 处理 |
 |---|---|
-| `OCREMOTE_HOME` | Config/identity directory |
-| `OCREMOTE_STATE_DIR` | Runtime state/log directory |
-| `OCREMOTE_RELAY_CA` | CA used to verify the relay |
-| `OCREMOTE_HOST_NAME` | Host display name |
+| 手机连不上主机 | 主机使用 `--listen 0.0.0.0:8787`；确认同一网络和防火墙允许 TCP 8787 |
+| 中继证书错误 | Release APK 信任系统 CA；把中继 CA 安装到系统信任库，或改用公共 CA |
+| 主机无法登记中继 | 确认 host invite 未被使用；用 `admin add-host` 重新生成；检查时钟和 `--relay-ca` |
+| APK 架构不匹配 | 真机用 `android-arm64-v8a`，x86_64 模拟器用 `android-x86_64` |
+| 升级后中继不可用 | 主机重连后重新生成配对码，手机会自动登记新的手机 invite |
+| `/compact` 没反应 | 先确认会话已有可压缩内容；压缩结果会显示在消息区 |
 
-### Relay environment
+## 许可证
 
-| Variable | Meaning |
-|---|---|
-| `RELAY_DATA_DIR` | Data directory (default `./data`) |
-| `RELAY_LISTEN` | Listen address (default `:8443`) |
-| `RELAY_PUBLIC_URL` | Public `wss://` URL |
-| `RELAY_TLS_CERT`, `RELAY_TLS_KEY` | User TLS certificate/key |
-| `RELAY_TLS_CA` | User CA certificate |
-| `RELAY_TLS_OFF` | Disable TLS for local development |
-| `RELAY_ADMIN_SOCKET` | Admin Unix socket |
-| `RELAY_MAX_CLIENTS`, `RELAY_MAX_FRAME` | Relay limits |
-| `RELAY_LOG_LEVEL` | `debug`, `info`, `warn`, `error` |
-
-### Phone storage
-
-Credentials are stored in Android SecureStore, not in the repository:
-
-- `ocremote.device.<hostId>` — device id and token.
-- `ocremote.relay.<relay-url>` — relay subject id and secret.
-
-## Troubleshooting
-
-**Phone cannot reach the host directly**
-
-- Use `--listen 0.0.0.0:8787`, not only `127.0.0.1`.
-- Check that the phone is on the same network and the computer firewall allows
-  TCP 8787.
-- The pairing link shows the exact `ws://` address the phone will use.
-
-**Relay TLS certificate error**
-
-- Release APK trusts the Android system CA store. Install the relay CA into the
-  system store, or use a public CA certificate.
-- Host: pass `--relay-ca` for a self-signed relay CA.
-- Check the certificate SAN covers the host/IP in `--public-url`.
-
-**Relay starts but host cannot enroll**
-
-- Confirm the host invite was not already consumed.
-- Generate a new host invite with `admin add-host`.
-- Confirm the host and relay clocks are correct and `--relay-ca` matches.
-
-**APK install fails with architecture mismatch**
-
-- Use `android-arm64-v8a` for a real phone.
-- Use `android-x86_64` for an x86_64 emulator.
-
-**Android app cannot use relay after upgrading**
-
-- Generate a new pairing code after the host reconnects; the phone enrolls with
-  the new one-time phone invite automatically.
-
-## License
-
-Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). The Noise and
-protected-record implementation contains portions adapted from Paseo.
+Apache-2.0。见 [`LICENSE`](LICENSE) 和 [`NOTICE`](NOTICE)。Noise 与受保护记录实现包含改编自 Paseo 的部分。
