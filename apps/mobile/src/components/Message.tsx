@@ -1,5 +1,5 @@
-import { memo, useState } from "react"
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native"
+import { memo, useEffect, useRef, useState } from "react"
+import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from "react-native"
 import { useT } from "@/i18n"
 import { useTheme } from "@/theme"
 import type { AssistantContent, SessionMessage } from "@/opencode/client"
@@ -93,16 +93,17 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
     const blocks = dedupeBlocks(message.content ?? [])
     const groups = groupBlocks(blocks)
     const live = message.metadata?.live === true
+    const streaming = message.metadata?.streaming === true
     return (
       <View style={{ gap: 10 }}>
         {groups.map((group, index) =>
           group.kind === "text" ? (
-            <View key={`text-${index}`}>
-              <Markdown text={group.text} />
-              {live && index === groups.length - 1 ? (
-                <Text style={{ fontSize: 13, color: colors.accent, marginTop: 2 }}>▍</Text>
-              ) : null}
-            </View>
+            <AssistantText
+              key={`text-${index}`}
+              text={group.text}
+              live={live}
+              showCursor={streaming && index === groups.length - 1}
+            />
           ) : (
             <ActivityGroup key={`activity-${index}`} blocks={group.blocks} live={live} />
           ),
@@ -117,6 +118,72 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
   return null
 })
 
+/**
+ * A live text group fades in once and keeps the animated caret at its end.
+ * The caret is driven by `metadata.streaming`, so it disappears as soon as the
+ * stream ends instead of waiting for the next transcript refresh.
+ */
+function AssistantText({ text, live, showCursor }: { text: string; live: boolean; showCursor: boolean }) {
+  const opacity = useRef(new Animated.Value(live ? 0.72 : 1)).current
+
+  useEffect(() => {
+    if (!live) {
+      opacity.setValue(1)
+      return
+    }
+    Animated.timing(opacity, {
+      toValue: 1,
+      duration: 220,
+      useNativeDriver: true,
+    }).start()
+  }, [live, opacity])
+
+  return (
+    <Animated.View style={{ opacity }}>
+      <Markdown text={text} />
+      {showCursor ? <StreamingCursor /> : null}
+    </Animated.View>
+  )
+}
+
+function StreamingCursor() {
+  const { colors } = useTheme()
+  const opacity = useRef(new Animated.Value(1)).current
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, {
+          toValue: 0.25,
+          duration: 480,
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 480,
+          useNativeDriver: true,
+        }),
+      ]),
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [opacity])
+
+  return (
+    <Animated.View
+      style={{
+        width: 2,
+        height: 15,
+        marginTop: 3,
+        marginLeft: 2,
+        borderRadius: 1,
+        backgroundColor: colors.accent,
+        opacity,
+      }}
+    />
+  )
+}
+
 function CompactionView({ message }: { message: SessionMessage }) {
   const { colors } = useTheme()
   const t = useT()
@@ -129,7 +196,6 @@ function CompactionView({ message }: { message: SessionMessage }) {
     : running
       ? t("compactionRunning")
       : t("compactionCompleted")
-  const reason = message.reason === "auto" ? t("compactionAuto") : t("compactionManual")
   const tone = failed ? colors.danger : running ? colors.warning : colors.success
 
   return (
@@ -158,7 +224,7 @@ function CompactionView({ message }: { message: SessionMessage }) {
           <Icon name={failed ? "close" : "bolt"} size={15} color={tone} />
         )}
         <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: tone }}>{status}</Text>
-        <Text style={{ fontSize: 10.5, color: colors.faint }}>{reason}</Text>
+        {summary ? <Text style={{ fontSize: 10.5, color: colors.accent }}>{t("view")}</Text> : null}
         {summary ? <Icon name={open ? "chevronDown" : "chevronRight"} size={14} color={colors.faint} /> : null}
       </Pressable>
       {failed && message.error?.message ? (
@@ -178,21 +244,17 @@ function CompactionView({ message }: { message: SessionMessage }) {
         </Text>
       ) : null}
       {open && summary ? (
-        <Text
-          selectable
+        <View
           style={{
             paddingHorizontal: 11,
             paddingBottom: 11,
             borderTopWidth: StyleSheet.hairlineWidth,
             borderTopColor: colors.border,
             paddingTop: 8,
-            fontSize: 12.5,
-            lineHeight: 19,
-            color: colors.muted,
           }}
         >
-          {summary}
-        </Text>
+          <Markdown text={summary} />
+        </View>
       ) : null}
     </View>
   )

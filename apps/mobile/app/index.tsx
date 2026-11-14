@@ -79,14 +79,12 @@ function HostRow({ host, language }: { host: HostRecord; language: "zh" | "en" }
 
   const open = () => router.push({ pathname: "/hosts/[hostId]", params: { hostId: host.id } })
   const connect = async () => {
-    if (connecting) return
-    if (ready) {
-      open()
-      return
-    }
+    if (connecting || ready) return
     try {
+      // Connecting from the list only brings the transport up. The workspace
+      // opens when the user taps the rest of the row, so a successful connect
+      // does not drop the user into an empty session page.
       await ensureConnection(host.id, { force: true })
-      open()
     } catch {
       // The row keeps the error from the connection store and stays on this page.
     }
@@ -98,7 +96,7 @@ function HostRow({ host, language }: { host: HostRecord; language: "zh" | "en" }
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${host.name}，${status.label}`}
-        onPress={() => void connect()}
+        onPress={open}
         style={({ pressed }) => [styles.cardMain, pressed && { opacity: 0.7 }]}
       >
         <View style={[styles.statusDot, { backgroundColor: status.color }]} />

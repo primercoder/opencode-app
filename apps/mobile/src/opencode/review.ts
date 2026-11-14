@@ -24,6 +24,13 @@ export function selectionRange(anchor: { start: number }, line: number): { start
   return line >= anchor.start ? { start: anchor.start, end: line } : { start: line, end: anchor.start }
 }
 
+/** Appends the text typed in the session composer after all review comments. */
+export function appendReviewText(prompt: ReviewPrompt, text: string): ReviewPrompt {
+  const suffix = text.trim()
+  if (!suffix) return prompt
+  return { ...prompt, text: `${prompt.text}\n\n${suffix}` }
+}
+
 export function buildReviewPrompt(directory: string, comments: ReviewComment[]): ReviewPrompt {
   return {
     text: comments

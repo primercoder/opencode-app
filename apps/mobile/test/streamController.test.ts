@@ -43,6 +43,46 @@ describe("session stream presentation", () => {
     expect(controller.snapshot().map((message) => message.id)).toEqual(["m5"])
   })
 
+  test("stops the streaming caret when the text block ends", () => {
+    const controller = new SessionStreamController()
+    controller.ingest(event("session.text.started", { assistantMessageID: "m6" }))
+    controller.ingest(event("session.text.delta", { assistantMessageID: "m6", delta: "done" }))
+    controller.pump(Date.now())
+    expect(controller.snapshot()[0]?.metadata?.streaming).toBe(true)
+
+    controller.ingest(event("session.text.ended", { assistantMessageID: "m6", text: "done" }))
+    expect(controller.snapshot()[0]?.metadata?.streaming).toBe(false)
+  })
+
+  test("stops the streaming caret as soon as the execution ends", () => {
+    const controller = new SessionStreamController()
+    controller.ingest(event("session.text.started", { assistantMessageID: "m7" }))
+    controller.ingest(event("session.text.delta", { assistantMessageID: "m7", delta: "partial" }))
+    controller.pump(Date.now())
+    expect(controller.snapshot()[0]?.metadata?.streaming).toBe(true)
+
+    controller.ingest(event("session.execution.succeeded", { sessionID: "ses_a" }))
+    expect(controller.snapshot()[0]?.metadata?.streaming).toBe(false)
+  })
+
+  test("closes stalled text when no ended event arrives", () => {
+    const controller = new SessionStreamController()
+    controller.ingest(event("session.text.started", { assistantMessageID: "m8" }))
+    controller.ingest(event("session.text.delta", { assistantMessageID: "m8", delta: "a" }))
+    const start = Date.now()
+    controller.pump(start + 100)
+    expect(controller.snapshot()[0]?.metadata?.streaming).toBe(true)
+
+    // Drain the one-character buffer, then let the block go idle.
+    controller.pump(start + 140)
+    controller.pump(start + 1_200)
+    expect(controller.snapshot()[0]?.metadata?.streaming).toBe(false)
+
+    // A late delta wakes the same block up again.
+    controller.ingest(event("session.text.delta", { assistantMessageID: "m8", delta: "b" }))
+    expect(controller.snapshot()[0]?.metadata?.streaming).toBe(true)
+  })
+
   test("updates tool state without waiting for text pacing", async () => {
     const controller = new SessionStreamController()
     controller.ingest(event("session.tool.input.started", { assistantMessageID: "m3", name: "bash" }))

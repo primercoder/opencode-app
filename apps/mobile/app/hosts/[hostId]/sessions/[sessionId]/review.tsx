@@ -1,7 +1,6 @@
 import { router, useLocalSearchParams } from "expo-router"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
-  ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -17,10 +16,11 @@ import { Button } from "@/components/Button"
 import { FileTypeIcon } from "@/components/FileTypeIcon"
 import { Icon } from "@/components/Icon"
 import { OpencodeClient, type FsEntry, type SessionInfo } from "@/opencode/client"
-import { buildReviewPrompt, selectionRange, type ReviewComment } from "@/opencode/review"
+import { selectionRange, type ReviewComment } from "@/opencode/review"
 import { isProbablyBinary } from "@/opencode/fileKind"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
+import { useReviewDrafts } from "@/stores/reviewDrafts"
 import { ensureConnection } from "@/transport/runtimes"
 import { useT } from "@/i18n"
 import { radius, spacing, useTheme, useThemedStyles, type Palette } from "@/theme"
@@ -51,8 +51,8 @@ export default function ReviewScreen() {
   const [draft, setDraft] = useState("")
   const [comments, setComments] = useState<ReviewComment[]>([])
   const [loading, setLoading] = useState(false)
-  const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const stageComments = useReviewDrafts((state) => state.add)
   const rootGesture = useRef({ x: 0, scrolled: false })
   const directoryCache = useRef(new Map<string, FsEntry[]>())
   const initialLoaded = useRef(false)
@@ -191,20 +191,12 @@ export default function ReviewScreen() {
 
   const readOnly = connection?.session?.device?.scope === "read"
 
-  const send = async () => {
-    if (comments.length === 0 || sending || readOnly) return
-    setSending(true)
-    setError(null)
-    try {
-      const runtime = await ensureConnection(hostId)
-      const prompt = buildReviewPrompt(directory, comments)
-      await new OpencodeClient(runtime).prompt(sessionId, prompt)
-      router.back()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "发送评论失败")
-    } finally {
-      setSending(false)
-    }
+  // Stage the comments above the session composer instead of prompting the
+  // host. The user can still edit the message, remove cards, and only then send.
+  const send = () => {
+    if (comments.length === 0 || readOnly) return
+    stageComments(sessionId, directory, comments)
+    router.back()
   }
 
   const parentPath = currentPath.replace(/\/+$/u, "").split("/").slice(0, -1).join("/")
@@ -223,7 +215,8 @@ export default function ReviewScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.screen, { paddingTop: insets.top + spacing.md }]}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={0}
     >
       <View style={styles.header}>
         <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
@@ -237,11 +230,11 @@ export default function ReviewScreen() {
         </View>
         <Pressable
           accessibilityRole="button"
-          onPress={() => void send()}
-          disabled={comments.length === 0 || sending || readOnly}
+          onPress={send}
+          disabled={comments.length === 0 || readOnly}
           style={styles.send}
         >
-          {sending ? <ActivityIndicator size="small" color={colors.accent} /> : <Text style={[styles.sendText, (comments.length === 0 || readOnly) && styles.sendDisabled]}>{t("send")}</Text>}
+          <Text style={[styles.sendText, (comments.length === 0 || readOnly) && styles.sendDisabled]}>{t("send")}</Text>
         </Pressable>
       </View>
 

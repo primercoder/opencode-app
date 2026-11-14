@@ -17,13 +17,17 @@ export function Markdown({ text }: { text: string }) {
 
 function BlockView({ block, colors }: { block: Block; colors: Palette }) {
   if (block.type === "paragraph") {
-    return <Text style={{ fontSize: 15, lineHeight: 23, color: colors.text }}>{inline(block.text, colors)}</Text>
+    return (
+      <Text selectable style={{ fontSize: 15, lineHeight: 23, color: colors.text }}>
+        {inline(block.text, colors)}
+      </Text>
+    )
   }
 
   if (block.type === "heading") {
     const size = block.level === 1 ? 21 : block.level === 2 ? 19 : 17
     return (
-      <Text style={{ fontSize: size, lineHeight: size + 6, fontWeight: "700", color: colors.text, marginTop: 4 }}>
+      <Text selectable style={{ fontSize: size, lineHeight: size + 6, fontWeight: "700", color: colors.text, marginTop: 4 }}>
         {inline(block.text, colors)}
       </Text>
     )
@@ -39,6 +43,7 @@ function BlockView({ block, colors }: { block: Block; colors: Palette }) {
         ) : null}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ padding: 12 }}>
           <Text
+            selectable
             style={{
               fontSize: 12.5,
               lineHeight: 19,
@@ -58,10 +63,10 @@ function BlockView({ block, colors }: { block: Block; colors: Palette }) {
       <View style={{ gap: 5 }}>
         {block.items.map((item, index) => (
           <View key={index} style={{ flexDirection: "row", gap: 8, paddingLeft: item.level * 16 }}>
-            <Text style={{ fontSize: 15, lineHeight: 22, color: colors.muted, minWidth: block.ordered ? 20 : 12 }}>
+            <Text selectable style={{ fontSize: 15, lineHeight: 22, color: colors.muted, minWidth: block.ordered ? 20 : 12 }}>
               {block.ordered ? `${index + 1}.` : "•"}
             </Text>
-            <Text style={{ flex: 1, fontSize: 15, lineHeight: 22, color: colors.text }}>{inline(item.text, colors)}</Text>
+            <Text selectable style={{ flex: 1, fontSize: 15, lineHeight: 22, color: colors.text }}>{inline(item.text, colors)}</Text>
           </View>
         ))}
       </View>
@@ -71,7 +76,7 @@ function BlockView({ block, colors }: { block: Block; colors: Palette }) {
   if (block.type === "quote") {
     return (
       <View style={{ borderLeftWidth: 3, borderLeftColor: colors.border, paddingLeft: 12 }}>
-        <Text style={{ fontSize: 14.5, lineHeight: 22, color: colors.muted }}>{inline(block.text, colors)}</Text>
+        <Text selectable style={{ fontSize: 14.5, lineHeight: 22, color: colors.muted }}>{inline(block.text, colors)}</Text>
       </View>
     )
   }
@@ -88,6 +93,7 @@ function BlockView({ block, colors }: { block: Block; colors: Palette }) {
             {row.map((cell, cellIndex) => (
               <Text
                 key={cellIndex}
+                selectable
                 style={{
                   width: 140,
                   paddingHorizontal: 8,

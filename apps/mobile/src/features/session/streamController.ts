@@ -7,6 +7,12 @@ type QueueSegment = {
   shown: string
   pending: string
   closed: boolean
+  /** No delta arrived for a while; the caret pauses without ending the block. */
+  idle: boolean
+  /** Fractional characters left over between frames, for even pacing. */
+  carry: number
+  /** Last delta/ended timestamp, used to close a stalled text block. */
+  lastDeltaAt: number
 }
 type ToolSegment = { kind: "tool"; block: ToolBlock }
 type Segment = QueueSegment | ToolSegment
@@ -25,6 +31,9 @@ type Entry = {
 }
 
 const FRAME_MS = 33
+const START_HOLD_MS = 70
+const IDLE_TEXT_MS = 900
+const REMOVE_DELAY_MS = 600
 
 /**
  * Receives OpenCode stream events independently from rendering. Text and
@@ -69,7 +78,10 @@ export class SessionStreamController {
       type === "session.execution.ended"
     ) {
       const now = Date.now()
-      for (const entry of this.entries.values()) entry.finishedAt ??= now
+      for (const entry of this.entries.values()) {
+        entry.finishedAt ??= now
+        closeSegments(entry)
+      }
       this.dirty = true
       return
     }
@@ -158,12 +170,32 @@ export class SessionStreamController {
 
     for (const [id, entry] of this.entries) {
       if (now < entry.holdUntil) continue
+      if (!entry.finishedAt) {
+        for (const segment of entry.segments) {
+          if (segment.kind === "tool" || segment.closed) continue
+          // The host may finish a text block without sending an `ended` event
+          // (network change, interrupted turn). Once the buffer is empty and no
+          // delta arrives, stop showing the caret even if the entry stays live.
+          if (
+            !segment.idle &&
+            segment.pending.length === 0 &&
+            segment.lastDeltaAt > 0 &&
+            now - segment.lastDeltaAt > IDLE_TEXT_MS
+          ) {
+            segment.idle = true
+            changed = true
+          }
+        }
+      }
       for (const segment of entry.segments) {
         if (segment.kind === "tool" || segment.pending.length === 0) continue
-        if (!segment.shown) {
-          segment.shown = ""
+        const exact = rateFor(segment) * (dt / 1000) + segment.carry
+        let count = Math.floor(exact)
+        segment.carry = exact - count
+        if (count === 0 && segment.shown.length === 0 && segment.pending.length > 0) {
+          count = 1
+          segment.carry = 0
         }
-        const count = Math.max(1, Math.floor(rateFor(segment) * (dt / 1000)))
         if (count > 0) {
           const take = Math.min(count, segment.pending.length)
           segment.shown += segment.pending.slice(0, take)
@@ -171,7 +203,7 @@ export class SessionStreamController {
           changed = true
         }
       }
-      if (entry.finishedAt && !hasPending(entry) && now - entry.finishedAt > 700) {
+      if (entry.finishedAt && !hasPending(entry) && now - entry.finishedAt > REMOVE_DELAY_MS) {
         this.entries.delete(id)
         changed = true
       }
@@ -191,7 +223,11 @@ export class SessionStreamController {
         type: "assistant",
         time: { created: entry.created },
         content,
-        metadata: { live: true, ...(entry.finishedAt ? { finishing: true } : {}) },
+        metadata: {
+          live: true,
+          streaming: isStreaming(entry),
+          ...(entry.finishedAt ? { finishing: true } : {}),
+        },
       })
     }
     return result
@@ -212,7 +248,15 @@ export class SessionStreamController {
   }
 
   private addQueue(entry: Entry, kind: "text" | "reasoning"): number {
-    entry.segments.push({ kind, shown: "", pending: "", closed: false })
+    entry.segments.push({
+      kind,
+      shown: "",
+      pending: "",
+      closed: false,
+      idle: false,
+      carry: 0,
+      lastDeltaAt: 0,
+    })
     return entry.segments.length - 1
   }
 
@@ -221,9 +265,13 @@ export class SessionStreamController {
     if (!segment || segment.kind === "tool") return
     if (!segment.shown && !segment.pending && text && !entry.holdUntil) {
       // Small smoothing buffer before the first visible character.
-      entry.holdUntil = Date.now() + 70
+      entry.holdUntil = Date.now() + START_HOLD_MS
     }
     segment.pending += text
+    if (text) {
+      segment.lastDeltaAt = Date.now()
+      segment.idle = false
+    }
     if (closed) {
       segment.closed = true
       const final = segment.kind === "text" ? entry.lastText : entry.lastReasoning
@@ -276,16 +324,36 @@ function hasPending(entry: Entry): boolean {
   return entry.segments.some((segment) => segment.kind !== "tool" && segment.pending.length > 0)
 }
 
+function closeSegments(entry: Entry): void {
+  for (const segment of entry.segments) {
+    if (segment.kind !== "tool") {
+      segment.closed = true
+      segment.idle = false
+    }
+  }
+}
+
+function isStreaming(entry: Entry): boolean {
+  if (entry.finishedAt) return false
+  return entry.segments.some(
+    (segment) =>
+      segment.kind === "text" &&
+      !segment.closed &&
+      !segment.idle &&
+      (segment.shown.length > 0 || segment.pending.length > 0),
+  )
+}
+
+/**
+ * Ease into a backlog instead of jumping between fixed speed tiers. Short
+ * bursts stay slow and readable, long bursts catch up gradually.
+ */
 function rateFor(segment: QueueSegment): number {
   const pending = segment.pending.length
   if (segment.kind === "reasoning") {
-    if (pending > 4000) return 300
-    if (pending > 800) return 120
-    return 32
+    return 18 + Math.min(150, pending * 0.55)
   }
-  if (pending > 4000) return 500
-  if (pending > 800) return 180
-  return 55
+  return 26 + Math.min(220, pending * 0.75)
 }
 
 function record(value: unknown): Record<string, unknown> {

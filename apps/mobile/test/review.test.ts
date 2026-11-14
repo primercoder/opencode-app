@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildReviewPrompt, selectionRange, type ReviewComment } from "../src/opencode/review.ts"
+import { appendReviewText, buildReviewPrompt, selectionRange, type ReviewComment } from "../src/opencode/review.ts"
 
 describe("review comments", () => {
   test("keeps a single tapped line as a one-line range", () => {
@@ -39,6 +39,23 @@ describe("review comments", () => {
       { uri: "file:///work/project/src/b.ts?start=3&end=3", mime: "text/plain", name: "src/b.ts" },
     ])
     expect(prompt.metadata).toEqual({ comments, attachments: [] })
+  })
+
+  test("appends the composer text after every review comment", () => {
+    const prompt = buildReviewPrompt("/work", [
+      {
+        type: "file",
+        path: "src/a.ts",
+        selection: { startLine: 1, endLine: 1, startChar: 0, endChar: 0 },
+        comment: "first",
+        preview: "",
+        origin: "review",
+      },
+    ])
+    const combined = appendReviewText(prompt, "  please keep the API stable  ")
+    expect(combined.text.endsWith("first\n\nplease keep the API stable")).toBe(true)
+    expect(combined.files).toEqual(prompt.files)
+    expect(appendReviewText(prompt, "   ")).toBe(prompt)
   })
 
   test("encodes reserved characters in file URIs", () => {

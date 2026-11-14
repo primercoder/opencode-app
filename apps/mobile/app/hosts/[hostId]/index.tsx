@@ -45,6 +45,7 @@ import {
   type SkillInfo,
 } from "@/opencode/client"
 import type { FormAnswers } from "@/opencode/forms"
+import { appendReviewText, buildReviewPrompt, type ReviewComment } from "@/opencode/review"
 import { contextUsage, formatTokens, runningActivities, type RunningActivity } from "@/features/session/activity"
 import {
   CORE_COMMANDS,
@@ -71,6 +72,7 @@ import { clearLastSession, loadLastSession, saveLastSession } from "@/storage/la
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
+import { useReviewDrafts, useStagedReview } from "@/stores/reviewDrafts"
 
 type PanelMode = "main" | "agent" | "model" | "variant" | "mcp" | "skill" | "voice" | "status" | "help"
 
@@ -87,6 +89,8 @@ type StagedSkill = {
   id: string
   name: string
 }
+
+const NO_REVIEW_COMMENTS: ReviewComment[] = []
 
 export default function WorkspaceScreen() {
   const insets = useSafeAreaInsets()
@@ -105,6 +109,10 @@ export default function WorkspaceScreen() {
   const readOnly = connection?.session?.device?.scope === "read"
 
   const [sessionId, setSessionId] = useState<string | undefined>(typeof params.session === "string" ? params.session : undefined)
+  const stagedReview = useStagedReview(sessionId)
+  const stagedComments = stagedReview?.comments ?? NO_REVIEW_COMMENTS
+  const removeStagedComment = useReviewDrafts((state) => state.remove)
+  const clearStagedComments = useReviewDrafts((state) => state.clear)
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [messages, setMessages] = useState<SessionMessage[] | null>(null)
   const [children, setChildren] = useState<SessionInfo[]>([])
@@ -811,29 +819,38 @@ export default function WorkspaceScreen() {
     () => (session ? runningActivities(messages ?? [], children) : []),
     [children, messages, session],
   )
-  const active =
+  const agentWorking =
     (session ? sessionBusy(session) : false) ||
     activities.length > 0 ||
-    children.some(sessionBusy) ||
-    inbox.length > 0
+    children.some(sessionBusy)
+  const active = agentWorking || inbox.length > 0
 
   const send = async () => {
     const text = draft.trim()
-    if (!text || sending || !sessionId || !ready || readOnly) return
+    const reviewPrompt =
+      stagedComments.length > 0
+        ? buildReviewPrompt(
+            stagedReview?.directory || session?.location?.directory || "",
+            stagedComments,
+          )
+        : null
+    if ((!text && !reviewPrompt) || sending || !sessionId || !ready || readOnly) return
     setSending(true)
     setError(null)
     setDraft("")
     try {
       const runtime = await ensureConnection(hostId)
       const client = new OpencodeClient(runtime)
-      if (text.startsWith("!")) {
+      // Slash commands and shell shortcuts only apply to a plain message. When
+      // review comments are staged, the typed text belongs to that review turn.
+      if (!reviewPrompt && text.startsWith("!")) {
         const command = text.slice(1).trim()
         if (!command) return
         await client.runShell(sessionId, command)
         setTimeout(() => void loadSession(sessionId), 350)
         return
       }
-      if (text.startsWith("/")) {
+      if (!reviewPrompt && text.startsWith("/")) {
         const match = /^\/([^\s]+)\s*([\s\S]*)$/u.exec(text)
         if (!match) return
         const name = match[1] as string
@@ -857,18 +874,22 @@ export default function WorkspaceScreen() {
         )
         return
       }
+      // Comments first, then the text the user typed in the session composer.
+      const finalReview = reviewPrompt ? appendReviewText(reviewPrompt, text) : null
+      const promptText = finalReview ? finalReview.text : text
       const queued = active
       const optimistic: SessionMessage | null = queued
         ? null
-        : { id: `local_${Date.now()}`, type: "user", text, time: { created: Date.now() } }
+        : { id: `local_${Date.now()}`, type: "user", text: promptText, time: { created: Date.now() } }
       if (optimistic) setMessages((current) => [...(current ?? []), optimistic])
       await client.prompt(sessionId, {
-        text,
+        ...(finalReview ?? { text: promptText }),
         ...(queued ? { delivery: "queue" as const } : {}),
         ...(selectedSkills.length > 0
           ? { skills: selectedSkills.map((skill) => ({ id: skill.id })) }
           : {}),
       })
+      if (reviewPrompt) clearStagedComments(sessionId)
       setSelectedSkills([])
       if (queued) notify(t("sessionQueueing"))
       await loadSession(sessionId)
@@ -1329,7 +1350,7 @@ export default function WorkspaceScreen() {
                 )
               }
               ListEmptyComponent={
-                <Text style={[styles.emptyMessages, { transform: [{ scaleY: -1 }] }]}>{t("noMessages")}</Text>
+                <Text style={styles.emptyMessages}>{t("noMessages")}</Text>
               }
             />
           )}
@@ -1347,20 +1368,26 @@ export default function WorkspaceScreen() {
             </Pressable>
           ) : null}
 
-          {activities.length > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setActivityOpen(true)}
-              style={({ pressed }) => [
-                styles.activityPill,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-                pressed && { opacity: 0.75 },
-              ]}
-            >
-              <Icon name="activity" size={14} color={colors.warning} />
-              <Text style={styles.activityText}>{t("backgroundRunning", { n: activities.length })}</Text>
-              <Icon name="chevronRight" size={14} color={colors.faint} />
-            </Pressable>
+          {agentWorking || activities.length > 0 ? (
+            // Keep the slot mounted for the whole turn. Background tasks appear
+            // and disappear inside it, so the transcript never shifts vertically.
+            <View style={styles.activitySlot}>
+              {activities.length > 0 ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setActivityOpen(true)}
+                  style={({ pressed }) => [
+                    styles.activityPill,
+                    { backgroundColor: colors.surface, borderColor: colors.border },
+                    pressed && { opacity: 0.75 },
+                  ]}
+                >
+                  <Icon name="activity" size={14} color={colors.warning} />
+                  <Text style={styles.activityText}>{t("backgroundRunning", { n: activities.length })}</Text>
+                  <Icon name="chevronRight" size={14} color={colors.faint} />
+                </Pressable>
+              ) : null}
+            </View>
           ) : null}
 
           {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -1375,6 +1402,47 @@ export default function WorkspaceScreen() {
           />
 
           <View style={[styles.composer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+            {stagedComments.length > 0 ? (
+              <View style={styles.reviewStaging}>
+                <View style={styles.reviewStagingHead}>
+                  <Icon name="edit" size={13} color={colors.accent} />
+                  <Text style={styles.reviewStagingTitle}>
+                    {t("stagedComments", { n: stagedComments.length })}
+                  </Text>
+                </View>
+                <ScrollView
+                  style={styles.reviewCardList}
+                  contentContainerStyle={styles.reviewCardListContent}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {stagedComments.map((comment, index) => (
+                    <View
+                      key={`${comment.path}-${comment.selection.startLine}-${comment.selection.endLine}-${index}`}
+                      style={styles.reviewCard}
+                    >
+                      <View style={styles.reviewCardHead}>
+                        <Text style={styles.reviewCardPath} numberOfLines={1}>
+                          {comment.path}:{comment.selection.startLine}–{comment.selection.endLine}
+                        </Text>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={t("deleteComment")}
+                          onPress={() => sessionId && removeStagedComment(sessionId, index)}
+                          hitSlop={8}
+                        >
+                          <Icon name="close" size={14} color={colors.faint} />
+                        </Pressable>
+                      </View>
+                      <Text style={styles.reviewCardBody} numberOfLines={3}>
+                        {comment.comment}
+                      </Text>
+                    </View>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null}
+
             {inbox.length > 0 ? (
               <View style={styles.queueBox}>
                 {inbox.map((item) => (
@@ -1504,12 +1572,16 @@ export default function WorkspaceScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("send")}
-                disabled={!ready || sending || readOnly || draft.trim().length === 0}
+                disabled={
+                  !ready || sending || readOnly || (draft.trim().length === 0 && stagedComments.length === 0)
+                }
                 onPress={() => void send()}
                 style={({ pressed }) => [
                   styles.sendButton,
                   { backgroundColor: colors.accent },
-                  (!ready || sending || readOnly || draft.trim().length === 0) && { opacity: 0.32 },
+                  (!ready || sending || readOnly || (draft.trim().length === 0 && stagedComments.length === 0)) && {
+                    opacity: 0.32,
+                  },
                   pressed && { opacity: 0.75 },
                 ]}
               >
@@ -2154,12 +2226,23 @@ function mergeAssistantRuns(messages: SessionMessage[]): SessionMessage[] {
       .map((message) => message.error?.message)
       .filter((message): message is string => Boolean(message))
     const live = run.some((message) => message.metadata?.live === true)
+    const streaming = run.some((message) => message.metadata?.streaming === true)
+    const finishing = run.some((message) => message.metadata?.finishing === true)
     result.push({
       ...first,
       ...(content.length > 0 ? { content } : {}),
       ...(last.time ? { time: last.time } : {}),
       ...(errors.length > 0 ? { error: { message: errors.join("\n") } } : {}),
-      ...(live ? { metadata: { ...first.metadata, live: true } } : {}),
+      ...(live
+        ? {
+            metadata: {
+              ...first.metadata,
+              live: true,
+              ...(streaming ? { streaming: true } : {}),
+              ...(finishing ? { finishing: true } : {}),
+            },
+          }
+        : {}),
     })
     run = []
   }
@@ -2262,9 +2345,13 @@ const workspaceStyles = (colors: Palette) =>
       alignItems: "center",
       justifyContent: "center",
     },
+    activitySlot: {
+      minHeight: 38,
+      justifyContent: "center",
+      paddingHorizontal: 14,
+      paddingBottom: 6,
+    },
     activityPill: {
-      marginHorizontal: 14,
-      marginBottom: 6,
       flexDirection: "row",
       alignItems: "center",
       gap: 8,
@@ -2277,6 +2364,33 @@ const workspaceStyles = (colors: Palette) =>
     activityText: { fontSize: 12, fontWeight: "600", color: colors.muted },
     error: { marginHorizontal: 16, marginBottom: 4, fontSize: 12.5, color: colors.danger },
     composer: { paddingHorizontal: 10, paddingTop: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: colors.bg },
+    reviewStaging: {
+      marginHorizontal: 4,
+      marginBottom: 6,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      borderRadius: 12,
+      backgroundColor: colors.surface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      gap: 6,
+    },
+    reviewStagingHead: { flexDirection: "row", alignItems: "center", gap: 6 },
+    reviewStagingTitle: { flex: 1, fontSize: 11.5, fontWeight: "600", color: colors.muted },
+    reviewCardList: { maxHeight: 152 },
+    reviewCardListContent: { gap: 6 },
+    reviewCard: {
+      paddingHorizontal: 9,
+      paddingVertical: 7,
+      borderRadius: 9,
+      backgroundColor: colors.bg,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      gap: 3,
+    },
+    reviewCardHead: { flexDirection: "row", alignItems: "center", gap: 8 },
+    reviewCardPath: { flex: 1, fontSize: 11, color: colors.accent, fontFamily: "monospace" },
+    reviewCardBody: { fontSize: 12, lineHeight: 17, color: colors.text },
     queueBox: {
       marginHorizontal: 4,
       marginBottom: 6,
