@@ -1,6 +1,7 @@
 import type { DeviceScope } from "./config.ts"
 import { basicAuthHeader, type OpencodeTarget } from "./opencode.ts"
 import { isMethodAllowed } from "./pairing.ts"
+import { classifyFile, looksBinary } from "./fileKind.ts"
 
 const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])
 const ALLOWED_REQUEST_HEADERS = new Set([
@@ -72,13 +73,8 @@ export async function handleProxyRequest(input: {
       ]),
     })
 
-    sender.control({
-      t: "res",
-      id: request.id,
-      status: response.status,
-      headers: pickResponseHeaders(response.headers),
-    })
-
+    const fsList = method === "GET" && request.path.startsWith("/api/fs/list")
+    const fsRead = method === "GET" && request.path.startsWith("/api/fs/read/")
     let seq = 0
     // OCRP frames are capped at 1 MiB. Split strings so a large diff or file
     // body cannot turn into a single oversized protected record.
@@ -88,6 +84,33 @@ export async function handleProxyRequest(input: {
         sender.chunk(request.id, seq++, text.slice(offset, offset + 32_000))
       }
     }
+
+    // File browser requests carry host-side type metadata so the phone never
+    // has to download a binary file just to discover that it cannot preview it.
+    if (fsList || fsRead) {
+      const body = await response.text()
+      const headers = pickResponseHeaders(response.headers)
+      let output = body
+      if (fsList && response.ok) {
+        output = enrichFileList(body)
+      } else if (fsRead && response.ok) {
+        const info = classifyRead(request.path, body, response.headers.get("content-type") ?? undefined)
+        headers["x-ocremote-file-kind"] = info.kind
+        headers["x-ocremote-previewable"] = String(info.previewable)
+        if (info.language) headers["x-ocremote-language"] = info.language
+      }
+      sender.control({ t: "res", id: request.id, status: response.status, headers })
+      emit(output)
+      sender.control({ t: "end", id: request.id })
+      return
+    }
+
+    sender.control({
+      t: "res",
+      id: request.id,
+      status: response.status,
+      headers: pickResponseHeaders(response.headers),
+    })
 
     if (response.body && (response.headers.get("content-type") ?? "").includes("text/event-stream")) {
       const reader = response.body.getReader()
@@ -127,4 +150,33 @@ function pickResponseHeaders(headers: Headers): Record<string, string> {
     if (ALLOWED_RESPONSE_HEADERS.has(key.toLowerCase())) result[key.toLowerCase()] = value
   })
   return result
+}
+
+function enrichFileList(body: string): string {
+  try {
+    const payload = JSON.parse(body) as { data?: Array<{ path?: unknown; type?: unknown }> }
+    if (!Array.isArray(payload.data)) return body
+    payload.data = payload.data.map((entry) => {
+      const path = typeof entry.path === "string" ? entry.path : ""
+      const type = entry.type === "directory" ? "directory" : "file"
+      return { ...entry, ...classifyFile(path, type) }
+    })
+    return JSON.stringify(payload)
+  } catch {
+    return body
+  }
+}
+
+function classifyRead(path: string, body: string, contentType: string | undefined) {
+  const raw = path.slice("/api/fs/read/".length).split("?")[0] ?? ""
+  let filePath = raw
+  try {
+    filePath = raw.split("/").map(decodeURIComponent).join("/")
+  } catch {
+    // keep the encoded path; extension detection still works in most cases
+  }
+  const info = classifyFile(filePath)
+  if (info.kind !== "unknown") return info
+  if (looksBinary(body, contentType)) return { kind: "binary" as const, previewable: false }
+  return { kind: "text" as const, previewable: true }
 }

@@ -39,23 +39,23 @@ export function SessionDrawer(props: {
       Animated.parallel([
         Animated.timing(slide, {
           toValue: 0,
-          duration: 210,
+          duration: 250,
           easing: Easing.out(Easing.cubic),
           isInteraction: false,
           useNativeDriver: true,
         }),
-        Animated.timing(fade, { toValue: 1, duration: 180, useNativeDriver: true }),
+        Animated.timing(fade, { toValue: 1, duration: 220, useNativeDriver: true }),
       ]).start()
     } else {
       Animated.parallel([
         Animated.timing(slide, {
           toValue: -360,
-          duration: 190,
+          duration: 220,
           easing: Easing.in(Easing.cubic),
           isInteraction: false,
           useNativeDriver: true,
         }),
-        Animated.timing(fade, { toValue: 0, duration: 160, useNativeDriver: true }),
+        Animated.timing(fade, { toValue: 0, duration: 200, useNativeDriver: true }),
       ]).start(({ finished }) => {
         if (finished) setMounted(false)
       })

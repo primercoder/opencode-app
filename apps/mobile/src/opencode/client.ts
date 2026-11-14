@@ -91,6 +91,10 @@ export type FsEntry = {
   path: string
   type: "file" | "directory"
   ignored?: boolean
+  /** Host-classified preview metadata (older hosts omit these). */
+  kind?: string
+  previewable?: boolean
+  language?: string
 }
 
 export type FileDiff = {
@@ -261,6 +265,10 @@ export class OpencodeClient {
     await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/shell`, { command })
   }
 
+  async compactSession(sessionId: string): Promise<void> {
+    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/compact`)
+  }
+
   async listInbox(sessionId: string): Promise<InboxItem[]> {
     const result = await this.raw<{ data: InboxItem[] }>(
       "GET",
@@ -306,7 +314,16 @@ export class OpencodeClient {
     return result.data
   }
 
-  async readFile(directory: string, path: string): Promise<{ content: string; contentType: string | undefined }> {
+  async readFile(
+    directory: string,
+    path: string,
+  ): Promise<{
+    content: string
+    contentType: string | undefined
+    kind?: string
+    previewable?: boolean
+    language?: string
+  }> {
     const encoded = path
       .split("/")
       .map((segment) => encodeURIComponent(segment))
@@ -319,7 +336,15 @@ export class OpencodeClient {
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`opencode read ${path} returned HTTP ${response.status}`)
     }
-    return { content: response.body, contentType: response.headers["content-type"] }
+    return {
+      content: response.body,
+      contentType: response.headers["content-type"],
+      ...(response.headers["x-ocremote-file-kind"] ? { kind: response.headers["x-ocremote-file-kind"] } : {}),
+      ...(response.headers["x-ocremote-previewable"]
+        ? { previewable: response.headers["x-ocremote-previewable"] === "true" }
+        : {}),
+      ...(response.headers["x-ocremote-language"] ? { language: response.headers["x-ocremote-language"] } : {}),
+    }
   }
 
   async sessionDiff(sessionId: string): Promise<FileDiff[]> {

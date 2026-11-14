@@ -100,17 +100,20 @@ apps/relay/ocremote-relay admin --data-dir ./relay-data subjects|invites|rooms
 apps/relay/ocremote-relay admin --data-dir ./relay-data revoke <subject-id>
 ```
 
-The first run creates `<data-dir>/tls/ca.crt`, `relay.crt` and `relay.key`.
-Install that CA in the Android system trust store once; the release APK uses the
-system roots:
+The first run or `init` creates a complete set in `<data-dir>/tls`:
+`ca.crt`, `ca.key`, `relay.crt` and `relay.key`. Existing files are validated
+and reused, never overwritten. A partial or invalid set is an error; use
+`--rotate-tls` to rebuild it explicitly. Install the CA in the Android system
+trust store once; the release APK uses the system roots:
 
 ```bash
 ./scripts/install-android-ca.sh ./data/tls/ca.crt
 ```
 
-Pass `--tls-cert/--tls-key` to use an existing certificate instead, or
-`--no-tls` for a local plain-ws test. The server certificate covers localhost,
-the machine hostname and all local addresses at creation time.
+Pass `--tls-cert/--tls-key` (and optionally `--tls-ca`) to use your own
+certificate; it always takes precedence over the local files. `--no-tls` is for
+local plain-ws tests. The generated certificate covers localhost, the machine
+hostname, all local addresses and the `--public-url` host at creation time.
 
 Enroll the host with its one-time host invite and trust the relay CA:
 

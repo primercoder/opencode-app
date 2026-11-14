@@ -2,6 +2,7 @@ import { router, useLocalSearchParams } from "expo-router"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   ActivityIndicator,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -14,6 +15,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
 import { FileTypeIcon } from "@/components/FileTypeIcon"
+import { Icon } from "@/components/Icon"
 import { OpencodeClient, type FsEntry, type SessionInfo } from "@/opencode/client"
 import { buildReviewPrompt, selectionRange, type ReviewComment } from "@/opencode/review"
 import { isProbablyBinary } from "@/opencode/fileKind"
@@ -27,6 +29,7 @@ type OpenFile = {
   path: string
   lines: string[]
   binary: boolean
+  kind?: string
 }
 
 export default function ReviewScreen() {
@@ -51,6 +54,8 @@ export default function ReviewScreen() {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const rootGesture = useRef({ x: 0, scrolled: false })
+  const directoryCache = useRef(new Map<string, FsEntry[]>())
+  const initialLoaded = useRef(false)
 
   useEffect(() => {
     if (!hydrated) {
@@ -73,18 +78,28 @@ export default function ReviewScreen() {
   }, [directory, connection?.status, hostId, sessionId])
 
   const loadDirectory = useCallback(
-    async (path: string) => {
+    async (path: string, options: { force?: boolean } = {}) => {
       if (!directory) return
-      setLoading(true)
       setError(null)
+      setCurrentPath(path)
+      setFile(null)
+      setAnchor(null)
+      setRange(null)
+      if (!options.force) {
+        const cached = directoryCache.current.get(path)
+        if (cached) {
+          setEntries(cached)
+          setLoading(false)
+          return
+        }
+      }
+      setEntries(null)
+      setLoading(true)
       try {
         const runtime = await ensureConnection(hostId)
-        const list = await new OpencodeClient(runtime).listFiles(directory, path || undefined)
-        setEntries(sortEntries(list))
-        setCurrentPath(path)
-        setFile(null)
-        setAnchor(null)
-        setRange(null)
+        const list = sortEntries(await new OpencodeClient(runtime).listFiles(directory, path || undefined))
+        directoryCache.current.set(path, list)
+        setEntries(list)
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "读取目录失败")
       } finally {
@@ -95,23 +110,41 @@ export default function ReviewScreen() {
   )
 
   useEffect(() => {
-    if (connection?.status !== "ready" || !directory || entries !== null) return
+    directoryCache.current.clear()
+  }, [directory])
+
+  useEffect(() => {
+    if (initialLoaded.current || connection?.status !== "ready" || !directory) return
+    initialLoaded.current = true
     void loadDirectory("")
-  }, [connection?.status, directory, entries, loadDirectory])
+  }, [connection?.status, directory, loadDirectory])
 
   const openFile = async (entry: FsEntry) => {
     if (!directory) return
-    setLoading(true)
     setError(null)
+    setAnchor(null)
+    setRange(null)
+    if (entry.previewable === false) {
+      setFile({ path: entry.path, lines: [], binary: true, ...(entry.kind ? { kind: entry.kind } : {}) })
+      return
+    }
+    setLoading(true)
     try {
       const runtime = await ensureConnection(hostId)
       const result = await new OpencodeClient(runtime).readFile(directory, entry.path)
-      // Extensions take precedence over MIME: `.ts` is often reported as
-      // video/mp2t even though it is a TypeScript source file.
-      const binary = isProbablyBinary(result.content, result.contentType, entry.path)
-      setFile({ path: entry.path, lines: result.content.split("\n"), binary })
-      setAnchor(null)
-      setRange(null)
+      const kind = result.kind ?? entry.kind
+      const binary =
+        result.previewable === false
+          ? true
+          : kind !== undefined
+            ? kind !== "text" && kind !== "unknown"
+            : isProbablyBinary(result.content, result.contentType, entry.path)
+      setFile({
+        path: entry.path,
+        lines: result.content.split("\n"),
+        binary,
+        ...(kind ? { kind } : {}),
+      })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "读取文件失败")
     } finally {
@@ -175,6 +208,8 @@ export default function ReviewScreen() {
   }
 
   const parentPath = currentPath.replace(/\/+$/u, "").split("/").slice(0, -1).join("/")
+  const relativePath = currentPath.replace(/\/+$/u, "").replace(/^\/+/u, "")
+  const directoryLabel = relativePath ? `/${relativePath}` : "/"
 
   const goRoot = () => {
     if (!directory) return
@@ -244,11 +279,6 @@ export default function ReviewScreen() {
             </Text>
           </ScrollView>
         </Pressable>
-        {file ? (
-          <Pressable accessibilityRole="button" onPress={() => setFile(null)}>
-            <Text style={styles.crumb}>{t("fileList")}</Text>
-          </Pressable>
-        ) : null}
       </View>
 
       {error ? (
@@ -259,41 +289,55 @@ export default function ReviewScreen() {
       ) : null}
 
       {file ? (
-        <FileView file={file} range={range} anchor={anchor} onSelectLine={selectLine} />
+        <FileView file={file} range={range} anchor={anchor} onSelectLine={selectLine} onBack={() => setFile(null)} />
       ) : (
-        <ScrollView contentContainerStyle={styles.list}>
-          {loading && entries === null ? <Text style={styles.loading}>{t("loading")}</Text> : null}
+        <View style={{ flex: 1 }}>
           <Pressable
             accessibilityRole="button"
+            accessibilityLabel={directoryLabel}
             accessibilityState={{ disabled: !currentPath }}
             disabled={!currentPath}
             onPress={() => void loadDirectory(parentPath)}
-            style={({ pressed }) => [styles.entry, !currentPath && styles.entryDisabled, pressed && currentPath && styles.entryPressed]}
+            style={({ pressed }) => [
+              styles.entry,
+              !currentPath && styles.entryDisabled,
+              pressed && currentPath && styles.entryPressed,
+            ]}
           >
             <FileTypeIcon directory size={23} name={currentPath} />
-            <Text style={[styles.entryName, !currentPath && styles.entryNameDisabled]}>..</Text>
+            <Text style={[styles.entryName, !currentPath && styles.entryNameDisabled]} numberOfLines={1}>
+              {directoryLabel}
+            </Text>
             <Text style={styles.entryType}>{currentPath ? t("parentDir") : t("projectRoot")}</Text>
           </Pressable>
-          {entries?.length === 0 ? <Text style={styles.loading}>{t("directoryEmpty")}</Text> : null}
-          {entries?.map((entry) => (
-            <Pressable
-              key={entry.path}
-              accessibilityRole="button"
-              onPress={() => (entry.type === "directory" ? void loadDirectory(entry.path) : void openFile(entry))}
-              style={({ pressed }) => [styles.entry, pressed && styles.entryPressed]}
-            >
-              <FileTypeIcon
-                directory={entry.type === "directory"}
-                name={entry.path}
-                size={entry.type === "directory" ? 23 : 22}
-              />
-              <Text style={styles.entryName} numberOfLines={1}>
-                {basename(entry.path)}
-              </Text>
-              <Text style={styles.entryType}>{entry.type === "directory" ? t("directory") : t("file")}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+          <FlatList
+            data={entries ?? []}
+            keyExtractor={(entry) => entry.path}
+            renderItem={({ item: entry }) => (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => (entry.type === "directory" ? void loadDirectory(entry.path) : void openFile(entry))}
+                style={({ pressed }) => [styles.entry, pressed && styles.entryPressed]}
+              >
+                <FileTypeIcon
+                  directory={entry.type === "directory"}
+                  name={entry.path}
+                  size={entry.type === "directory" ? 23 : 22}
+                />
+                <Text style={styles.entryName} numberOfLines={1}>
+                  {basename(entry.path)}
+                </Text>
+                <Text style={styles.entryType}>{entry.type === "directory" ? t("directory") : t("file")}</Text>
+              </Pressable>
+            )}
+            ListEmptyComponent={
+              <Text style={styles.loading}>{loading || entries === null ? t("loading") : t("directoryEmpty")}</Text>
+            }
+            contentContainerStyle={styles.list}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          />
+        </View>
       )}
 
       {comments.length > 0 ? (
@@ -345,6 +389,7 @@ function FileView(props: {
   range: { start: number; end: number } | null
   anchor: number | null
   onSelectLine: (line: number) => void
+  onBack: () => void
 }) {
   const { colors } = useTheme()
   const t = useT()
@@ -379,21 +424,34 @@ function FileView(props: {
   return (
     <View style={{ flex: 1 }}>
       <View style={styles.fileBar}>
+        <Pressable accessibilityRole="button" onPress={props.onBack} hitSlop={8}>
+          <Icon name="back" size={20} color={colors.text} />
+        </Pressable>
         <FileTypeIcon name={props.file.path} size={18} />
         <Text style={styles.filePath} numberOfLines={1}>
-          {props.file.path}
+          {basename(props.file.path)}
         </Text>
         {!props.file.binary ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: wrap }}
-            onPress={() => setWrap((value) => !value)}
-            style={[styles.wrapToggle, wrap && styles.wrapToggleOn]}
-          >
-            <Text style={[styles.wrapToggleText, wrap && { color: colors.accent }]}>
-              {wrap ? t("textWrap") : t("noWrap")}
-            </Text>
-          </Pressable>
+          <View style={styles.wrapGroup}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("noWrap")}
+              accessibilityState={{ selected: !wrap }}
+              onPress={() => setWrap(false)}
+              style={[styles.wrapIcon, !wrap && styles.wrapIconOn]}
+            >
+              <Icon name="noWrapText" size={17} color={!wrap ? colors.accent : colors.muted} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("textWrap")}
+              accessibilityState={{ selected: wrap }}
+              onPress={() => setWrap(true)}
+              style={[styles.wrapIcon, wrap && styles.wrapIconOn]}
+            >
+              <Icon name="wrapText" size={17} color={wrap ? colors.accent : colors.muted} />
+            </Pressable>
+          </View>
         ) : null}
       </View>
       {props.file.binary ? (
@@ -490,7 +548,10 @@ const reviewStyles = (colors: Palette) =>
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  filePath: { flex: 1, fontSize: 11.5, color: colors.muted, ...mono },
+  filePath: { flex: 1, fontSize: 13, fontWeight: "500", color: colors.text, ...mono },
+  wrapGroup: { flexDirection: "row", alignItems: "center", gap: 4 },
+  wrapIcon: { width: 30, height: 28, alignItems: "center", justifyContent: "center", borderRadius: radius.sm },
+  wrapIconOn: { backgroundColor: colors.accentSoft },
   wrapToggle: {
     paddingHorizontal: spacing.sm,
     paddingVertical: 4,

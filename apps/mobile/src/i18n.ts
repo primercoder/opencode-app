@@ -148,6 +148,9 @@ const zh = {
 
   // chat
   messagePlaceholder: "输入消息，/ 命令，! 执行命令…",
+  command: "命令",
+  compactContext: "压缩上下文",
+  commandHelpHint: "输入 / 查看可用命令；输入 ! 执行 shell 命令。",
   send: "发送",
   stop: "停止",
   listeningLocal: "手机模型听写中…",
@@ -478,6 +481,9 @@ const en: Record<Key, string> = {
   hostOfflineBody: "Cannot reach the host. Check the network and retry.",
 
   messagePlaceholder: "Message, / command, ! shell…",
+  command: "Command",
+  compactContext: "Compact context",
+  commandHelpHint: "Type / for commands or ! for a shell command.",
   send: "Send",
   stop: "Stop",
   listeningLocal: "Listening with phone model…",

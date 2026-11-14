@@ -44,6 +44,7 @@ import {
 } from "@/opencode/client"
 import type { FormAnswers } from "@/opencode/forms"
 import { contextUsage, formatTokens, runningActivities, type RunningActivity } from "@/features/session/activity"
+import { SessionStreamController, STREAM_FRAME_MS } from "@/features/session/streamController"
 import { invalidateSessionIndex } from "@/features/sessions/useSessionIndex"
 import { listMobileModels } from "@/features/voice/models"
 import { useVoiceInput } from "@/features/voice/useVoiceInput"
@@ -63,6 +64,12 @@ import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 
 type PanelMode = "main" | "agent" | "model" | "variant" | "mcp" | "skill" | "voice"
+
+type CommandChoice = {
+  name: string
+  description: string
+  run: () => void
+}
 
 export default function WorkspaceScreen() {
   const insets = useSafeAreaInsets()
@@ -90,6 +97,7 @@ export default function WorkspaceScreen() {
   const [loadingSession, setLoadingSession] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
+  const [draftSelection, setDraftSelection] = useState({ start: 0, end: 0 })
   const [sending, setSending] = useState(false)
   const [permissions, setPermissions] = useState<PermissionRequest[]>([])
   const [forms, setForms] = useState<FormInfo[]>([])
@@ -220,188 +228,28 @@ export default function WorkspaceScreen() {
     noticeTimer.current = setTimeout(() => setNotice(null), 3_000)
   }, [])
 
-  const liveRef = useRef(new Map<string, SessionMessage>())
-  const liveOrderRef = useRef<string[]>([])
-  const liveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const liveToolSeq = useRef(0)
+  const streamRef = useRef(new SessionStreamController())
 
-  const flushLive = useCallback(() => {
-    liveTimerRef.current = undefined
-    const list = liveOrderRef.current
-      .map((id) => liveRef.current.get(id))
-      .filter((message): message is SessionMessage => Boolean(message))
-    setLiveMessages(list)
-  }, [])
-
-  const scheduleLive = useCallback(() => {
-    if (liveTimerRef.current) return
-    liveTimerRef.current = setTimeout(flushLive, 50)
-  }, [flushLive])
-
-  const clearLive = useCallback(() => {
-    liveRef.current.clear()
-    liveOrderRef.current = []
-    if (liveTimerRef.current) clearTimeout(liveTimerRef.current)
-    liveTimerRef.current = undefined
-    setLiveMessages([])
-  }, [])
-
-  /**
-   * OpenCode only exposes completed assistant messages through /message. To get
-   * a real streaming transcript, apply the SSE text/reasoning/tool deltas to a
-   * temporary assistant message. The completed server message replaces it as
-   * soon as the step is persisted.
-   */
-  const applyLiveEvent = useCallback(
-    (event: OpencodeEvent) => {
-      const type = event.type ?? ""
-      if (!type.startsWith("session.") && !type.startsWith("message.")) return
-      const data = asRecord(event.data)
-      const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined
-      if (sessionID && sessionIdRef.current && sessionID !== sessionIdRef.current) return
-
-      if (
-        type === "session.execution.succeeded" ||
-        type === "session.execution.failed" ||
-        type === "session.execution.cancelled" ||
-        type === "session.execution.ended"
-      ) {
-        // Give the final message refresh time to replace live entries.
-        setTimeout(clearLive, 1_500)
-        return
-      }
-
-      const messageID = typeof data.assistantMessageID === "string" ? data.assistantMessageID : undefined
-      if (!messageID) return
-
-      let message = liveRef.current.get(messageID)
-      if (!message) {
-        message = {
-          id: messageID,
-          type: "assistant",
-          time: { created: Date.now() },
-          content: [],
-          metadata: { live: true },
-        }
-        liveRef.current.set(messageID, message)
-        liveOrderRef.current.push(messageID)
-      }
-      const content = [...(message.content ?? [])]
-      const next: SessionMessage = { ...message, content, metadata: { ...message.metadata, live: true } }
-
-      const ensureReasoning = (): Extract<AssistantContent, { type: "reasoning" }> => {
-        const index = content.findIndex((block) => block.type === "reasoning")
-        if (index >= 0) return content[index] as Extract<AssistantContent, { type: "reasoning" }>
-        const block: Extract<AssistantContent, { type: "reasoning" }> = { type: "reasoning", text: "" }
-        content.push(block)
-        return block
-      }
-      const replaceReasoning = (block: Extract<AssistantContent, { type: "reasoning" }>, text: string) => {
-        const index = content.indexOf(block)
-        if (index >= 0) content[index] = { ...block, text }
-      }
-      const ensureText = (): Extract<AssistantContent, { type: "text" }> => {
-        const index = content.findIndex((block) => block.type === "text")
-        if (index >= 0) return content[index] as Extract<AssistantContent, { type: "text" }>
-        const block: Extract<AssistantContent, { type: "text" }> = { type: "text", text: "" }
-        content.push(block)
-        return block
-      }
-      const replaceText = (block: Extract<AssistantContent, { type: "text" }>, text: string) => {
-        const index = content.indexOf(block)
-        if (index >= 0) content[index] = { ...block, text }
-      }
-      const latestTool = (): Extract<AssistantContent, { type: "tool" }> | undefined => {
-        for (let index = content.length - 1; index >= 0; index -= 1) {
-          const block = content[index]
-          if (block?.type === "tool") return block
-        }
-        return undefined
-      }
-      const replaceTool = (block: Extract<AssistantContent, { type: "tool" }>) => {
-        const index = content.indexOf(block)
-        if (index >= 0) content[index] = block
-      }
-
-      switch (type) {
-        case "session.step.started":
-          next.time = { created: typeof event.created === "number" ? event.created : Date.now() }
-          break
-        case "session.reasoning.started":
-          ensureReasoning()
-          break
-        case "session.reasoning.delta": {
-          const block = ensureReasoning()
-          const delta = typeof data.delta === "string" ? data.delta : ""
-          replaceReasoning(block, block.text + delta)
-          break
-        }
-        case "session.reasoning.ended": {
-          const block = ensureReasoning()
-          if (typeof data.text === "string") replaceReasoning(block, data.text)
-          break
-        }
-        case "session.text.started":
-          ensureText()
-          break
-        case "session.text.delta": {
-          const block = ensureText()
-          const delta = typeof data.delta === "string" ? data.delta : ""
-          replaceText(block, block.text + delta)
-          break
-        }
-        case "session.text.ended": {
-          const block = ensureText()
-          if (typeof data.text === "string") replaceText(block, data.text)
-          break
-        }
-        case "session.tool.input.started": {
-          liveToolSeq.current += 1
-          content.push({
-            type: "tool",
-            id: `live-tool-${liveToolSeq.current}`,
-            name: typeof data.name === "string" ? data.name : "tool",
-            state: { status: "running" },
-          })
-          break
-        }
-        case "session.tool.called": {
-          const block = latestTool()
-          if (!block) break
-          replaceTool({ ...block, state: { ...block.state, status: "running", ...(data.input ? { input: data.input } : {}) } })
-          break
-        }
-        case "session.tool.progress": {
-          const block = latestTool()
-          if (block) replaceTool({ ...block, state: { ...block.state, status: "running" } })
-          break
-        }
-        case "session.tool.success": {
-          const block = latestTool()
-          if (block) replaceTool({ ...block, state: { ...block.state, status: "completed" } })
-          break
-        }
-        case "session.tool.error":
-        case "session.tool.failed": {
-          const block = latestTool()
-          if (block) replaceTool({ ...block, state: { ...block.state, status: "error" } })
-          break
-        }
-        default:
-          break
-      }
-
-      liveRef.current.set(messageID, next)
-      scheduleLive()
-    },
-    [clearLive, scheduleLive],
-  )
+  useEffect(() => {
+    if (!ready || !sessionId) {
+      streamRef.current.reset()
+      setLiveMessages([])
+      return
+    }
+    streamRef.current.reset()
+    const timer = setInterval(() => {
+      if (streamRef.current.pump()) setLiveMessages(streamRef.current.snapshot())
+    }, STREAM_FRAME_MS)
+    return () => {
+      clearInterval(timer)
+      streamRef.current.reset()
+    }
+  }, [ready, sessionId])
 
   useEffect(
     () => () => {
       if (noticeTimer.current) clearTimeout(noticeTimer.current)
       if (loadTimer.current) clearTimeout(loadTimer.current)
-      if (liveTimerRef.current) clearTimeout(liveTimerRef.current)
     },
     [],
   )
@@ -410,7 +258,6 @@ export default function WorkspaceScreen() {
     async (id: string, options: { initial?: boolean } = {}) => {
       if (options.initial) {
         setMessages(null)
-        clearLive()
         setSession(null)
         setOlderCursor(undefined)
         setInbox([])
@@ -449,11 +296,10 @@ export default function WorkspaceScreen() {
         if (sessionIdRef.current === id) setLoadingSession(false)
       }
     },
-    [clearLive, hostId, t],
+    [hostId, t],
   )
 
   useEffect(() => {
-    clearLive()
     if (!sessionId) {
       setSession(null)
       setMessages(null)
@@ -464,7 +310,7 @@ export default function WorkspaceScreen() {
       return
     }
     void loadSession(sessionId, { initial: true })
-  }, [clearLive, sessionId, loadSession])
+  }, [sessionId, loadSession])
 
   const refreshFromEvents = useCallback(
     async (id: string, kinds: Set<string>) => {
@@ -548,7 +394,7 @@ export default function WorkspaceScreen() {
     }
     const unsubscribe = subscribeHostEvents(hostId, (event) => {
       if (!event.type) return
-      applyLiveEvent(event)
+      streamRef.current.ingest(event)
       // OpenCode 2 streams content as `session.text.delta`,
       // `session.reasoning.*`, `session.tool.*` and `session.step.*` events,
       // not only as `message.*` events. Treat every session event as a content
@@ -575,7 +421,7 @@ export default function WorkspaceScreen() {
       unsubscribe()
       if (timer) clearTimeout(timer)
     }
-  }, [applyLiveEvent, hostId, ready, refreshFromEvents, sessionId])
+  }, [hostId, ready, refreshFromEvents, sessionId])
 
   useForeground(
     useCallback(() => {
@@ -705,6 +551,12 @@ export default function WorkspaceScreen() {
     setPanelMode("main")
     setPanelOpen(true)
     void loadOptions()
+  }
+
+  const openPanelMode = (mode: PanelMode) => {
+    setPanelMode(mode)
+    setPanelOpen(true)
+    void loadOptions(mode === "mcp" || mode === "model")
   }
 
   useEffect(() => {
@@ -873,6 +725,38 @@ export default function WorkspaceScreen() {
     }
   }
 
+  const commandChoices: CommandChoice[] = [
+    { name: "new", description: t("newSession"), run: () => { setDraft(""); void openProjectPicker() } },
+    { name: "sessions", description: t("sessions"), run: () => { setDraft(""); setDrawerOpen(true) } },
+    { name: "agent", description: t("agent"), run: () => { setDraft(""); openPanelMode("agent") } },
+    { name: "model", description: t("model"), run: () => { setDraft(""); openPanelMode("model") } },
+    { name: "reasoning", description: t("reasoningDepth"), run: () => { setDraft(""); openPanelMode("variant") } },
+    { name: "mcp", description: t("mcp"), run: () => { setDraft(""); openPanelMode("mcp") } },
+    { name: "skills", description: t("skills"), run: () => { setDraft(""); openPanelMode("skill") } },
+    {
+      name: "compact",
+      description: t("compactContext"),
+      run: () => {
+        setDraft("")
+        if (!sessionId) return
+        void ensureConnection(hostId)
+          .then((runtime) => new OpencodeClient(runtime).compactSession(sessionId))
+          .then(() => loadSession(sessionId))
+          .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t("error")))
+      },
+    },
+    { name: "stop", description: t("stop"), run: () => { setDraft(""); void stop() } },
+    { name: "help", description: t("commandHelpHint"), run: () => { setDraft(""); notify(t("commandHelpHint")) } },
+    ...commands.map((command) => ({
+      name: command.name,
+      description: command.description ?? t("command"),
+      run: () => {
+        setDraft(`/${command.name} `)
+        inputRef.current?.focus()
+      },
+    })),
+  ]
+
   const stopActivity = async (activity: RunningActivity) => {
     if (activity.kind === "shell") return
     try {
@@ -945,7 +829,9 @@ export default function WorkspaceScreen() {
       const live = liveById.get(message.id)
       if (!live) return message
       liveById.delete(message.id)
-      return messageWeight(live) >= messageWeight(message) ? live : message
+      // While the presentation queue is active, keep typing against the live
+      // snapshot; the completed server message is only a fallback.
+      return messageWeight(live) > 0 ? live : message
     })
     return mergeAssistantRuns([...combined, ...liveById.values()]).reverse()
   }, [liveMessages, messages])
@@ -1027,13 +913,20 @@ export default function WorkspaceScreen() {
       ? [{ text: `${usage.percent}%`, danger: usage.percent >= 80, strong: true }]
       : []),
   ]
-  const commandQuery = draft.startsWith("/") && !draft.includes(" ") ? draft.slice(1) : null
+  const commandQuery =
+    draft.startsWith("/") &&
+    !draft.includes(" ") &&
+    !draft.includes("\n") &&
+    draftSelection.start === draft.length &&
+    draftSelection.end === draft.length
+      ? draft.slice(1)
+      : null
   const commandMatches =
     commandQuery === null
       ? []
-      : commands
-          .filter((command) => command.name.toLowerCase().startsWith(commandQuery.toLowerCase()))
-          .slice(0, 6)
+      : commandChoices.filter((command) =>
+          command.name.toLowerCase().startsWith(commandQuery.toLowerCase()),
+        )
 
   if (!hydrated) return <View style={styles.screen} />
 
@@ -1257,26 +1150,26 @@ export default function WorkspaceScreen() {
             ) : null}
 
             {commandMatches.length > 0 ? (
-              <View style={styles.commandPanel}>
+              <ScrollView
+                style={styles.commandPanel}
+                contentContainerStyle={{ paddingBottom: 2 }}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
                 {commandMatches.map((command) => (
                   <Pressable
                     key={command.name}
                     accessibilityRole="button"
-                    onPress={() => {
-                      setDraft(`/${command.name} `)
-                      inputRef.current?.focus()
-                    }}
+                    onPress={command.run}
                     style={({ pressed }) => [styles.commandRow, pressed && { opacity: 0.65 }]}
                   >
                     <Text style={styles.commandName}>/{command.name}</Text>
-                    {command.description ? (
-                      <Text style={styles.commandDescription} numberOfLines={1}>
-                        {command.description}
-                      </Text>
-                    ) : null}
+                    <Text style={styles.commandDescription} numberOfLines={1}>
+                      {command.description}
+                    </Text>
                   </Pressable>
                 ))}
-              </View>
+              </ScrollView>
             ) : null}
 
             {notice ? <Text style={styles.notice}>{notice}</Text> : null}
@@ -1287,8 +1180,7 @@ export default function WorkspaceScreen() {
                 editable={ready && !sending && !readOnly}
                 multiline
                 onChangeText={setDraft}
-                placeholder={readOnly ? t("readOnlyDevice") : t("messagePlaceholder")}
-                placeholderTextColor={colors.faint}
+                onSelectionChange={(event) => setDraftSelection(event.nativeEvent.selection)}
                 style={styles.input}
                 value={draft}
               />
@@ -1325,32 +1217,32 @@ export default function WorkspaceScreen() {
               </Pressable>
             </View>
 
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                if (statusGesture.current.scrolled) {
-                  statusGesture.current.scrolled = false
-                  return
-                }
-                openPanel()
-              }}
-              onTouchStart={(event) => {
-                statusGesture.current = {
-                  x: event.nativeEvent.pageX,
-                  y: event.nativeEvent.pageY,
-                  scrolled: false,
-                }
-              }}
-              onTouchMove={(event) => {
-                const dx = Math.abs(event.nativeEvent.pageX - statusGesture.current.x)
-                const dy = Math.abs(event.nativeEvent.pageY - statusGesture.current.y)
-                if (dx > 8 && dx > dy) statusGesture.current.scrolled = true
-              }}
-              style={({ pressed }) => [styles.statusBar, pressed && { opacity: 0.7 }]}
-            >
+            <View style={styles.statusBar}>
               <ScrollView
                 horizontal
+                nestedScrollEnabled
+                overScrollMode="never"
                 showsHorizontalScrollIndicator={false}
+                onTouchStart={(event) => {
+                  statusGesture.current = {
+                    x: event.nativeEvent.pageX,
+                    y: event.nativeEvent.pageY,
+                    scrolled: false,
+                  }
+                }}
+                onTouchMove={(event) => {
+                  const dx = Math.abs(event.nativeEvent.pageX - statusGesture.current.x)
+                  const dy = Math.abs(event.nativeEvent.pageY - statusGesture.current.y)
+                  if (dx > 8 && dx > dy) statusGesture.current.scrolled = true
+                }}
+                onTouchEnd={(event) => {
+                  const touch = event.nativeEvent.changedTouches?.[0]
+                  const dx = touch ? Math.abs(touch.pageX - statusGesture.current.x) : 0
+                  const dy = touch ? Math.abs(touch.pageY - statusGesture.current.y) : 0
+                  const wasScrolled = statusGesture.current.scrolled || dx > 8 || dy > 8
+                  statusGesture.current.scrolled = false
+                  if (!wasScrolled) openPanel()
+                }}
                 onScrollBeginDrag={() => {
                   statusGesture.current.scrolled = true
                 }}
@@ -1373,7 +1265,7 @@ export default function WorkspaceScreen() {
                   </View>
                 ))}
               </ScrollView>
-            </Pressable>
+            </View>
           </View>
         </View>
       )}
@@ -1983,7 +1875,7 @@ const workspaceStyles = (colors: Palette) =>
     voiceText: { flex: 1, fontSize: 12, color: colors.muted },
     voiceStop: { fontSize: 12, fontWeight: "600", color: colors.accent },
     notice: { marginHorizontal: 6, marginBottom: 5, fontSize: 11.5, color: colors.muted },
-    commandPanel: { marginHorizontal: 4, marginBottom: 6, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface, overflow: "hidden" },
+    commandPanel: { maxHeight: 220, marginHorizontal: 4, marginBottom: 6, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface, overflow: "hidden" },
     commandRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 11, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
     commandName: { fontSize: 12.5, fontWeight: "600", color: colors.accent, fontFamily: "monospace" },
     commandDescription: { flex: 1, fontSize: 11, color: colors.faint },

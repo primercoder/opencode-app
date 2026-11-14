@@ -69,8 +69,10 @@ Serve options:
   --data-dir <dir>        data directory (default ./data, env RELAY_DATA_DIR)
   --listen <addr>         listen address (default :8443, env RELAY_LISTEN)
   --public-url <url>      public ws(s) URL placed in invites (env RELAY_PUBLIC_URL)
-  --tls-cert <file>       TLS certificate (PEM); overrides the generated one
-  --tls-key <file>        TLS private key (PEM)
+  --tls-cert <file>       user TLS certificate (PEM); wins over local files
+  --tls-key <file>        user TLS private key (PEM)
+  --tls-ca <file>         CA certificate used to verify the user certificate
+  --rotate-tls            regenerate the local CA/certificate set
   --no-tls                serve plain ws (development only)
   --admin-socket <path>   admin Unix socket (default <data-dir>/admin.sock)
   --max-clients <n>       clients per room (default 8)
@@ -79,6 +81,7 @@ Serve options:
 
 Init options:
   --data-dir, --public-url, --name <host label>, --json
+  --tls-cert, --tls-key, --tls-ca, --rotate-tls, --no-tls
 
 Admin commands:
   status
@@ -94,7 +97,7 @@ Admin commands:
 Environment:
   RELAY_DATA_DIR, RELAY_LISTEN, RELAY_PUBLIC_URL, RELAY_ADMIN_SOCKET,
   RELAY_LOG_LEVEL, RELAY_MAX_CLIENTS, RELAY_MAX_FRAME,
-  RELAY_TLS_CERT, RELAY_TLS_KEY, RELAY_TLS_OFF
+  RELAY_TLS_CERT, RELAY_TLS_KEY, RELAY_TLS_CA, RELAY_TLS_OFF
 `, version)
 }
 
@@ -103,8 +106,10 @@ func runServe(args []string) error {
 	dataDir := flags.String("data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
 	listen := flags.String("listen", env("RELAY_LISTEN", ":8443"), "listen address")
 	publicURL := flags.String("public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
-	certFile := flags.String("tls-cert", env("RELAY_TLS_CERT", ""), "TLS certificate")
-	keyFile := flags.String("tls-key", env("RELAY_TLS_KEY", ""), "TLS private key")
+	certFile := flags.String("tls-cert", env("RELAY_TLS_CERT", ""), "user TLS certificate")
+	keyFile := flags.String("tls-key", env("RELAY_TLS_KEY", ""), "user TLS private key")
+	caFile := flags.String("tls-ca", env("RELAY_TLS_CA", ""), "CA certificate for the user TLS certificate")
+	rotateTLS := flags.Bool("rotate-tls", false, "regenerate the relay's local CA and certificate")
 	noTLS := flags.Bool("no-tls", envBool("RELAY_TLS_OFF", false), "serve plain ws (development only)")
 	adminSocket := flags.String("admin-socket", env("RELAY_ADMIN_SOCKET", ""), "admin Unix socket")
 	maxClients := flags.Int("max-clients", envInt("RELAY_MAX_CLIENTS", 8), "clients per room")
@@ -116,8 +121,8 @@ func runServe(args []string) error {
 	if (*certFile == "") != (*keyFile == "") {
 		return errors.New("--tls-cert and --tls-key must be provided together")
 	}
-	if *noTLS && *certFile != "" {
-		return errors.New("--no-tls cannot be combined with --tls-cert/--tls-key")
+	if *noTLS && (*certFile != "" || *caFile != "" || *rotateTLS) {
+		return errors.New("--no-tls cannot be combined with TLS certificate options")
 	}
 
 	logger := newLogger(*level)
@@ -129,26 +134,39 @@ func runServe(args []string) error {
 	}
 	defer store.Close()
 
-	// WSS is the default. Without explicit certificate flags, create or reuse a
-	// local CA/server certificate under <data-dir>/tls.
-	if !*noTLS && *certFile == "" {
-		files, err := relay.EnsureTLS(*dataDir)
+	if *publicURL == "" {
+		if *noTLS {
+			*publicURL = derivePublicURL(*listen, false)
+		} else {
+			*publicURL = relay.DefaultPublicURL(*listen)
+		}
+	}
+
+	// WSS is the default. Explicit user files win; complete files in
+	// <data-dir>/tls are validated and reused; an empty directory is generated.
+	if !*noTLS {
+		files, err := relay.ResolveTLS(relay.TLSOptions{
+			DataDir:  *dataDir,
+			CertFile: *certFile,
+			KeyFile:  *keyFile,
+			CAFile:   *caFile,
+			Rotate:   *rotateTLS,
+			Host:     relay.TLSHostFromURL(*publicURL, *listen),
+		})
 		if err != nil {
 			return fmt.Errorf("relay TLS: %w", err)
 		}
 		*certFile = files.CertFile
 		*keyFile = files.KeyFile
-		if files.Generated {
+		*caFile = files.CAFile
+		switch {
+		case files.Generated:
 			slog.Info("generated relay TLS certificate", "ca", files.CAFile)
 			fmt.Printf("\nRelay CA certificate:\n  %s\nInstall it in the Android system trust store so phones can verify wss://.\n\n", files.CAFile)
-		}
-	}
-
-	if *publicURL == "" {
-		if *certFile != "" {
-			*publicURL = relay.DefaultPublicURL(*listen)
-		} else {
-			*publicURL = derivePublicURL(*listen, false)
+		case files.User:
+			slog.Info("using user TLS certificate", "cert", files.CertFile, "ca", files.CAFile)
+		default:
+			slog.Info("using saved relay TLS certificate", "cert", files.CertFile, "ca", files.CAFile)
 		}
 	}
 	socket := *adminSocket
@@ -209,11 +227,39 @@ func runInit(args []string) error {
 	publicURL := flags.String("public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
 	name := flags.String("name", env("RELAY_INVITE_NAME", ""), "host label for the first invite")
 	jsonOut := flags.Bool("json", false, "print JSON")
+	certFile := flags.String("tls-cert", env("RELAY_TLS_CERT", ""), "user TLS certificate")
+	keyFile := flags.String("tls-key", env("RELAY_TLS_KEY", ""), "user TLS private key")
+	caFile := flags.String("tls-ca", env("RELAY_TLS_CA", ""), "CA certificate for the user TLS certificate")
+	rotateTLS := flags.Bool("rotate-tls", false, "regenerate the relay's local CA and certificate")
+	noTLS := flags.Bool("no-tls", envBool("RELAY_TLS_OFF", false), "do not create or check TLS files")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if *noTLS && (*certFile != "" || *caFile != "" || *rotateTLS) {
+		return errors.New("--no-tls cannot be combined with TLS certificate options")
+	}
 	if *publicURL == "" {
-		*publicURL = relay.DefaultPublicURL(":8443")
+		if *noTLS {
+			*publicURL = derivePublicURL(":8443", false)
+		} else {
+			*publicURL = relay.DefaultPublicURL(":8443")
+		}
+	}
+
+	var tlsFiles relay.TLSFiles
+	if !*noTLS {
+		files, err := relay.ResolveTLS(relay.TLSOptions{
+			DataDir:  *dataDir,
+			CertFile: *certFile,
+			KeyFile:  *keyFile,
+			CAFile:   *caFile,
+			Rotate:   *rotateTLS,
+			Host:     relay.TLSHostFromURL(*publicURL, ":8443"),
+		})
+		if err != nil {
+			return fmt.Errorf("relay TLS: %w", err)
+		}
+		tlsFiles = files
 	}
 
 	store, err := relay.OpenStore(filepath.Join(*dataDir, "relay.db"))
@@ -254,6 +300,12 @@ func runInit(args []string) error {
 			"relayId":   store.RelayID(),
 			"publicUrl": *publicURL,
 			"invites":   outputs,
+			"tls": map[string]any{
+				"enabled":   !*noTLS,
+				"generated": tlsFiles.Generated,
+				"cert":      tlsFiles.CertFile,
+				"ca":        tlsFiles.CAFile,
+			},
 		}, "", "  ")
 		fmt.Println(string(raw))
 		return nil
@@ -261,6 +313,12 @@ func runInit(args []string) error {
 
 	fmt.Printf("relay id   %s\n", store.RelayID())
 	fmt.Printf("public url %s\n", *publicURL)
+	if tlsFiles.CAFile != "" {
+		fmt.Printf("relay ca   %s\n", tlsFiles.CAFile)
+		if tlsFiles.Generated {
+			fmt.Println("Generated a local CA and server certificate in <data-dir>/tls.")
+		}
+	}
 	if len(outputs) == 0 {
 		fmt.Println("nothing to do: a host invite already exists (use admin add-host to issue another one)")
 		return nil

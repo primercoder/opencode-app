@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -432,6 +433,104 @@ func TestAdminInviteLinkShape(t *testing.T) {
 	}
 	if invite.Kind != KindClient || invite.ConsumedAt != 0 {
 		t.Fatalf("unexpected invite: %+v", invite)
+	}
+}
+
+func TestTLSRejectsPartialDirectoryWithoutOverwriting(t *testing.T) {
+	dir := t.TempDir()
+	files, err := EnsureTLS(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(files.CAKeyFile); err != nil {
+		t.Fatalf("missing CA private key: %v", err)
+	}
+	before, err := os.ReadFile(files.CertFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(files.CAKeyFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureTLS(dir); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("expected incomplete TLS error, got %v", err)
+	}
+	after, err := os.ReadFile(files.CertFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("partial TLS resolution overwrote the server certificate")
+	}
+}
+
+func TestTLSRotateRegeneratesOnlyWhenRequested(t *testing.T) {
+	dir := t.TempDir()
+	files, err := EnsureTLS(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(files.CAFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := ResolveTLS(TLSOptions{DataDir: dir, Rotate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rotated.Generated {
+		t.Fatal("rotate should report generated files")
+	}
+	after, err := os.ReadFile(rotated.CAFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) == string(after) {
+		t.Fatal("rotate did not regenerate the CA")
+	}
+}
+
+func TestTLSRejectsInvalidCAAndHostMismatch(t *testing.T) {
+	dir := t.TempDir()
+	files, err := EnsureTLS(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveTLS(TLSOptions{DataDir: dir, Host: "definitely-not-covered.example"}); err == nil {
+		t.Fatal("expected host coverage failure")
+	}
+	if err := os.WriteFile(files.CAFile, []byte("not a certificate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureTLS(dir); err == nil {
+		t.Fatal("expected invalid CA failure")
+	}
+}
+
+func TestTLSUsesExplicitUserFiles(t *testing.T) {
+	source := t.TempDir()
+	files, err := EnsureTLS(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	user, err := ResolveTLS(TLSOptions{
+		DataDir:  target,
+		CertFile: files.CertFile,
+		KeyFile:  files.KeyFile,
+		CAFile:   files.CAFile,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !user.User || user.Generated || user.CertFile != files.CertFile {
+		t.Fatalf("unexpected user TLS result: %+v", user)
+	}
+	if _, err := os.Stat(filepath.Join(target, "tls", "relay.crt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("explicit user files should not create default TLS files")
+	}
+	if _, err := ResolveTLS(TLSOptions{DataDir: target, CertFile: files.CertFile}); err == nil {
+		t.Fatal("expected cert/key pairing error")
 	}
 }
 

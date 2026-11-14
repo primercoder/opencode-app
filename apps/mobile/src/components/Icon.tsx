@@ -31,6 +31,8 @@ export type IconName =
   | "spark"
   | "comment"
   | "edit"
+  | "wrapText"
+  | "noWrapText"
   | "arrowUp"
   | "activity"
 
@@ -95,6 +97,22 @@ export function Icon(props: {
         <>
           <Path d="M12 20h8" {...common} />
           <Path d="M16.8 3.7a2.2 2.2 0 0 1 3.1 3.1L7.5 19.2 3 20l.8-4.5z" {...common} />
+        </>
+      ) : null}
+      {props.name === "wrapText" ? (
+        <>
+          <Line x1="4" y1="6" x2="20" y2="6" {...common} />
+          <Path d="M4 11h12a3 3 0 0 1 0 6H9" {...common} />
+          <Polyline points="12 14 9 17 12 20" {...common} />
+          <Line x1="4" y1="18" x2="6" y2="18" {...common} />
+        </>
+      ) : null}
+      {props.name === "noWrapText" ? (
+        <>
+          <Line x1="4" y1="6" x2="20" y2="6" {...common} />
+          <Line x1="4" y1="12" x2="20" y2="12" {...common} />
+          <Line x1="4" y1="18" x2="12" y2="18" {...common} />
+          <Polyline points="17 15 20 18 17 21" {...common} />
         </>
       ) : null}
       {props.name === "activity" ? (
