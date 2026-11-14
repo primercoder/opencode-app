@@ -2537,3 +2537,38 @@ details p {
   box-shadow: 0 0 0 4px var(--ok-soft);
   animation: softPulse 2.8s ease-in-out infinite;
 }
+
+/* Sequential flow reveal */
+.js .flow-step {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 520ms ease, transform 520ms ease;
+}
+
+.js .flow-inner.is-in .flow-step {
+  opacity: 1;
+  transform: none;
+}
+
+.js .flow-inner.is-in .flow-step:nth-child(1) {
+  transition-delay: 180ms;
+}
+
+.js .flow-inner.is-in .flow-step:nth-child(2) {
+  transition-delay: 320ms;
+}
+
+.js .flow-inner.is-in .flow-step:nth-child(3) {
+  transition-delay: 460ms;
+}
+
+.js .flow-inner.is-in .flow-step:nth-child(4) {
+  transition-delay: 600ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .js .flow-step {
+    opacity: 1;
+    transform: none;
+  }
+}
