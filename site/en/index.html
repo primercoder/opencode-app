@@ -4,12 +4,38 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OC Remote — Control opencode from Android</title>
-    <meta name="description" content="OC Remote puts an opencode session on your Android phone. Live transcripts, commands, review, dictation and multi-client sync over direct LAN or a self-hosted relay." />
+    <meta
+      name="description"
+      content="Control opencode on your computer from an Android phone. Live sessions, commands, code review, dictation and multi-client sync, over direct LAN or an optional relay."
+    />
     <meta name="page-type" content="software" />
     <meta name="site-kind" content="software" />
-    <meta name="theme-color" content="#f6f6f2" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#FBFBFB" />
+    <script>
+      (function () {
+        var t;
+        try {
+          t = localStorage.getItem("ocremote-theme");
+        } catch (e) {}
+        if (t !== "light" && t !== "dark") {
+          t =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+        }
+        document.documentElement.dataset.theme = t;
+        document.documentElement.classList.add("js");
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.content = t === "dark" ? "#0F1013" : "#FBFBFB";
+      })();
+    </script>
     <meta property="og:title" content="OC Remote — opencode in your pocket" />
-    <meta property="og:description" content="Android remote control for opencode. Live sessions, commands, review, dictation and multi-client sync." />
+    <meta
+      property="og:description"
+      content="Android remote control for opencode. Live sessions, commands, review, dictation and multi-client sync."
+    />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="../assets/og.png" />
     <link rel="icon" href="../assets/icon.png" />
@@ -17,18 +43,35 @@
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>
+
     <header class="site-nav">
       <div class="wrap nav-row">
         <a class="brand" href="index.html" aria-label="OC Remote home">
           <img src="../assets/icon.png" alt="" width="30" height="30" />
           <span class="brand-name"><strong>OC Remote</strong></span>
         </a>
-        <nav class="nav-links" id="site-menu" aria-label="Main navigation"><a href="index.html" aria-current="page">Home</a><a href="quick-start.html">Quick start</a><a href="security.html">Security</a><a href="faq.html">FAQ</a></nav>
+        <nav class="nav-links" id="site-menu" aria-label="Main navigation">
+          <a href="index.html" aria-current="page">Home</a>
+          <a href="quick-start.html">Quick start</a>
+          <a href="security.html">Security</a>
+          <a href="faq.html">FAQ</a>
+        </nav>
         <div class="nav-actions">
-          <div class="lang-switch" aria-label="Language"><a href="../index.html">中</a><a href="index.html" aria-current="true">EN</a></div>
-          <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub repository" rel="noreferrer"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" /></svg></a>
+          <div class="lang-switch" aria-label="Language">
+            <a href="../index.html">中</a>
+            <a href="index.html" aria-current="true">EN</a>
+          </div>
+          <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode" title="Toggle light and dark theme">
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z" /></svg>
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+          </button>
+          <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub repository" rel="noreferrer">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" /></svg>
+          </a>
           <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">Download 0.1.1 <span class="arrow">↓</span></a>
-          <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button>
+          <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-menu">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          </button>
         </div>
       </div>
     </header>
@@ -36,115 +79,139 @@
     <main id="main">
       <section class="hero">
         <div class="wrap hero-grid">
-          <div class="hero-copy enter">
-            <p class="eyebrow"><span class="dot"></span>OPENCODE REMOTE · ANDROID</p>
-            <h1>Your opencode<br /><span class="accent">in your pocket.</span></h1>
-            <p class="lede">The session keeps running on your computer. Pick it up on your phone: read the stream, switch agents and models, run slash commands, review files with line comments, or dictate instead of typing.</p>
+          <div class="hero-copy">
+            <p class="eyebrow"><span class="dot"></span>ANDROID · OPENCODE REMOTE</p>
+            <h1>opencode,<br /><span class="accent">in your pocket.</span></h1>
+            <p class="lede">
+              Your desktop session keeps running. Pick it up on the phone to read output,
+              switch models, run commands, review code or simply talk.
+            </p>
             <div class="hero-actions">
               <a class="btn btn-primary" href="https://github.com/primercoder/opencode-app/releases/latest">Download Android APK <span class="arrow">↓</span></a>
-              <a class="btn btn-outline" href="quick-start.html">Connect in three steps <span class="arrow">→</span></a>
+              <a class="btn btn-outline" href="quick-start.html">Connect in 3 steps <span class="arrow">→</span></a>
             </div>
             <dl class="hero-facts">
-              <div><dt>Crypto</dt><dd>Noise NK end-to-end</dd></div>
+              <div><dt>Encryption</dt><dd>Noise NK end-to-end</dd></div>
               <div><dt>Host</dt><dd>Linux x64 / arm64</dd></div>
               <div><dt>License</dt><dd>Apache-2.0</dd></div>
             </dl>
           </div>
-          <div class="hero-stage" aria-label="OC Remote phone and host UI">
-            <div class="terminal-shell hero-terminal">
-              <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote — host</span></div>
-              <pre class="terminal-code"><span class="cmd">$</span> ocremote status
 
-listen    <span class="ok">0.0.0.0:8797</span>
-direct    ws://192.168.1.42:8797
-relay     off
-opencode  127.0.0.1:49374 (2.3.0)
-clients   0
-uptime    2h 14m</pre>
-            </div>
-            <figure class="phone hero-phone">
-              <img src="../assets/screenshots/session_main.webp" alt="OC Remote Android session with live messages and tool activity" width="760" height="1680" />
-            </figure>
+          <div class="hero-stage" aria-label="OC Remote phone and host interfaces">
             <div class="e2ee-chip">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2.5" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
               NOISE NK · E2EE
             </div>
+            <figure class="phone hero-phone">
+              <img src="../assets/screenshots/session_main.webp" alt="OC Remote Android session with live messages and tool activity" width="760" height="1680" />
+            </figure>
+            <div class="terminal-shell hero-terminal">
+              <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote — host</span></div>
+              <pre class="terminal-code"><span class="cmd">$</span> ocremote status
+
+listen    0.0.0.0:8787
+direct    ws://192.168.1.42:8787
+relay     off
+opencode  <span class="ok">online</span>
+clients   1</pre>
+            </div>
           </div>
+        </div>
+      </section>
+
+      <section class="flow" aria-label="Four moves in one session">
+        <div class="wrap flow-inner" data-reveal>
+          <div class="flow-step"><strong>Speak</strong><span>Voice or text input</span></div>
+          <div class="flow-step"><strong>Run</strong><span>Tool calls and queued input</span></div>
+          <div class="flow-step"><strong>Review</strong><span>Live output and line comments</span></div>
+          <div class="flow-step"><strong>Sync</strong><span>State follows every client</span></div>
+        </div>
       </section>
 
       <section class="section" id="features">
         <div class="wrap">
-          <div class="section-head">
-            <div><p class="section-kicker"><span>01</span> / SESSION</p><h2>Not a shrunken desktop.<br />A session built for the phone.</h2></div>
-            <p>The stream keeps its rhythm: text, reasoning, tool calls, queued input and run state. Open the bottom sheet only when you need agents, models, MCP servers, skills or dictation.</p>
+          <div class="section-head" data-reveal>
+            <h2>One session, four ways.</h2>
+            <p>
+              Not a shrunken desktop, but a remote session laid out again. Streaming output,
+              commands, review and sync all happen on one screen.
+            </p>
           </div>
-          <div class="feature-stack">
-            <article class="feature-row">
-              <div class="feature-copy">
-                <h3>Sessions, without shrinking the desktop.</h3>
-                <p>Streaming text, reasoning, tool calls and queued input stay intact. Open the bottom sheet only when you need an agent, model, MCP server or skill.</p>
-                <ul class="feature-list">
-                  <li>Live output with long activity runs collapsed</li>
-                  <li>Send while busy; input queues and runs next</li>
-                  <li>Agent, model and reasoning depth stay in the session</li>
-                </ul>
-              </div>
-              <div class="feature-visual"><figure class="phone"><img src="../assets/screenshots/session_settings_bar.webp" alt="Session settings sheet" width="760" height="1680" /></figure></div>
-            </article>
 
-            <article class="feature-row reverse">
+          <div class="feature-grid">
+            <article class="feature-card" data-reveal>
               <div class="feature-copy">
-                <h3>Commands keep their names.</h3>
-                <p>Aligned with the opencode TUI. Terminal-only commands are greyed out instead of pretending to work on a phone.</p>
-                <ul class="feature-list">
-                  <li>Aliases such as /model, /agent and /thinking still work</li>
-                  <li>/skills attaches a skill to the next message</li>
-                </ul>
+                <h3>The session stays close</h3>
+                <p>Reasoning, tool calls and queued input are preserved. Keep typing while it runs; the message sends next.</p>
+                <div class="chips">
+                  <span class="chip">Live output</span>
+                  <span class="chip">Queued input</span>
+                  <span class="chip">Bottom sheet</span>
+                </div>
               </div>
               <div class="feature-visual">
-                <div class="command-panel" aria-label="Phone command palette example">
-                  <div class="command-panel-head"><span>Command palette</span><span>/</span></div>
-                  <div class="command-panel-row"><code>/models</code><span>switch model</span></div>
-                  <div class="command-panel-row"><code>/agents</code><span>switch agent</span></div>
-                  <div class="command-panel-row"><code>/skills</code><span>attach to next message</span></div>
-                  <div class="command-panel-row"><code>/status</code><span>view session state</span></div>
-                  <div class="command-panel-row"><code>/help</code><span>show all commands</span></div>
-                  <div class="command-panel-row disabled"><code>/terminal</code><span>unavailable on phone</span></div>
+                <figure class="phone phone--card">
+                  <img src="../assets/screenshots/session_settings_bar.webp" alt="Session settings sheet" width="760" height="1680" />
+                </figure>
+              </div>
+            </article>
+
+            <article class="feature-card" data-reveal>
+              <div class="feature-copy">
+                <h3>Commands keep their names</h3>
+                <p>Aligned with the opencode TUI. Terminal-only commands are greyed out instead of pretending to work.</p>
+                <div class="chips">
+                  <span class="chip">/models</span>
+                  <span class="chip">/skills</span>
+                  <span class="chip">Aliases</span>
+                </div>
+              </div>
+              <div class="feature-visual">
+                <div class="panel" aria-label="Phone command palette example">
+                  <div class="panel-head"><span>Command palette</span><span>/</span></div>
+                  <div class="panel-row"><code>/models</code><span>switch model</span></div>
+                  <div class="panel-row"><code>/agents</code><span>switch agent</span></div>
+                  <div class="panel-row"><code>/skills</code><span>attach to next message</span></div>
+                  <div class="panel-row"><code>/status</code><span>view session state</span></div>
+                  <div class="panel-row disabled"><code>/terminal</code><span>unavailable on phone</span></div>
                 </div>
               </div>
             </article>
 
-            <article class="feature-row">
+            <article class="feature-card" data-reveal>
               <div class="feature-copy">
-                <h3>Review without shipping files around.</h3>
-                <p>Browse project files, toggle wrapping, select a line range and write a comment. Comments become one review prompt back in the current session.</p>
-                <ul class="feature-list">
-                  <li>File-type icons and binary preview protection</li>
-                  <li>Line comments merge into one prompt</li>
-                  <li>Diff and review stay in the same context</li>
-                </ul>
-              </div>
-              <div class="feature-visual"><figure class="phone"><img src="../assets/screenshots/browse_files.webp" alt="Phone code review file browser" width="760" height="1680" /></figure></div>
-            </article>
-
-            <article class="feature-row reverse">
-              <div class="feature-copy">
-                <h3>State follows every client.</h3>
-                <p>When another client changes agent or model, the phone updates without a page switch. Changes made on the phone reach other clients through the shared service.</p>
-                <ul class="feature-list">
-                  <li>The current session refreshes automatically</li>
-                  <li>Deleted sessions return to the empty screen</li>
-                  <li>MCP, config and compaction state stay in sync</li>
-                </ul>
+                <h3>Review where the code is</h3>
+                <p>Select a line range and write a comment. Comments merge into one review prompt back in the session.</p>
+                <div class="chips">
+                  <span class="chip">Line comments</span>
+                  <span class="chip">Diff</span>
+                  <span class="chip">Binary guard</span>
+                </div>
               </div>
               <div class="feature-visual">
-                <div class="event-panel" aria-label="Multi-client sync event examples">
-                  <div class="event-panel-head"><span>event stream</span><span>shared service</span></div>
-                  <div class="event-panel-row"><code>session.agent.selected</code><span>build → plan</span></div>
-                  <div class="event-panel-row"><code>session.model.selected</code><span>DeepSeek V4.1 Flash</span></div>
-                  <div class="event-panel-row"><code>session.deleted</code><span>empty session screen</span></div>
-                  <div class="event-panel-row"><code>mcp.status.changed</code><span>panel refresh</span></div>
-                  <div class="event-panel-foot"><span class="mini-dot"></span><span>Phone stays on the session; no page switch</span><small>~1s</small></div>
+                <figure class="phone phone--card">
+                  <img src="../assets/screenshots/select_comment_text.webp" alt="Selecting code lines and adding a comment" width="760" height="1680" />
+                </figure>
+              </div>
+            </article>
+
+            <article class="feature-card" data-reveal>
+              <div class="feature-copy">
+                <h3>State follows every client</h3>
+                <p>When another client changes agent or model, the phone updates without a page switch. Deleted sessions return to the empty screen.</p>
+                <div class="chips">
+                  <span class="chip">Event stream</span>
+                  <span class="chip">Auto refresh</span>
+                  <span class="chip">Compaction</span>
+                </div>
+              </div>
+              <div class="feature-visual">
+                <div class="panel" aria-label="Multi-client sync event examples">
+                  <div class="panel-head"><span>event stream</span><span>shared</span></div>
+                  <div class="event-row"><code>agent.selected</code><span>build → plan</span></div>
+                  <div class="event-row"><code>model.selected</code><span>deepseek-v4.1</span></div>
+                  <div class="event-row"><code>session.deleted</code><span>empty screen</span></div>
+                  <div class="event-foot"><span class="live-dot"></span><span>No page switch</span></div>
                 </div>
               </div>
             </article>
@@ -152,107 +219,190 @@ uptime    2h 14m</pre>
         </div>
       </section>
 
-      <section class="section platforms" id="platforms">
+      <section class="section band" id="platforms">
         <div class="wrap">
-          <div class="section-head">
-            <div><p class="section-kicker"><span>02</span> / THREE ENDS</p><h2>The host stays on the desk.<br />The session goes with you.</h2></div>
-            <p>The host talks to local opencode, the phone operates the session, and the relay only carries encrypted frames across networks. Deploy all three, or stay on the LAN.</p>
+          <div class="section-head" data-reveal>
+            <h2>Three ends, one job each.</h2>
+            <p>The host sits next to opencode, the phone drives the session, and the relay only appears when the network needs it.</p>
           </div>
+
           <div class="platform-grid">
-            <article class="platform-card dark">
-              <div class="platform-head"><div><h3>Host</h3><p>Runs next to opencode and keeps the local password.</p><ul class="platform-points"><li>reads local service registration</li><li>Noise NK static identity</li><li>stores only token hashes</li></ul></div><span class="platform-tag">LINUX</span></div>
-              <div class="platform-visual"><div class="terminal-shell">
+            <article class="platform-card" data-reveal>
+              <div class="platform-head">
+                <div>
+                  <h3>Host</h3>
+                  <p>Runs beside opencode. The password stays local.</p>
+                </div>
+                <span class="platform-tag">LINUX</span>
+              </div>
+              <div class="chips">
+                <span class="chip chip--accent">Local service registry</span>
+                <span class="chip chip--accent">Noise NK identity</span>
+              </div>
+              <div class="platform-visual">
+                <div class="terminal-shell">
                   <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote</span></div>
                   <pre class="terminal-code"><span class="cmd">$</span> ocremote status
 
 listen    <span class="ok">0.0.0.0:8787</span>
-direct    ws://192.168.1.42:8787/ws
+direct    ws://192.168.1.42:8787
 relay     off
-opencode  127.0.0.1:49374 (2.3.0)
-clients   0
-uptime    2h 14m</pre>
-                </div></div>
+opencode  <span class="ok">online</span></pre>
+                </div>
+              </div>
               <div class="platform-command">./ocremote start --listen 0.0.0.0:8787 --pair</div>
             </article>
-            <article class="platform-card">
-              <div class="platform-head"><div><h3>Phone</h3><p>Scan or paste a pairing link, verify the fingerprint, connect.</p><ul class="platform-points"><li>scan or paste a link</li><li>verify the host fingerprint</li><li>token in SecureStore</li></ul></div><span class="platform-tag">ANDROID</span></div>
-              <div class="platform-visual"><div class="phone-wrap"><figure class="phone phone--sm"><img src="../assets/screenshots/add_host.webp" alt="Phone add-host and pairing screen" width="760" height="1680" /></figure></div></div>
-              <div class="platform-command">OC Remote → Add host → Connect and pair</div>
+
+            <article class="platform-card" data-reveal>
+              <div class="platform-head">
+                <div>
+                  <h3>Phone</h3>
+                  <p>Scan, pair and verify the fingerprint.</p>
+                </div>
+                <span class="platform-tag">ANDROID</span>
+              </div>
+              <div class="chips">
+                <span class="chip chip--accent">Scan or paste</span>
+                <span class="chip chip--accent">SecureStore token</span>
+              </div>
+              <div class="platform-visual">
+                <div class="pair-panel" aria-label="Phone pairing code example">
+                  <div class="panel-head"><span>Pair device</span><span>04:58</span></div>
+                  <div class="pair-code">482 913</div>
+                  <div class="pair-meta"><span>Fingerprint</span><code>A3:F1:9C:2D</code></div>
+                  <div class="pair-meta"><span>Transport</span><strong>Direct LAN</strong></div>
+                  <div class="pair-foot"><span class="pair-dot"></span><span>Verify, then connect</span></div>
+                </div>
+              </div>
+              <div class="platform-command">Add host → Connect and pair</div>
             </article>
-            <article class="platform-card dark">
-              <div class="platform-head"><div><h3>Relay</h3><p>Optional. Forwards ciphertext when the phone and computer are on different networks.</p><ul class="platform-points"><li>generates and validates TLS</li><li>single-use invites</li><li>BoltDB subjects</li></ul></div><span class="platform-tag">OPTIONAL</span></div>
-              <div class="platform-visual"><div class="terminal-shell">
+
+            <article class="platform-card" data-reveal>
+              <div class="platform-head">
+                <div>
+                  <h3>Relay</h3>
+                  <p>Optional. Forwards ciphertext for remote networks.</p>
+                </div>
+                <span class="platform-tag">OPTIONAL</span>
+              </div>
+              <div class="chips">
+                <span class="chip chip--accent">Automatic TLS</span>
+                <span class="chip chip--accent">One-time invite</span>
+              </div>
+              <div class="platform-visual">
+                <div class="terminal-shell">
                   <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote-relay</span></div>
                   <pre class="terminal-code"><span class="cmd">$</span> ocremote-relay admin status
 {
   "relayId": "relay_4d5b8c0…",
-  "wsUrl": "wss://relay.example/ws",
   "v": 2,
   "hosts": 0,
-  "clients": 0,
-  "rooms": []
+  "clients": 0
 }</pre>
-                </div></div>
+                </div>
+              </div>
               <div class="platform-command">./ocremote-relay init --data-dir ./data</div>
             </article>
           </div>
         </div>
       </section>
 
-      <section class="section security" id="security">
-        <div class="wrap">
-          <div class="section-head">
-            <div><p class="section-kicker"><span>03</span> / SECURITY</p><h2>Your code stays<br />on your wire.</h2></div>
-            <p>opencode keeps listening on 127.0.0.1. Phone and host speak Noise NK. The relay sees room, identity and timing metadata; application data stays ciphertext.</p>
-          </div>
-          <div class="security-grid">
-            <div class="diagram" aria-label="End-to-end encryption between phone and host">
-              <div class="diagram-row"><div class="node"><small>ANDROID</small><strong>Phone</strong><span>sessions · commands · review</span></div><div class="link-line">NOISE NK</div><div class="node"><small>LOCALHOST</small><strong>Host</strong><span>opencode · device tokens</span></div></div>
-              <div class="relay-line"><span>optional relay · ciphertext only</span></div>
-            </div>
-            <ul class="security-list">
-              <li><span class="num">01</span><div><strong>One-time pairing</strong><p>A short-lived code and a fingerprint check produce a device token; the host stores only its hash.</p></div></li>
-              <li><span class="num">02</span><div><strong>A fresh handshake per connection</strong><p>X25519 ephemeral keys, ChaCha20-Poly1305 and SHA-256 protect control frames and HTTP/SSE payloads.</p></div></li>
-              <li><span class="num">03</span><div><strong>Release does not trust the QA CA</strong><p>Release APKs use the Android system CA store. Only QA builds add the development test CA.</p></div></li>
+      <section class="section" id="security">
+        <div class="wrap security-grid">
+          <div class="security-copy" data-reveal>
+            <h2>The relay forwards,<br />it cannot read.</h2>
+            <p>
+              opencode keeps listening on 127.0.0.1 only. Phone and host speak Noise NK;
+              the relay sees rooms and timing, not code.
+            </p>
+            <ul class="security-points">
+              <li><strong>One-time pairing</strong><span>A short pair code issues a device token after fingerprint verification.</span></li>
+              <li><strong>A fresh handshake per connection</strong><span>X25519, ChaCha20-Poly1305, SHA-256.</span></li>
+              <li><strong>Release builds skip the test CA</strong><span>The release APK trusts only the Android system CA store.</span></li>
             </ul>
+            <a class="inline-cta" href="security.html">Read the security model <span>→</span></a>
           </div>
-          <p style="margin: 28px 0 0"><a class="inline-cta" href="security.html">Read the full security model <span>→</span></a></p>
+
+          <div class="diagram-panel" data-reveal aria-label="End-to-end encryption between phone and host">
+            <div class="diagram-row">
+              <div class="node"><small>ANDROID</small><strong>Phone</strong><span>Session · commands · review</span></div>
+              <div class="link-line">NOISE NK</div>
+              <div class="node"><small>LOCALHOST</small><strong>Host</strong><span>opencode · token hashes</span></div>
+            </div>
+            <div class="relay-line"><span>Optional relay · sees rooms and timing only</span></div>
+            <div class="diagram-foot">
+              <span class="chip">Application data is ciphertext</span>
+              <span class="chip">Relay cannot read</span>
+            </div>
+          </div>
         </div>
       </section>
 
-      <section class="section gallery" id="screens">
+      <section class="section band gallery" id="screens">
         <div class="wrap">
-          <div class="section-head">
-            <div><p class="section-kicker"><span>04</span> / UI</p><h2>Real screens.<br />No demo filter.</h2></div>
-            <p>Light, dark, drawer, review and diff are actual Android pages. Host names and session content in the captures come from a disposable test setup.</p>
+          <div class="section-head section-head--rail" data-reveal>
+            <div>
+              <h2>Real interface.</h2>
+              <p>Click any shot to enlarge. Light and dark themes, the sidebar, diffs and line comments all come from the actual client.</p>
+            </div>
+            <div class="rail-controls">
+              <button type="button" data-rail-prev aria-label="Scroll left">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+              </button>
+              <button type="button" data-rail-next aria-label="Scroll right">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg>
+              </button>
+            </div>
           </div>
-          <div class="gallery-grid">
-            <figure class="phone phone--xs"><img src="../assets/screenshots/host_list.webp" alt="Phone host list" width="760" height="1680" /></figure>
-            <figure class="phone phone--xs"><img src="../assets/screenshots/session_sidebar.webp" alt="Phone session drawer" width="760" height="1680" /></figure>
-            <figure class="phone phone--xs"><img src="../assets/screenshots/diff.webp" alt="Phone diff view" width="760" height="1680" /></figure>
-            <figure class="phone phone--xs"><img src="../assets/screenshots/light_style.webp" alt="Phone light theme settings" width="760" height="1680" /></figure>
-            <figure class="phone phone--xs"><img src="../assets/screenshots/black_style.webp" alt="Phone dark theme settings" width="760" height="1680" /></figure>
-            <figure class="phone phone--xs"><img src="../assets/screenshots/select_comment_text.webp" alt="Phone selecting code lines for a review comment" width="760" height="1680" /></figure>
+
+          <div class="rail" data-rail data-reveal>
+            <button class="shot" type="button" data-full="../assets/screenshots/session_main.webp" data-caption="Session · live output and tool calls">
+              <span class="shot-frame"><img src="../assets/screenshots/session_main.webp" alt="Android session screen" width="760" height="1680" loading="lazy" /></span>
+              <span class="shot-cap"><strong>Session</strong><span>Live output and tool calls</span></span>
+            </button>
+            <button class="shot" type="button" data-full="../assets/screenshots/session_sidebar.webp" data-caption="Sidebar · switch and create sessions">
+              <span class="shot-frame"><img src="../assets/screenshots/session_sidebar.webp" alt="Android session sidebar" width="760" height="1680" loading="lazy" /></span>
+              <span class="shot-cap"><strong>Sidebar</strong><span>Switch and create sessions</span></span>
+            </button>
+            <button class="shot" type="button" data-full="../assets/screenshots/select_comment_text.webp" data-caption="Line comment · select code and comment">
+              <span class="shot-frame"><img src="../assets/screenshots/select_comment_text.webp" alt="Selecting code lines and adding a comment" width="760" height="1680" /></span>
+              <span class="shot-cap"><strong>Line comment</strong><span>Select code and comment</span></span>
+            </button>
+            <button class="shot" type="button" data-full="../assets/screenshots/diff.webp" data-caption="Diff · review changes in context">
+              <span class="shot-frame"><img src="../assets/screenshots/diff.webp" alt="Android diff view" width="760" height="1680" loading="lazy" /></span>
+              <span class="shot-cap"><strong>Diff</strong><span>Review changes in context</span></span>
+            </button>
+            <button class="shot" type="button" data-full="../assets/screenshots/host_list.webp" data-caption="Hosts · switch between computers">
+              <span class="shot-frame"><img src="../assets/screenshots/host_list.webp" alt="Android host list" width="760" height="1680" loading="lazy" /></span>
+              <span class="shot-cap"><strong>Hosts</strong><span>Switch between computers</span></span>
+            </button>
+            <button class="shot" type="button" data-full="../assets/screenshots/black_style.webp" data-caption="Dark theme · follow system or choose manually">
+              <span class="shot-frame"><img src="../assets/screenshots/black_style.webp" alt="Android dark theme settings" width="760" height="1680" loading="lazy" /></span>
+              <span class="shot-cap"><strong>Dark theme</strong><span>Follow system or choose manually</span></span>
+            </button>
           </div>
+          <div class="rail-progress" aria-hidden="true"><span data-rail-progress></span></div>
         </div>
       </section>
 
       <section class="download" id="download">
         <div class="wrap download-grid">
-          <div>
-            <p class="section-kicker"><span>05</span> / DOWNLOAD</p>
-            <h2>Start on the phone.<br />Leave the work running.</h2>
-            <p class="lede">Download 0.1.1 and install the APK for your device. The host bundles Bun and sherpa-onnx; the relay is a static binary.</p>
+          <div data-reveal>
+            <h2>Start on the phone,<br />keep working on the desktop.</h2>
+            <p class="lede">Download 0.1.1. Pick the APK for your phone; the host bundle ships Bun and the speech model.</p>
             <a class="btn btn-primary" href="https://github.com/primercoder/opencode-app/releases/latest">Open the latest release <span class="arrow">↗</span></a>
-            <p class="download-note"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16v.1" /></svg>Release APKs are currently signed with the Expo debug keystore. Replace it before distributing to end users. Release APKs do not include the QA test CA.</p>
+            <p class="download-note">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16v.1" /></svg>
+              The current APK uses the Expo debug keystore and needs a production keystore before public distribution. Release builds exclude the QA test CA.
+            </p>
           </div>
-          <div class="download-list" aria-label="0.1.1 downloads">
-            <div class="download-row"><div><strong>Android · arm64-v8a</strong><span>phones, tablets · 87 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-0.1.1-android-arm64-v8a.apk">APK ↗</a></div>
-            <div class="download-row"><div><strong>Android · x86_64</strong><span>emulators, x86_64 devices · 87 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-0.1.1-android-x86_64.apk">APK ↗</a></div>
-            <div class="download-row"><div><strong>Host · Linux x64</strong><span>bundled Bun + sherpa-onnx · 60 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-host-0.1.1-linux-x64.tar.gz">tar.gz ↗</a></div>
-            <div class="download-row"><div><strong>Host · Linux arm64</strong><span>bundled arm64 Bun + sherpa-onnx · 63 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-host-0.1.1-linux-arm64.tar.gz">tar.gz ↗</a></div>
-            <div class="download-row"><div><strong>Relay · Linux x64</strong><span>static Go binary · 8.2 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-relay-0.2.0-linux-amd64">binary ↗</a></div>
-            <div class="download-row"><div><strong>Relay · Linux arm64</strong><span>static Go binary · 7.7 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-relay-0.2.0-linux-arm64">binary ↗</a></div>
+          <div class="download-list" data-reveal aria-label="0.1.1 downloads">
+            <div class="download-row"><div><strong>Android · arm64-v8a</strong><span>Phones and tablets · 87 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-0.1.1-android-arm64-v8a.apk">APK ↗</a></div>
+            <div class="download-row"><div><strong>Android · x86_64</strong><span>Emulators and x86_64 devices · 87 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-0.1.1-android-x86_64.apk">APK ↗</a></div>
+            <div class="download-row"><div><strong>Host · Linux x64</strong><span>Bundled Bun + sherpa-onnx · 60 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-host-0.1.1-linux-x64.tar.gz">tar.gz ↗</a></div>
+            <div class="download-row"><div><strong>Host · Linux arm64</strong><span>arm64 Bun + sherpa-onnx · 63 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-host-0.1.1-linux-arm64.tar.gz">tar.gz ↗</a></div>
+            <div class="download-row"><div><strong>Relay · Linux x64</strong><span>Static Go binary · 8.2 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-relay-0.2.0-linux-amd64">binary ↗</a></div>
+            <div class="download-row"><div><strong>Relay · Linux arm64</strong><span>Static Go binary · 7.7 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.1/ocremote-relay-0.2.0-linux-arm64">binary ↗</a></div>
           </div>
         </div>
       </section>
@@ -261,12 +411,31 @@ uptime    2h 14m</pre>
     <footer class="footer">
       <div class="wrap">
         <div class="footer-row">
-          <div class="footer-brand"><img src="../assets/icon.png" alt="" width="22" height="22" />OC Remote</div>
-          <nav class="footer-links" aria-label="Footer"><a href="quick-start.html">Quick start</a><a href="security.html">Security</a><a href="faq.html">FAQ</a><a href="https://github.com/primercoder/opencode-app">GitHub</a><a href="https://github.com/primercoder/opencode-app/releases/latest">Release</a><a href="../index.html">中文</a></nav>
+          <div class="footer-brand"><img src="../assets/icon.png" alt="" width="24" height="24" />OC Remote</div>
+          <nav class="footer-links" aria-label="Footer">
+            <a href="quick-start.html">Quick start</a>
+            <a href="security.html">Security</a>
+            <a href="faq.html">FAQ</a>
+            <a href="https://github.com/primercoder/opencode-app">GitHub</a>
+            <a href="https://github.com/primercoder/opencode-app/releases/latest">Release</a>
+            <a href="../index.html">简体中文</a>
+          </nav>
         </div>
-        <div class="footer-base"><span>© 2026 primercoder · Apache-2.0</span><span>Unofficial opencode client · not affiliated with the opencode project</span></div>
+        <div class="footer-base">
+          <span>© 2026 primercoder · Apache-2.0</span>
+          <span>Unofficial opencode client · Not affiliated with the opencode project</span>
+        </div>
       </div>
     </footer>
+
+    <div class="lightbox" data-lightbox hidden role="dialog" aria-modal="true" aria-label="Screenshot preview">
+      <button class="lightbox-close" type="button" data-lightbox-close aria-label="Close preview">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M5 5l14 14M19 5L5 19" /></svg>
+      </button>
+      <img src="../assets/icon.png" alt="" data-lightbox-img />
+      <p class="lightbox-cap" data-lightbox-cap></p>
+    </div>
+
     <script src="../assets/site.js"></script>
   </body>
 </html>
