@@ -71,7 +71,7 @@
             <article class="step">
               <span class="step-num">01</span><h3>Start the host</h3>
               <p>Extract the host archive and run it. The host reads the local opencode service registration; the opencode password stays on the computer.</p>
-              <div class="code-block"><div class="code-head"><span>HOST · LINUX X64</span><button class="copy" type="button" data-copy-target="host-x64">Copy</button></div><pre id="host-x64">tar xzf ocremote-host-0.1.1-linux-x64.tar.gz
+              <div class="code-block"><div class="code-head"><i></i><i></i><i></i><span>HOST · LINUX X64</span><button class="copy" type="button" data-copy-target="host-x64">Copy</button></div><pre id="host-x64">tar xzf ocremote-host-0.1.1-linux-x64.tar.gz
 cd ocremote
 ./ocremote start --listen 0.0.0.0:8787 --pair</pre></div>
               <p>On arm64 use <code>ocremote-host-0.1.1-linux-arm64.tar.gz</code>. It runs in the background by default; manage it with <code>./ocremote status</code>, <code>clients</code> and <code>stop</code>.</p>
@@ -79,18 +79,18 @@ cd ocremote
             <article class="step">
               <span class="step-num">02</span><h3>Install and pair the phone</h3>
               <p>Use <code>android-arm64-v8a.apk</code> on a real device and <code>android-x86_64.apk</code> on an x86_64 emulator. Open the app, tap <strong>+</strong>, then scan the host QR or paste the pairing link.</p>
-              <div class="code-block"><div class="code-head"><span>ANDROID</span><button class="copy" type="button" data-copy-target="phone-install">Copy</button></div><pre id="phone-install">adb install ocremote-0.1.1-android-arm64-v8a.apk</pre></div>
+              <div class="code-block"><div class="code-head"><i></i><i></i><i></i><span>ANDROID</span><button class="copy" type="button" data-copy-target="phone-install">Copy</button></div><pre id="phone-install">adb install ocremote-0.1.1-android-arm64-v8a.apk</pre></div>
               <p>Compare the host fingerprint before connecting. Pair codes are single-use and expire after five minutes by default. The device token is stored in Android SecureStore.</p>
             </article>
             <article class="step">
               <span class="step-num">03</span><h3>Add a relay only when needed</h3>
               <p>The relay is a static Go binary that forwards encrypted frames. It creates TLS material and a one-time host invite; the host puts relay access into its next pairing code.</p>
-              <div class="code-block"><div class="code-head"><span>RELAY · OPTIONAL</span><button class="copy" type="button" data-copy-target="relay-start">Copy</button></div><pre id="relay-start">./ocremote-relay init --data-dir ./data \
+              <div class="code-block"><div class="code-head"><i></i><i></i><i></i><span>RELAY · OPTIONAL</span><button class="copy" type="button" data-copy-target="relay-start">Copy</button></div><pre id="relay-start">./ocremote-relay init --data-dir ./data \
   --public-url wss://relay.example/ws
 
 ./ocremote-relay serve --data-dir ./data --listen :8443</pre></div>
               <p>Give the host invite to the host:</p>
-              <div class="code-block"><div class="code-head"><span>HOST · RELAY ENROLL</span><button class="copy" type="button" data-copy-target="relay-enroll">Copy</button></div><pre id="relay-enroll">./ocremote start --listen 0.0.0.0:8787 --pair \
+              <div class="code-block"><div class="code-head"><i></i><i></i><i></i><span>HOST · RELAY ENROLL</span><button class="copy" type="button" data-copy-target="relay-enroll">Copy</button></div><pre id="relay-enroll">./ocremote start --listen 0.0.0.0:8787 --pair \
   --relay-link 'ocremote-relay://enroll#...' \
   --relay-ca ./data/tls/ca.crt</pre></div>
               <p>For a self-signed relay, install the CA into the Android system store or use a public CA. Release APKs do not include the development test CA.</p>

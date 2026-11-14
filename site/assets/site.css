@@ -97,6 +97,7 @@
 html {
   scroll-behavior: smooth;
   scroll-padding-top: 84px;
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -600,10 +601,11 @@ h1 .accent {
 
 .hero-terminal {
   position: absolute;
-  left: 0;
-  bottom: 26px;
+  left: -56px;
+  top: 24%;
+  bottom: auto;
   z-index: 1;
-  width: min(370px, 82%);
+  width: 360px;
 }
 
 .e2ee-chip {
@@ -1327,9 +1329,9 @@ h1 .accent {
   gap: 18px;
   overflow-x: auto;
   padding: 2px 0 14px;
-  scroll-snap-type: x mandatory;
   scrollbar-width: none;
   overscroll-behavior-x: contain;
+  overflow-anchor: none;
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
@@ -1340,7 +1342,6 @@ h1 .accent {
 }
 
 .rail.dragging {
-  scroll-snap-type: none;
   cursor: grabbing;
 }
 
@@ -1365,7 +1366,6 @@ h1 .accent {
   border: 0;
   background: none;
   text-align: left;
-  scroll-snap-align: start;
   cursor: grab;
 }
 
@@ -1783,23 +1783,77 @@ body.lightbox-open {
   position: relative;
   margin: 0 0 16px;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 85%, transparent);
+  border-radius: 10px;
   background: var(--code-bg);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 12px 28px rgba(16, 16, 16, 0.08);
+}
+
+[data-theme="dark"] .code-block {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 12px 28px rgba(0, 0, 0, 0.32);
 }
 
 .code-block .code-head {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
+  gap: 8px;
+  height: 38px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--code-line);
-  background: var(--code-head);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--code-head) 62%, #fff) 0%,
+    var(--code-head) 100%
+  );
   font-family: var(--mono);
   font-size: 13px;
   letter-spacing: 0.03em;
   color: var(--code-muted);
+}
+
+[data-theme="dark"] .code-block .code-head {
+  background: linear-gradient(180deg, #24282f 0%, #191d22 100%);
+}
+
+.code-head i {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+
+.code-head i:nth-child(1) {
+  background: #ff5f57;
+}
+
+.code-head i:nth-child(2) {
+  background: #febc2e;
+}
+
+.code-head i:nth-child(3) {
+  background: #28c840;
+}
+
+.code-head span {
+  position: absolute;
+  left: 50%;
+  max-width: 50%;
+  overflow: hidden;
+  transform: translateX(-50%);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-head .copy {
+  position: relative;
+  z-index: 1;
+  margin-left: auto;
 }
 
 .copy {
@@ -2101,12 +2155,19 @@ details p {
 
 @media (max-width: 1120px) {
   .hero-grid {
-    grid-template-columns: minmax(0, 1fr) 430px;
-    gap: 30px;
+    grid-template-columns: 1fr;
+    gap: 34px;
+    padding: 54px 0 60px;
+  }
+
+  .hero-copy {
+    max-width: 680px;
   }
 
   .hero-stage {
-    min-height: 540px;
+    width: min(520px, 100%);
+    min-height: 560px;
+    margin: 0 auto;
   }
 
   .hero-phone {
@@ -2114,7 +2175,8 @@ details p {
   }
 
   .hero-terminal {
-    width: 280px;
+    width: 360px;
+    left: -56px;
   }
 
   .security-grid {
@@ -2297,12 +2359,11 @@ details p {
   }
 
   .e2ee-chip {
-    position: relative;
-    top: auto;
-    left: auto;
-    order: 0;
-    align-self: flex-start;
-    margin-bottom: 12px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 4;
+    margin: 0;
   }
 
   .hero-phone {
@@ -2318,7 +2379,8 @@ details p {
   .hero-terminal {
     position: absolute;
     left: 0;
-    bottom: 8px;
+    top: 24%;
+    bottom: auto;
     z-index: 1;
     width: 80%;
     margin: 0;

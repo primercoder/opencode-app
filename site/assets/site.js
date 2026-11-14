@@ -207,7 +207,11 @@
     var fill = scope.querySelector("[data-rail-progress]");
 
     function step(direction) {
-      var amount = Math.max(280, rail.clientWidth * 0.72);
+      var shot = rail.querySelector(".shot");
+      var gap = parseFloat(getComputedStyle(rail).columnGap) || 18;
+      var amount = shot
+        ? shot.getBoundingClientRect().width + gap
+        : Math.max(280, rail.clientWidth * 0.6);
       rail.scrollBy({
         left: direction * amount,
         behavior: reduceMotion ? "auto" : "smooth",
@@ -313,12 +317,28 @@
   var lightboxClose =
     lightbox && lightbox.querySelector("[data-lightbox-close]");
   var lastFocus = null;
+  var savedScrollY = 0;
+
+  function focusWithoutScroll(element) {
+    if (!element || !element.focus) return;
+    try {
+      element.focus({ preventScroll: true });
+    } catch (e) {
+      element.focus();
+    }
+  }
 
   function closeLightbox() {
     if (!lightbox || lightbox.hidden) return;
     lightbox.hidden = true;
     body.classList.remove("lightbox-open");
-    if (lastFocus && lastFocus.focus) lastFocus.focus();
+    // Keep the gallery and the page exactly where they were before opening.
+    var rootStyle = document.documentElement.style;
+    var previousBehavior = rootStyle.scrollBehavior;
+    rootStyle.scrollBehavior = "auto";
+    window.scrollTo(0, savedScrollY);
+    rootStyle.scrollBehavior = previousBehavior;
+    focusWithoutScroll(lastFocus);
   }
 
   if (lightbox && lightboxImg) {
@@ -331,10 +351,11 @@
         if (lightboxCap) {
           lightboxCap.textContent = shot.getAttribute("data-caption") || "";
         }
+        savedScrollY = window.scrollY;
         lastFocus = shot;
         lightbox.hidden = false;
         body.classList.add("lightbox-open");
-        if (lightboxClose) lightboxClose.focus();
+        focusWithoutScroll(lightboxClose);
       });
     });
 
