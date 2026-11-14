@@ -82,6 +82,11 @@ export type McpServer = {
   status?: { status: string; error?: string }
 }
 
+export type CommandInfo = {
+  name: string
+  description?: string
+}
+
 export type FsEntry = {
   path: string
   type: "file" | "directory"
@@ -168,6 +173,8 @@ export type SessionMessage = {
   status?: string
   command?: string
   shellID?: string
+  exit?: number
+  output?: { output?: string; cursor?: number; size?: number; truncated?: boolean }
   metadata?: Record<string, unknown>
 }
 
@@ -236,6 +243,22 @@ export class OpencodeClient {
   async listSkills(directory?: string): Promise<SkillInfo[]> {
     const result = await this.raw<{ data: SkillInfo[] }>("GET", withDirectory("/api/skill", directory))
     return result.data
+  }
+
+  async listCommands(directory?: string): Promise<CommandInfo[]> {
+    const result = await this.raw<{ data: CommandInfo[] }>("GET", withDirectory("/api/command", directory))
+    return result.data
+  }
+
+  async runCommand(sessionId: string, name: string, text: string): Promise<void> {
+    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/command`, {
+      name,
+      ...(text ? { text } : {}),
+    })
+  }
+
+  async runShell(sessionId: string, command: string): Promise<void> {
+    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/shell`, { command })
   }
 
   async listInbox(sessionId: string): Promise<InboxItem[]> {

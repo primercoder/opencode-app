@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from "expo-router"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -13,8 +13,10 @@ import {
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
+import { FileTypeIcon } from "@/components/FileTypeIcon"
 import { OpencodeClient, type FsEntry, type SessionInfo } from "@/opencode/client"
 import { buildReviewPrompt, selectionRange, type ReviewComment } from "@/opencode/review"
+import { isProbablyBinary } from "@/opencode/fileKind"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 import { ensureConnection } from "@/transport/runtimes"
@@ -48,6 +50,7 @@ export default function ReviewScreen() {
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const rootGesture = useRef({ x: 0, scrolled: false })
 
   useEffect(() => {
     if (!hydrated) {
@@ -103,11 +106,9 @@ export default function ReviewScreen() {
     try {
       const runtime = await ensureConnection(hostId)
       const result = await new OpencodeClient(runtime).readFile(directory, entry.path)
-      // opencode often serves source files as application/octet-stream, so
-      // relying on the MIME type alone marks every file as binary.
-      const contentType = result.contentType ?? ""
-      const binary =
-        result.content.includes("\u0000") || /^(image|audio|video|font)\//u.test(contentType)
+      // Extensions take precedence over MIME: `.ts` is often reported as
+      // video/mp2t even though it is a TypeScript source file.
+      const binary = isProbablyBinary(result.content, result.contentType, entry.path)
       setFile({ path: entry.path, lines: result.content.split("\n"), binary })
       setAnchor(null)
       setRange(null)
@@ -175,6 +176,15 @@ export default function ReviewScreen() {
 
   const parentPath = currentPath.replace(/\/+$/u, "").split("/").slice(0, -1).join("/")
 
+  const goRoot = () => {
+    if (!directory) return
+    if (file || currentPath) {
+      setAnchor(null)
+      setRange(null)
+      void loadDirectory("")
+    }
+  }
+
   return (
     <KeyboardAvoidingView
       style={[styles.screen, { paddingTop: insets.top + spacing.md }]}
@@ -201,12 +211,44 @@ export default function ReviewScreen() {
       </View>
 
       <View style={styles.breadcrumb}>
-        <Pressable accessibilityRole="button" onPress={() => (file ? setFile(null) : currentPath ? void loadDirectory(parentPath) : undefined)}>
-          <Text style={styles.crumb}>{file ? t("fileList") : currentPath ? t("parentDir") : t("projectRoot")}</Text>
+        <FileTypeIcon directory size={19} name={directory} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("projectRoot")}
+          onPress={() => {
+            if (rootGesture.current.scrolled) {
+              rootGesture.current.scrolled = false
+              return
+            }
+            goRoot()
+          }}
+          onTouchStart={(event) => {
+            rootGesture.current = { x: event.nativeEvent.pageX, scrolled: false }
+          }}
+          onTouchMove={(event) => {
+            if (Math.abs(event.nativeEvent.pageX - rootGesture.current.x) > 8) {
+              rootGesture.current.scrolled = true
+            }
+          }}
+          style={{ flex: 1 }}
+        >
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            onScrollBeginDrag={() => {
+              rootGesture.current.scrolled = true
+            }}
+          >
+            <Text style={styles.path} numberOfLines={1}>
+              {directory || t("projectRoot")}
+            </Text>
+          </ScrollView>
         </Pressable>
-        <Text style={styles.path} numberOfLines={1}>
-          {file?.path ?? (currentPath || directory)}
-        </Text>
+        {file ? (
+          <Pressable accessibilityRole="button" onPress={() => setFile(null)}>
+            <Text style={styles.crumb}>{t("fileList")}</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {error ? (
@@ -221,6 +263,17 @@ export default function ReviewScreen() {
       ) : (
         <ScrollView contentContainerStyle={styles.list}>
           {loading && entries === null ? <Text style={styles.loading}>{t("loading")}</Text> : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !currentPath }}
+            disabled={!currentPath}
+            onPress={() => void loadDirectory(parentPath)}
+            style={({ pressed }) => [styles.entry, !currentPath && styles.entryDisabled, pressed && currentPath && styles.entryPressed]}
+          >
+            <FileTypeIcon directory size={23} name={currentPath} />
+            <Text style={[styles.entryName, !currentPath && styles.entryNameDisabled]}>..</Text>
+            <Text style={styles.entryType}>{currentPath ? t("parentDir") : t("projectRoot")}</Text>
+          </Pressable>
           {entries?.length === 0 ? <Text style={styles.loading}>{t("directoryEmpty")}</Text> : null}
           {entries?.map((entry) => (
             <Pressable
@@ -229,7 +282,11 @@ export default function ReviewScreen() {
               onPress={() => (entry.type === "directory" ? void loadDirectory(entry.path) : void openFile(entry))}
               style={({ pressed }) => [styles.entry, pressed && styles.entryPressed]}
             >
-              <Text style={[styles.entryIcon, entry.type === "directory" && styles.folder]}>{entry.type === "directory" ? "▸" : "·"}</Text>
+              <FileTypeIcon
+                directory={entry.type === "directory"}
+                name={entry.path}
+                size={entry.type === "directory" ? 23 : 22}
+              />
               <Text style={styles.entryName} numberOfLines={1}>
                 {basename(entry.path)}
               </Text>
@@ -289,39 +346,68 @@ function FileView(props: {
   anchor: number | null
   onSelectLine: (line: number) => void
 }) {
+  const { colors } = useTheme()
   const t = useT()
   const styles = useThemedStyles(reviewStyles)
-  if (props.file.binary) {
-    return <Text style={styles.loading}>{t("binaryPreview")}</Text>
-  }
+  const [wrap, setWrap] = useState(false)
   const lines = props.file.lines.slice(0, 3000)
+  const rows = (
+    <View>
+      {lines.map((line, index) => {
+        const number = index + 1
+        const selected =
+          props.anchor === number ||
+          (props.range !== null && number >= props.range.start && number <= props.range.end)
+        return (
+          <Pressable
+            key={number}
+            accessibilityRole="button"
+            onPress={() => props.onSelectLine(number)}
+            style={[styles.codeLine, wrap && styles.codeLineWrap, selected && styles.codeLineSelected]}
+          >
+            <Text style={styles.lineNumber}>{number}</Text>
+            <Text style={[styles.code, wrap && styles.codeWrapped]}>{line.length > 0 ? line : " "}</Text>
+          </Pressable>
+        )
+      })}
+      {props.file.lines.length > lines.length ? (
+        <Text style={styles.truncated}>…</Text>
+      ) : null}
+    </View>
+  )
+
   return (
-    <ScrollView style={styles.codeScroll}>
-      <ScrollView horizontal showsHorizontalScrollIndicator>
-        <View>
-          {lines.map((line, index) => {
-            const number = index + 1
-            const selected =
-              props.anchor === number ||
-              (props.range !== null && number >= props.range.start && number <= props.range.end)
-            return (
-              <Pressable
-                key={number}
-                accessibilityRole="button"
-                onPress={() => props.onSelectLine(number)}
-                style={[styles.codeLine, selected && styles.codeLineSelected]}
-              >
-                <Text style={styles.lineNumber}>{number}</Text>
-                <Text style={styles.code}>{line.length > 0 ? line : " "}</Text>
-              </Pressable>
-            )
-          })}
-          {props.file.lines.length > lines.length ? (
-            <Text style={styles.truncated}>…</Text>
-          ) : null}
-        </View>
-      </ScrollView>
-    </ScrollView>
+    <View style={{ flex: 1 }}>
+      <View style={styles.fileBar}>
+        <FileTypeIcon name={props.file.path} size={18} />
+        <Text style={styles.filePath} numberOfLines={1}>
+          {props.file.path}
+        </Text>
+        {!props.file.binary ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: wrap }}
+            onPress={() => setWrap((value) => !value)}
+            style={[styles.wrapToggle, wrap && styles.wrapToggleOn]}
+          >
+            <Text style={[styles.wrapToggleText, wrap && { color: colors.accent }]}>
+              {wrap ? t("textWrap") : t("noWrap")}
+            </Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {props.file.binary ? (
+        <Text style={styles.loading}>{t("binaryPreview")}</Text>
+      ) : wrap ? (
+        <ScrollView style={styles.codeScroll}>{rows}</ScrollView>
+      ) : (
+        <ScrollView style={styles.codeScroll}>
+          <ScrollView horizontal showsHorizontalScrollIndicator>
+            {rows}
+          </ScrollView>
+        </ScrollView>
+      )}
+    </View>
   )
 }
 
@@ -369,7 +455,7 @@ const reviewStyles = (colors: Palette) =>
     borderBottomColor: colors.border,
   },
   crumb: { fontSize: 13, color: colors.accent },
-  path: { flex: 1, fontSize: 12, color: colors.muted, ...mono },
+  path: { fontSize: 12, color: colors.muted, ...mono },
   errorRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -391,15 +477,37 @@ const reviewStyles = (colors: Palette) =>
     borderBottomColor: colors.border,
   },
   entryPressed: { backgroundColor: colors.surface },
-  entryIcon: { width: 16, fontSize: 14, color: colors.faint },
-  folder: { color: colors.accent },
+  entryDisabled: { opacity: 0.45 },
   entryName: { flex: 1, fontSize: 14, color: colors.text, ...mono },
+  entryNameDisabled: { color: colors.faint },
   entryType: { fontSize: 11, color: colors.faint },
+  fileBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  filePath: { flex: 1, fontSize: 11.5, color: colors.muted, ...mono },
+  wrapToggle: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  wrapToggleOn: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  wrapToggleText: { fontSize: 11, color: colors.muted, fontWeight: "600" },
   codeScroll: { flex: 1, backgroundColor: colors.surface },
   codeLine: { flexDirection: "row", minHeight: 20 },
+  codeLineWrap: { alignItems: "flex-start" },
   codeLineSelected: { backgroundColor: "rgba(59,92,246,0.12)" },
   lineNumber: { width: 48, paddingRight: spacing.sm, textAlign: "right", fontSize: 11, lineHeight: 20, color: colors.faint, ...mono },
   code: { fontSize: 11, lineHeight: 20, color: colors.text, ...mono, paddingRight: spacing.lg },
+  codeWrapped: { flex: 1, flexShrink: 1, paddingRight: spacing.sm },
   truncated: { padding: spacing.md, fontSize: 12, color: colors.faint },
   comments: { maxHeight: 40, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   commentsContent: { gap: spacing.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, alignItems: "center" },

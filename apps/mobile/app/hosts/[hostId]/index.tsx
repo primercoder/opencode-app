@@ -2,14 +2,18 @@ import { router, useLocalSearchParams } from "expo-router"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   FlatList,
   KeyboardAvoidingView,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
@@ -26,6 +30,8 @@ import {
   sessionBusy,
   toMillis,
   type AgentInfo,
+  type AssistantContent,
+  type CommandInfo,
   type FormInfo,
   type InboxItem,
   type McpServer,
@@ -42,6 +48,7 @@ import { invalidateSessionIndex } from "@/features/sessions/useSessionIndex"
 import { listMobileModels } from "@/features/voice/models"
 import { useVoiceInput } from "@/features/voice/useVoiceInput"
 import { ensureConnection, subscribeHostEvents, closeRuntime } from "@/transport/runtimes"
+import type { OpencodeEvent } from "@/transport/hostEvents"
 import { basename } from "@/features/sessions/useSessionIndex"
 import {
   loadSessionVoiceEngine,
@@ -50,6 +57,7 @@ import {
   type VoiceEnginePreference,
 } from "@/stores/preferences"
 import { useForeground } from "@/lib/useForeground"
+import { loadLastSession, saveLastSession } from "@/storage/lastSession"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
@@ -58,6 +66,8 @@ type PanelMode = "main" | "agent" | "model" | "variant" | "mcp" | "skill" | "voi
 
 export default function WorkspaceScreen() {
   const insets = useSafeAreaInsets()
+  const { height: windowHeight } = useWindowDimensions()
+  const panelHeight = Math.round(windowHeight * 0.7)
   const params = useLocalSearchParams<{ hostId: string; session?: string; new?: string }>()
   const hostId = params.hostId
   const { colors } = useTheme()
@@ -75,6 +85,8 @@ export default function WorkspaceScreen() {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null)
   const [children, setChildren] = useState<SessionInfo[]>([])
   const [inbox, setInbox] = useState<InboxItem[]>([])
+  const [liveMessages, setLiveMessages] = useState<SessionMessage[]>([])
+  const [commands, setCommands] = useState<CommandInfo[]>([])
   const [loadingSession, setLoadingSession] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
@@ -88,6 +100,8 @@ export default function WorkspaceScreen() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelMode, setPanelMode] = useState<PanelMode>("main")
+  const panelFade = useRef(new Animated.Value(1)).current
+  const panelShift = useRef(new Animated.Value(0)).current
   const [activityOpen, setActivityOpen] = useState(false)
   const [projectOpen, setProjectOpen] = useState(false)
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null)
@@ -104,6 +118,19 @@ export default function WorkspaceScreen() {
   const [phoneModelReady, setPhoneModelReady] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const listRef = useRef<FlatList<SessionMessage>>(null)
+  const inputRef = useRef<TextInput>(null)
+  const statusGesture = useRef({ x: 0, y: 0, scrolled: false })
+  const drawerSwipe = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gesture) =>
+          gesture.dx > 42 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.6,
+        onPanResponderRelease: (_event, gesture) => {
+          if (gesture.dx > 80) setDrawerOpen(true)
+        },
+      }),
+    [],
+  )
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const sessionIdRef = useRef(sessionId)
@@ -146,6 +173,26 @@ export default function WorkspaceScreen() {
   }, [sessionId])
 
   useEffect(() => {
+    if (!sessionId || !ready) {
+      setCommands([])
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const runtime = await ensureConnection(hostId)
+        const list = await new OpencodeClient(runtime).listCommands(session?.location?.directory)
+        if (!cancelled) setCommands(list)
+      } catch {
+        if (!cancelled) setCommands([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [hostId, ready, session?.location?.directory, sessionId])
+
+  useEffect(() => {
     void listMobileModels()
       .then((items) => setPhoneModelReady(items.some((item) => item.installed)))
       .catch(() => setPhoneModelReady(false))
@@ -173,10 +220,188 @@ export default function WorkspaceScreen() {
     noticeTimer.current = setTimeout(() => setNotice(null), 3_000)
   }, [])
 
+  const liveRef = useRef(new Map<string, SessionMessage>())
+  const liveOrderRef = useRef<string[]>([])
+  const liveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const liveToolSeq = useRef(0)
+
+  const flushLive = useCallback(() => {
+    liveTimerRef.current = undefined
+    const list = liveOrderRef.current
+      .map((id) => liveRef.current.get(id))
+      .filter((message): message is SessionMessage => Boolean(message))
+    setLiveMessages(list)
+  }, [])
+
+  const scheduleLive = useCallback(() => {
+    if (liveTimerRef.current) return
+    liveTimerRef.current = setTimeout(flushLive, 50)
+  }, [flushLive])
+
+  const clearLive = useCallback(() => {
+    liveRef.current.clear()
+    liveOrderRef.current = []
+    if (liveTimerRef.current) clearTimeout(liveTimerRef.current)
+    liveTimerRef.current = undefined
+    setLiveMessages([])
+  }, [])
+
+  /**
+   * OpenCode only exposes completed assistant messages through /message. To get
+   * a real streaming transcript, apply the SSE text/reasoning/tool deltas to a
+   * temporary assistant message. The completed server message replaces it as
+   * soon as the step is persisted.
+   */
+  const applyLiveEvent = useCallback(
+    (event: OpencodeEvent) => {
+      const type = event.type ?? ""
+      if (!type.startsWith("session.") && !type.startsWith("message.")) return
+      const data = asRecord(event.data)
+      const sessionID = typeof data.sessionID === "string" ? data.sessionID : undefined
+      if (sessionID && sessionIdRef.current && sessionID !== sessionIdRef.current) return
+
+      if (
+        type === "session.execution.succeeded" ||
+        type === "session.execution.failed" ||
+        type === "session.execution.cancelled" ||
+        type === "session.execution.ended"
+      ) {
+        // Give the final message refresh time to replace live entries.
+        setTimeout(clearLive, 1_500)
+        return
+      }
+
+      const messageID = typeof data.assistantMessageID === "string" ? data.assistantMessageID : undefined
+      if (!messageID) return
+
+      let message = liveRef.current.get(messageID)
+      if (!message) {
+        message = {
+          id: messageID,
+          type: "assistant",
+          time: { created: Date.now() },
+          content: [],
+          metadata: { live: true },
+        }
+        liveRef.current.set(messageID, message)
+        liveOrderRef.current.push(messageID)
+      }
+      const content = [...(message.content ?? [])]
+      const next: SessionMessage = { ...message, content, metadata: { ...message.metadata, live: true } }
+
+      const ensureReasoning = (): Extract<AssistantContent, { type: "reasoning" }> => {
+        const index = content.findIndex((block) => block.type === "reasoning")
+        if (index >= 0) return content[index] as Extract<AssistantContent, { type: "reasoning" }>
+        const block: Extract<AssistantContent, { type: "reasoning" }> = { type: "reasoning", text: "" }
+        content.push(block)
+        return block
+      }
+      const replaceReasoning = (block: Extract<AssistantContent, { type: "reasoning" }>, text: string) => {
+        const index = content.indexOf(block)
+        if (index >= 0) content[index] = { ...block, text }
+      }
+      const ensureText = (): Extract<AssistantContent, { type: "text" }> => {
+        const index = content.findIndex((block) => block.type === "text")
+        if (index >= 0) return content[index] as Extract<AssistantContent, { type: "text" }>
+        const block: Extract<AssistantContent, { type: "text" }> = { type: "text", text: "" }
+        content.push(block)
+        return block
+      }
+      const replaceText = (block: Extract<AssistantContent, { type: "text" }>, text: string) => {
+        const index = content.indexOf(block)
+        if (index >= 0) content[index] = { ...block, text }
+      }
+      const latestTool = (): Extract<AssistantContent, { type: "tool" }> | undefined => {
+        for (let index = content.length - 1; index >= 0; index -= 1) {
+          const block = content[index]
+          if (block?.type === "tool") return block
+        }
+        return undefined
+      }
+      const replaceTool = (block: Extract<AssistantContent, { type: "tool" }>) => {
+        const index = content.indexOf(block)
+        if (index >= 0) content[index] = block
+      }
+
+      switch (type) {
+        case "session.step.started":
+          next.time = { created: typeof event.created === "number" ? event.created : Date.now() }
+          break
+        case "session.reasoning.started":
+          ensureReasoning()
+          break
+        case "session.reasoning.delta": {
+          const block = ensureReasoning()
+          const delta = typeof data.delta === "string" ? data.delta : ""
+          replaceReasoning(block, block.text + delta)
+          break
+        }
+        case "session.reasoning.ended": {
+          const block = ensureReasoning()
+          if (typeof data.text === "string") replaceReasoning(block, data.text)
+          break
+        }
+        case "session.text.started":
+          ensureText()
+          break
+        case "session.text.delta": {
+          const block = ensureText()
+          const delta = typeof data.delta === "string" ? data.delta : ""
+          replaceText(block, block.text + delta)
+          break
+        }
+        case "session.text.ended": {
+          const block = ensureText()
+          if (typeof data.text === "string") replaceText(block, data.text)
+          break
+        }
+        case "session.tool.input.started": {
+          liveToolSeq.current += 1
+          content.push({
+            type: "tool",
+            id: `live-tool-${liveToolSeq.current}`,
+            name: typeof data.name === "string" ? data.name : "tool",
+            state: { status: "running" },
+          })
+          break
+        }
+        case "session.tool.called": {
+          const block = latestTool()
+          if (!block) break
+          replaceTool({ ...block, state: { ...block.state, status: "running", ...(data.input ? { input: data.input } : {}) } })
+          break
+        }
+        case "session.tool.progress": {
+          const block = latestTool()
+          if (block) replaceTool({ ...block, state: { ...block.state, status: "running" } })
+          break
+        }
+        case "session.tool.success": {
+          const block = latestTool()
+          if (block) replaceTool({ ...block, state: { ...block.state, status: "completed" } })
+          break
+        }
+        case "session.tool.error":
+        case "session.tool.failed": {
+          const block = latestTool()
+          if (block) replaceTool({ ...block, state: { ...block.state, status: "error" } })
+          break
+        }
+        default:
+          break
+      }
+
+      liveRef.current.set(messageID, next)
+      scheduleLive()
+    },
+    [clearLive, scheduleLive],
+  )
+
   useEffect(
     () => () => {
       if (noticeTimer.current) clearTimeout(noticeTimer.current)
       if (loadTimer.current) clearTimeout(loadTimer.current)
+      if (liveTimerRef.current) clearTimeout(liveTimerRef.current)
     },
     [],
   )
@@ -185,6 +410,7 @@ export default function WorkspaceScreen() {
     async (id: string, options: { initial?: boolean } = {}) => {
       if (options.initial) {
         setMessages(null)
+        clearLive()
         setSession(null)
         setOlderCursor(undefined)
         setInbox([])
@@ -207,7 +433,7 @@ export default function WorkspaceScreen() {
         setSession(detail)
         setPermissions(pendingPermissions)
         setForms(pendingForms)
-        setInbox(queued)
+        setInbox(queueOnly(queued))
         setChildren(childPage.data)
         const latest = [...page.data].reverse()
         if (options.initial) {
@@ -223,10 +449,11 @@ export default function WorkspaceScreen() {
         if (sessionIdRef.current === id) setLoadingSession(false)
       }
     },
-    [hostId, t],
+    [clearLive, hostId, t],
   )
 
   useEffect(() => {
+    clearLive()
     if (!sessionId) {
       setSession(null)
       setMessages(null)
@@ -237,7 +464,7 @@ export default function WorkspaceScreen() {
       return
     }
     void loadSession(sessionId, { initial: true })
-  }, [sessionId, loadSession])
+  }, [clearLive, sessionId, loadSession])
 
   const refreshFromEvents = useCallback(
     async (id: string, kinds: Set<string>) => {
@@ -253,7 +480,7 @@ export default function WorkspaceScreen() {
             client
               .listInbox(id)
               .then((items) => {
-                if (sessionIdRef.current === id) setInbox(items)
+                if (sessionIdRef.current === id) setInbox(queueOnly(items))
               })
               .catch(() => undefined),
             client
@@ -301,7 +528,7 @@ export default function WorkspaceScreen() {
   )
 
   useEffect(() => {
-    if (!both(hostId, sessionId)) return
+    if (!ready || !both(hostId, sessionId)) return
     let timer: ReturnType<typeof setTimeout> | undefined
     let lastRefresh = 0
     const pendingKinds = new Set<string>()
@@ -321,13 +548,16 @@ export default function WorkspaceScreen() {
     }
     const unsubscribe = subscribeHostEvents(hostId, (event) => {
       if (!event.type) return
+      applyLiveEvent(event)
       // OpenCode 2 streams content as `session.text.delta`,
       // `session.reasoning.*`, `session.tool.*` and `session.step.*` events,
       // not only as `message.*` events. Treat every session event as a content
       // change so the transcript refreshes while the agent is working instead
       // of only after leaving and re-entering the screen.
-      const contentEvent = /^(?:message\.|session\.(?:text|reasoning|tool|step|assistant)\.)/u.test(event.type)
-      const sessionEvent = event.type.startsWith("session.") && !contentEvent
+      const shellEvent = event.type.startsWith("shell.")
+      const contentEvent =
+        /^(?:message\.|session\.(?:text|reasoning|tool|step|assistant)\.)/u.test(event.type) || shellEvent
+      const sessionEvent = (event.type.startsWith("session.") || shellEvent) && !contentEvent
       const kind = contentEvent
         ? "message"
         : sessionEvent
@@ -345,7 +575,7 @@ export default function WorkspaceScreen() {
       unsubscribe()
       if (timer) clearTimeout(timer)
     }
-  }, [hostId, refreshFromEvents, sessionId])
+  }, [applyLiveEvent, hostId, ready, refreshFromEvents, sessionId])
 
   useForeground(
     useCallback(() => {
@@ -374,7 +604,31 @@ export default function WorkspaceScreen() {
   const selectSession = (id: string) => {
     setSessionId(id)
     router.setParams({ session: id })
+    void saveLastSession(hostId, id)
   }
+
+  const restoredSession = useRef(false)
+  useEffect(() => {
+    if (restoredSession.current || params.session || params.new === "1" || !ready || !hydrated) return
+    restoredSession.current = true
+    let cancelled = false
+    void (async () => {
+      const last = await loadLastSession(hostId)
+      if (!last || cancelled || sessionIdRef.current) return
+      try {
+        const runtime = await ensureConnection(hostId)
+        await new OpencodeClient(runtime).getSession(last)
+        if (cancelled || sessionIdRef.current) return
+        setSessionId(last)
+        router.setParams({ session: last })
+      } catch {
+        // The remembered session was deleted; keep the blank state.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [hostId, hydrated, params.new, params.session, ready])
 
   const openProjectPicker = useCallback(async () => {
     setProjectOpen(true)
@@ -452,6 +706,26 @@ export default function WorkspaceScreen() {
     setPanelOpen(true)
     void loadOptions()
   }
+
+  useEffect(() => {
+    if (!panelOpen) return
+    panelFade.setValue(0)
+    panelShift.setValue(10)
+    Animated.parallel([
+      Animated.timing(panelFade, {
+        toValue: 1,
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+      Animated.timing(panelShift, {
+        toValue: 0,
+        duration: 180,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start()
+  }, [panelFade, panelMode, panelOpen, panelShift])
 
   const selectAgent = async (agentId: string) => {
     if (!sessionId) return
@@ -552,14 +826,29 @@ export default function WorkspaceScreen() {
     setSending(true)
     setError(null)
     setDraft("")
-    const queued = active
-    const optimistic: SessionMessage | null = queued
-      ? null
-      : { id: `local_${Date.now()}`, type: "user", text, time: { created: Date.now() } }
-    if (optimistic) setMessages((current) => [...(current ?? []), optimistic])
     try {
       const runtime = await ensureConnection(hostId)
-      await new OpencodeClient(runtime).prompt(sessionId, {
+      const client = new OpencodeClient(runtime)
+      if (text.startsWith("!")) {
+        const command = text.slice(1).trim()
+        if (!command) return
+        await client.runShell(sessionId, command)
+        setTimeout(() => void loadSession(sessionId), 350)
+        return
+      }
+      if (text.startsWith("/")) {
+        const match = /^\/([^\s]+)\s*([\s\S]*)$/u.exec(text)
+        if (!match) return
+        await client.runCommand(sessionId, match[1] as string, match[2] ?? "")
+        setTimeout(() => void loadSession(sessionId), 350)
+        return
+      }
+      const queued = active
+      const optimistic: SessionMessage | null = queued
+        ? null
+        : { id: `local_${Date.now()}`, type: "user", text, time: { created: Date.now() } }
+      if (optimistic) setMessages((current) => [...(current ?? []), optimistic])
+      await client.prompt(sessionId, {
         text,
         ...(queued ? { delivery: "queue" as const } : {}),
       })
@@ -568,7 +857,6 @@ export default function WorkspaceScreen() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("error"))
       setDraft(text)
-      if (optimistic) setMessages((current) => (current ?? []).filter((item) => item.id !== optimistic.id))
     } finally {
       setSending(false)
     }
@@ -650,7 +938,17 @@ export default function WorkspaceScreen() {
     }
   }
 
-  const displayMessages = useMemo(() => mergeAssistantRuns(messages ?? []).reverse(), [messages])
+  const displayMessages = useMemo(() => {
+    const server = messages ?? []
+    const liveById = new Map(liveMessages.map((message) => [message.id, message]))
+    const combined = server.map((message) => {
+      const live = liveById.get(message.id)
+      if (!live) return message
+      liveById.delete(message.id)
+      return messageWeight(live) >= messageWeight(message) ? live : message
+    })
+    return mergeAssistantRuns([...combined, ...liveById.values()]).reverse()
+  }, [liveMessages, messages])
   const currentModel = useMemo(
     () =>
       models?.find(
@@ -659,6 +957,19 @@ export default function WorkspaceScreen() {
     [models, session?.model?.id, session?.model?.providerID],
   )
   const usage = useMemo(() => contextUsage(messages ?? [], currentModel), [messages, currentModel])
+  const displayAgents = useMemo(() => {
+    const order = new Map([
+      ["build", 0],
+      ["plan", 1],
+    ])
+    return [...(agents ?? [])]
+      .filter((agent) => agent.mode !== "subagent")
+      .sort(
+        (left, right) =>
+          (order.get(left.id) ?? 99) - (order.get(right.id) ?? 99) ||
+          left.name.localeCompare(right.name),
+      )
+  }, [agents])
   const modelGroups = useMemo(() => {
     const query = modelQuery.trim().toLowerCase()
     const filtered = (models ?? []).filter((model) => {
@@ -707,16 +1018,22 @@ export default function WorkspaceScreen() {
   const modelName = currentModel?.name ?? session?.model?.id ?? t("defaultModel")
   const variantName = session?.model?.variant ?? t("reasoningDefault")
   const contextTokens = usage ? formatTokens(usage.tokens) : t("noContext")
-  const contextLimit = usage?.limit ? ` / ${formatTokens(usage.limit)}` : ""
   const statusParts = [
     { text: agentName },
     { text: modelName },
     { text: variantName },
-    { text: `${contextTokens}${contextLimit}` },
+    { text: contextTokens },
     ...(usage?.percent !== undefined
       ? [{ text: `${usage.percent}%`, danger: usage.percent >= 80, strong: true }]
       : []),
   ]
+  const commandQuery = draft.startsWith("/") && !draft.includes(" ") ? draft.slice(1) : null
+  const commandMatches =
+    commandQuery === null
+      ? []
+      : commands
+          .filter((command) => command.name.toLowerCase().startsWith(commandQuery.toLowerCase()))
+          .slice(0, 6)
 
   if (!hydrated) return <View style={styles.screen} />
 
@@ -738,11 +1055,9 @@ export default function WorkspaceScreen() {
       style={[styles.screen, { paddingTop: insets.top }]}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
       keyboardVerticalOffset={0}
+      {...drawerSwipe.panHandlers}
     >
       <View style={styles.header}>
-        <IconButton label={t("backToHosts")} onPress={goHosts}>
-          <Icon name="back" size={22} color={colors.text} />
-        </IconButton>
         <IconButton label={t("sessions")} onPress={() => setDrawerOpen(true)}>
           <Icon name="menu" size={22} color={colors.text} />
         </IconButton>
@@ -941,10 +1256,34 @@ export default function WorkspaceScreen() {
               </View>
             ) : null}
 
+            {commandMatches.length > 0 ? (
+              <View style={styles.commandPanel}>
+                {commandMatches.map((command) => (
+                  <Pressable
+                    key={command.name}
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setDraft(`/${command.name} `)
+                      inputRef.current?.focus()
+                    }}
+                    style={({ pressed }) => [styles.commandRow, pressed && { opacity: 0.65 }]}
+                  >
+                    <Text style={styles.commandName}>/{command.name}</Text>
+                    {command.description ? (
+                      <Text style={styles.commandDescription} numberOfLines={1}>
+                        {command.description}
+                      </Text>
+                    ) : null}
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+
             {notice ? <Text style={styles.notice}>{notice}</Text> : null}
 
             <View style={styles.composerRow}>
               <TextInput
+                ref={inputRef}
                 editable={ready && !sending && !readOnly}
                 multiline
                 onChangeText={setDraft}
@@ -988,12 +1327,33 @@ export default function WorkspaceScreen() {
 
             <Pressable
               accessibilityRole="button"
-              onPress={openPanel}
+              onPress={() => {
+                if (statusGesture.current.scrolled) {
+                  statusGesture.current.scrolled = false
+                  return
+                }
+                openPanel()
+              }}
+              onTouchStart={(event) => {
+                statusGesture.current = {
+                  x: event.nativeEvent.pageX,
+                  y: event.nativeEvent.pageY,
+                  scrolled: false,
+                }
+              }}
+              onTouchMove={(event) => {
+                const dx = Math.abs(event.nativeEvent.pageX - statusGesture.current.x)
+                const dy = Math.abs(event.nativeEvent.pageY - statusGesture.current.y)
+                if (dx > 8 && dx > dy) statusGesture.current.scrolled = true
+              }}
               style={({ pressed }) => [styles.statusBar, pressed && { opacity: 0.7 }]}
             >
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
+                onScrollBeginDrag={() => {
+                  statusGesture.current.scrolled = true
+                }}
                 style={{ flex: 1 }}
                 contentContainerStyle={styles.statusContent}
               >
@@ -1091,8 +1451,9 @@ export default function WorkspaceScreen() {
         visible={panelOpen}
         title={panelMode === "main" ? t("sessionSettings") : panelTitle(panelMode, t)}
         onClose={() => setPanelOpen(false)}
-        maxHeight={680}
+        height={panelHeight}
       >
+        <Animated.View style={{ opacity: panelFade, transform: [{ translateX: panelShift }] }}>
         {panelMode !== "main" ? (
           <Pressable
             accessibilityRole="button"
@@ -1160,26 +1521,24 @@ export default function WorkspaceScreen() {
         ) : null}
 
         {panelMode === "agent"
-          ? (agents ?? [])
-              .filter((agent) => agent.mode !== "subagent")
-              .map((agent) => (
-                <Pressable
-                  key={agent.id}
-                  accessibilityRole="button"
-                  onPress={() => void selectAgent(agent.id)}
-                  style={({ pressed }) => [styles.optionRow, pressed && { opacity: 0.7 }]}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.optionTitle}>{agent.name}</Text>
-                    {agent.description ? (
-                      <Text style={styles.optionBody} numberOfLines={2}>
-                        {agent.description}
-                      </Text>
-                    ) : null}
-                  </View>
-                  {agent.id === session?.agent ? <Icon name="check" size={18} color={colors.accent} /> : null}
-                </Pressable>
-              ))
+          ? displayAgents.map((agent) => (
+              <Pressable
+                key={agent.id}
+                accessibilityRole="button"
+                onPress={() => void selectAgent(agent.id)}
+                style={({ pressed }) => [styles.optionRow, pressed && { opacity: 0.7 }]}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.optionTitle}>{agent.name}</Text>
+                  {agent.description ? (
+                    <Text style={styles.optionBody} numberOfLines={2}>
+                      {agent.description}
+                    </Text>
+                  ) : null}
+                </View>
+                {agent.id === session?.agent ? <Icon name="check" size={18} color={colors.accent} /> : null}
+              </Pressable>
+            ))
           : null}
 
         {panelMode === "model" ? (
@@ -1338,6 +1697,7 @@ export default function WorkspaceScreen() {
             />
           </View>
         ) : null}
+        </Animated.View>
       </BottomSheet>
     </KeyboardAvoidingView>
   )
@@ -1497,15 +1857,18 @@ function mergeAssistantRuns(messages: SessionMessage[]): SessionMessage[] {
     const errors = run
       .map((message) => message.error?.message)
       .filter((message): message is string => Boolean(message))
+    const live = run.some((message) => message.metadata?.live === true)
     result.push({
       ...first,
       ...(content.length > 0 ? { content } : {}),
       ...(last.time ? { time: last.time } : {}),
       ...(errors.length > 0 ? { error: { message: errors.join("\n") } } : {}),
+      ...(live ? { metadata: { ...first.metadata, live: true } } : {}),
     })
     run = []
   }
   for (const message of messages) {
+    if (message.type !== "user" && message.type !== "assistant" && message.type !== "shell") continue
     if (message.type === "assistant") {
       run.push(message)
       continue
@@ -1515,6 +1878,24 @@ function mergeAssistantRuns(messages: SessionMessage[]): SessionMessage[] {
   }
   flush()
   return result
+}
+
+function queueOnly(items: InboxItem[]): InboxItem[] {
+  return items.filter((item) => item.type === "user")
+}
+
+function messageWeight(message: SessionMessage): number {
+  let weight = 0
+  for (const block of message.content ?? []) {
+    if (block.type === "text") weight += block.text.length
+    else if (block.type === "reasoning") weight += block.text.length
+    else weight += 16
+  }
+  return weight + (message.text?.length ?? 0)
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {}
 }
 
 function mergeMessages(incoming: SessionMessage[], existing: SessionMessage[]): SessionMessage[] {
@@ -1602,6 +1983,10 @@ const workspaceStyles = (colors: Palette) =>
     voiceText: { flex: 1, fontSize: 12, color: colors.muted },
     voiceStop: { fontSize: 12, fontWeight: "600", color: colors.accent },
     notice: { marginHorizontal: 6, marginBottom: 5, fontSize: 11.5, color: colors.muted },
+    commandPanel: { marginHorizontal: 4, marginBottom: 6, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface, overflow: "hidden" },
+    commandRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 11, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+    commandName: { fontSize: 12.5, fontWeight: "600", color: colors.accent, fontFamily: "monospace" },
+    commandDescription: { flex: 1, fontSize: 11, color: colors.faint },
     composerRow: { flexDirection: "row", alignItems: "flex-end", gap: 6 },
     input: {
       flex: 1,

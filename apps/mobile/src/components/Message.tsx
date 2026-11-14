@@ -35,25 +35,52 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
   if (message.type === "shell") {
     const status = message.status ?? "unknown"
     const running = status === "running"
+    const output = message.output?.output ?? ""
     return (
       <View
         style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 8,
-          paddingHorizontal: 10,
-          paddingVertical: 7,
           borderRadius: 10,
           backgroundColor: colors.surface,
           borderWidth: StyleSheet.hairlineWidth,
           borderColor: colors.border,
+          overflow: "hidden",
         }}
       >
-        <Icon name="terminal" size={14} color={running ? colors.warning : colors.faint} />
-        <Text style={{ flex: 1, fontSize: 12, color: colors.muted, fontFamily: "monospace" }} numberOfLines={1}>
-          {message.command ?? message.text ?? "shell"}
-        </Text>
-        <Text style={{ fontSize: 10.5, color: running ? colors.warning : colors.faint }}>{status}</Text>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 8,
+            paddingHorizontal: 10,
+            paddingVertical: 7,
+          }}
+        >
+          <Icon name="terminal" size={14} color={running ? colors.warning : colors.faint} />
+          <Text style={{ flex: 1, fontSize: 12, color: colors.muted, fontFamily: "monospace" }} numberOfLines={1}>
+            {message.command ?? message.text ?? "shell"}
+          </Text>
+          <Text style={{ fontSize: 10.5, color: running ? colors.warning : colors.faint }}>
+            {message.exit !== undefined ? `exit ${message.exit}` : status}
+          </Text>
+        </View>
+        {output.trim() ? (
+          <Text
+            style={{
+              paddingHorizontal: 10,
+              paddingBottom: 9,
+              borderTopWidth: StyleSheet.hairlineWidth,
+              borderTopColor: colors.border,
+              paddingTop: 7,
+              fontSize: 11.5,
+              lineHeight: 17,
+              color: colors.text,
+              fontFamily: "monospace",
+            }}
+            selectable
+          >
+            {output.length > 4_000 ? `${output.slice(0, 4_000)}\n…` : output}
+          </Text>
+        ) : null}
       </View>
     )
   }
@@ -61,13 +88,19 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
   if (message.type === "assistant") {
     const blocks = dedupeBlocks(message.content ?? [])
     const groups = groupBlocks(blocks)
+    const live = message.metadata?.live === true
     return (
       <View style={{ gap: 10 }}>
         {groups.map((group, index) =>
           group.kind === "text" ? (
-            <Markdown key={`text-${index}`} text={group.text} />
+            <View key={`text-${index}`}>
+              <Markdown text={group.text} />
+              {live && index === groups.length - 1 ? (
+                <Text style={{ fontSize: 13, color: colors.accent, marginTop: 2 }}>▍</Text>
+              ) : null}
+            </View>
           ) : (
-            <ActivityGroup key={`activity-${index}`} blocks={group.blocks} />
+            <ActivityGroup key={`activity-${index}`} blocks={group.blocks} live={live} />
           ),
         )}
         {message.error?.message ? (
@@ -102,11 +135,12 @@ function groupBlocks(blocks: AssistantContent[]): BlockGroup[] {
   return groups
 }
 
-function ActivityGroup({ blocks }: { blocks: AssistantContent[] }) {
+function ActivityGroup({ blocks, live = false }: { blocks: AssistantContent[]; live?: boolean }) {
   const { colors } = useTheme()
   const t = useT()
   const [open, setOpen] = useState(false)
-  const running = blocks.some((block) => block.type === "tool" && (block.state?.status ?? "running") === "running")
+  const running =
+    live || blocks.some((block) => block.type === "tool" && (block.state?.status ?? "running") === "running")
 
   if (blocks.length === 0) return null
   return (

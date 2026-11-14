@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react"
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "@/components/Button"
+import { FileTypeIcon } from "@/components/FileTypeIcon"
 import { OpencodeClient, type FileDiff } from "@/opencode/client"
 import { parsePatch, type DiffLineKind } from "@/opencode/diff"
 import { useConnections } from "@/stores/connections"
@@ -121,6 +122,7 @@ function DiffCard(props: { diff: FileDiff }) {
   return (
     <View style={styles.fileCard}>
       <View style={styles.fileHeader}>
+        <FileTypeIcon name={props.diff.file} size={18} />
         <Text style={styles.fileName} numberOfLines={1}>
           {props.diff.file}
         </Text>

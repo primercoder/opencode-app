@@ -9,6 +9,7 @@ export function BottomSheet(props: {
   title: string
   onClose: () => void
   children: React.ReactNode
+  height?: number
   maxHeight?: number
 }) {
   const { colors } = useTheme()
@@ -31,7 +32,8 @@ export function BottomSheet(props: {
             backgroundColor: colors.bg,
             borderTopLeftRadius: 22,
             borderTopRightRadius: 22,
-            maxHeight: props.maxHeight ?? 620,
+            ...(props.height ? { height: props.height } : {}),
+            maxHeight: props.height ?? props.maxHeight ?? 620,
             paddingBottom: insets.bottom + 8,
             borderTopWidth: StyleSheet.hairlineWidth,
             borderColor: colors.border,
@@ -54,6 +56,7 @@ export function BottomSheet(props: {
             </IconButton>
           </View>
           <ScrollView
+            style={{ flex: 1 }}
             contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 20 }}
             keyboardShouldPersistTaps="handled"
           >
