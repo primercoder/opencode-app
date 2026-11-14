@@ -35,6 +35,7 @@ export type IconName =
   | "noWrapText"
   | "arrowUp"
   | "activity"
+  | "bolt"
 
 export function Icon(props: {
   name: IconName
@@ -117,6 +118,9 @@ export function Icon(props: {
       ) : null}
       {props.name === "activity" ? (
         <Polyline points="3 12 7 12 9.5 5 13.5 19 16 12 21 12" {...common} />
+      ) : null}
+      {props.name === "bolt" ? (
+        <Path d="M13.5 2.5 4.5 13.5h5l-1 8 9-11.5h-5l1-7.5z" {...common} />
       ) : null}
       {props.name === "send" ? (
         <>

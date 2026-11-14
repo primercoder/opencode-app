@@ -37,6 +37,16 @@ export class SessionStreamController {
   private lastPump = 0
   private dirty = false
   private toolSeq = 0
+  private sessionId: string | undefined
+
+  setSession(sessionId: string | undefined): void {
+    if (this.sessionId === sessionId) return
+    this.sessionId = sessionId
+    this.entries.clear()
+    this.order = []
+    this.lastPump = 0
+    this.dirty = false
+  }
 
   reset(): void {
     this.entries.clear()
@@ -49,6 +59,8 @@ export class SessionStreamController {
     const type = event.type ?? ""
     if (!type.startsWith("session.") && !type.startsWith("message.")) return
     const data = record(event.data)
+    const eventSession = stringValue(data.sessionID)
+    if (this.sessionId && eventSession && eventSession !== this.sessionId) return
 
     if (
       type === "session.execution.succeeded" ||

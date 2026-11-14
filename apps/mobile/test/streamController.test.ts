@@ -34,6 +34,15 @@ describe("session stream presentation", () => {
     expect(content.some((block) => block.type === "text")).toBe(true)
   })
 
+  test("ignores events from other sessions", async () => {
+    const controller = new SessionStreamController()
+    controller.setSession("ses_a")
+    controller.ingest(event("session.text.delta", { sessionID: "ses_b", assistantMessageID: "m4", delta: "other" }))
+    controller.ingest(event("session.text.delta", { sessionID: "ses_a", assistantMessageID: "m5", delta: "mine" }))
+    controller.pump(Date.now())
+    expect(controller.snapshot().map((message) => message.id)).toEqual(["m5"])
+  })
+
   test("updates tool state without waiting for text pacing", async () => {
     const controller = new SessionStreamController()
     controller.ingest(event("session.tool.input.started", { assistantMessageID: "m3", name: "bash" }))

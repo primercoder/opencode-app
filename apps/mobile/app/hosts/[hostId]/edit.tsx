@@ -1,6 +1,17 @@
 import { router, useLocalSearchParams } from "expo-router"
-import { useEffect, useState } from "react"
-import { Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
+import { useEffect, useRef, useState } from "react"
+import {
+  ActivityIndicator,
+  Alert,
+  BackHandler,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import type { Transport } from "@ocremote/protocol"
 import { Icon } from "@/components/Icon"
@@ -9,8 +20,14 @@ import { TransportAddSheet } from "@/components/TransportAddSheet"
 import { Button, Card, Divider, IconButton, SectionLabel } from "@/components/ui"
 import { useT } from "@/i18n"
 import { useHosts } from "@/stores/hosts"
-import { closeRuntime, ensureConnection } from "@/transport/runtimes"
+import { closeRuntime, testTransport } from "@/transport/runtimes"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
+
+type RouteTest = {
+  status: "testing" | "ok" | "failed"
+  ms?: number
+  error?: string
+}
 
 export default function EditHostScreen() {
   const insets = useSafeAreaInsets()
@@ -31,11 +48,17 @@ export default function EditHostScreen() {
   const [addOpen, setAddOpen] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [testResult, setTestResult] = useState<string | null>(null)
-  const [testFailed, setTestFailed] = useState(false)
+  const [routeTests, setRouteTests] = useState<Record<string, RouteTest>>({})
+  const routeTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const relayRoute = routes.find((route) => route.kind === "relay")
   const relayRoom = relayRoute?.kind === "relay" ? relayRoute.room : ""
   const relayUrl = relayRoute?.kind === "relay" ? relayRoute.url : ""
+  const trimmedName = name.trim()
+  const dirty = Boolean(
+    host &&
+      (trimmedName !== host.name ||
+        routeSignature(routes) !== routeSignature(host.transports)),
+  )
 
   useEffect(() => {
     if (!hydrated) void hydrate()
@@ -46,6 +69,36 @@ export default function EditHostScreen() {
     setName(host.name)
     setRoutes(host.transports)
   }, [host?.id])
+
+  useEffect(
+    () => () => {
+      for (const timer of Object.values(routeTimers.current)) clearTimeout(timer)
+      routeTimers.current = {}
+    },
+    [],
+  )
+
+  const confirmLeave = () => {
+    if (!dirty) {
+      router.back()
+      return
+    }
+    Alert.alert(t("unsavedTitle"), t("unsavedBody"), [
+      { text: t("keepEditing"), style: "cancel" },
+      { text: t("discardChanges"), style: "destructive", onPress: () => router.back() },
+    ])
+  }
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!dirty) return false
+      confirmLeave()
+      return true
+    })
+    return () => subscription.remove()
+    // confirmLeave reads the latest dirty/name/routes through this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, name, routes, t])
 
   if (!hydrated) return <View style={styles.screen} />
 
@@ -60,17 +113,14 @@ export default function EditHostScreen() {
     )
   }
 
-  const save = async (options: { silent?: boolean } = {}) => {
+  const save = async () => {
+    if (!dirty || !trimmedName) return
     setBusy(true)
     setFormError(null)
     try {
-      if (name.trim() && name.trim() !== host.name) await renameHost(host.id, name.trim())
+      if (trimmedName !== host.name) await renameHost(host.id, trimmedName)
       await setTransports(host.id, routes)
       closeRuntime(host.id)
-      if (!options.silent) {
-        setTestResult(null)
-        setTestFailed(false)
-      }
     } catch (cause) {
       setFormError(cause instanceof Error ? cause.message : t("error"))
     } finally {
@@ -78,26 +128,32 @@ export default function EditHostScreen() {
     }
   }
 
-  const test = async () => {
-    setBusy(true)
-    setTestFailed(false)
-    setTestResult(null)
+  const test = async (route: Transport) => {
+    const key = routeKey(route)
+    const previous = routeTimers.current[key]
+    if (previous) clearTimeout(previous)
+    setRouteTests((current) => ({ ...current, [key]: { status: "testing" } }))
     try {
-      await save({ silent: true })
-      const started = Date.now()
-      const runtime = await ensureConnection(host.id, { force: true })
-      const response = await runtime.request({ method: "GET", path: "/api/info", timeoutMs: 8_000 })
-      if (response.status !== 200) throw new Error(`opencode HTTP ${response.status}`)
-      setTestResult(t("testOk", { ms: Date.now() - started }))
+      const ms = await testTransport(host.id, route)
+      setRouteTests((current) => ({ ...current, [key]: { status: "ok", ms } }))
     } catch (cause) {
-      setTestFailed(true)
-      setTestResult(cause instanceof Error ? cause.message : t("connectionFailed"))
-    } finally {
-      setBusy(false)
+      setRouteTests((current) => ({
+        ...current,
+        [key]: {
+          status: "failed",
+          error: cause instanceof Error ? cause.message : t("connectionFailed"),
+        },
+      }))
     }
+    routeTimers.current[key] = setTimeout(() => {
+      delete routeTimers.current[key]
+      setRouteTests((current) => {
+        const next = { ...current }
+        delete next[key]
+        return next
+      })
+    }, 3_000)
   }
-
-
 
   const confirmRemove = () => {
     Alert.alert(t("removeHost"), t("removeHostConfirm", { name: host.name }), [
@@ -119,7 +175,7 @@ export default function EditHostScreen() {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <View style={styles.header}>
-        <IconButton label={t("back")} onPress={() => router.back()}>
+        <IconButton label={t("back")} onPress={confirmLeave}>
           <Icon name="back" size={22} color={colors.text} />
         </IconButton>
         <Text style={styles.title}>{t("hostSettings")}</Text>
@@ -128,26 +184,20 @@ export default function EditHostScreen() {
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <SectionLabel>{t("name")}</SectionLabel>
-        <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
-          <TextInput
-            onChangeText={setName}
-            placeholder={t("name")}
-            placeholderTextColor={colors.faint}
-            style={styles.input}
-            value={name}
-          />
-          <Button
-            label={busy ? t("loading") : t("save")}
-            size="sm"
-            disabled={busy || !name.trim() || name.trim() === host.name}
-            onPress={() => void save()}
-          />
-        </View>
+        <TextInput
+          onChangeText={setName}
+          placeholder={t("name")}
+          placeholderTextColor={colors.faint}
+          style={styles.input}
+          value={name}
+        />
 
         <SectionLabel>{t("connectionMethods")}</SectionLabel>
         {routes.length === 0 ? <Text style={styles.hint}>{t("noTransports")}</Text> : null}
         <Card>
-          {routes.map((route, index) => (
+          {routes.map((route, index) => {
+            const routeTest = routeTests[routeKey(route)]
+            return (
             <View key={`${route.kind}-${index}`}>
               {index > 0 ? <Divider inset={16} /> : null}
               <View style={styles.routeRow}>
@@ -166,7 +216,37 @@ export default function EditHostScreen() {
                       {t("room")} {route.room}
                     </Text>
                   ) : null}
+                  {routeTest?.status === "ok" ? (
+                    <Text style={[styles.routeTestText, { color: colors.success }]}>
+                      {t("testOk", { ms: routeTest.ms ?? 0 })}
+                    </Text>
+                  ) : routeTest?.status === "failed" ? (
+                    <Text style={[styles.routeTestText, { color: colors.danger }]} numberOfLines={2}>
+                      {routeTest.error ?? t("connectionFailed")}
+                    </Text>
+                  ) : null}
                 </View>
+                <IconButton
+                  label={t("testConnection")}
+                  disabled={routeTest?.status === "testing"}
+                  onPress={() => void test(route)}
+                >
+                  {routeTest?.status === "testing" ? (
+                    <ActivityIndicator size="small" color={colors.accent} />
+                  ) : (
+                    <Icon
+                      name="bolt"
+                      size={17}
+                      color={
+                        routeTest?.status === "ok"
+                          ? colors.success
+                          : routeTest?.status === "failed"
+                            ? colors.danger
+                            : colors.faint
+                      }
+                    />
+                  )}
+                </IconButton>
                 <IconButton
                   label={t("removeTransport")}
                   onPress={() => setRoutes((current) => current.filter((_, item) => item !== index))}
@@ -175,7 +255,8 @@ export default function EditHostScreen() {
                 </IconButton>
               </View>
             </View>
-          ))}
+            )
+          })}
         </Card>
 
         <View style={{ marginTop: 10 }}>
@@ -184,23 +265,17 @@ export default function EditHostScreen() {
 
         {relayRoom ? (
           <RelayAccessCard key={relayRoom} room={relayRoom} url={relayUrl} compact />
-        ) : (
-          <>
-            <SectionLabel>{t("relayAccessTitle")}</SectionLabel>
-            <Text style={styles.hint}>{t("relayNeedsPairing")}</Text>
-          </>
-        )}
+        ) : null}
 
         {formError ? <Text style={styles.error}>{formError}</Text> : null}
 
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <Button label={busy ? t("testing") : t("testConnection")} size="sm" variant="outline" disabled={busy} onPress={() => void test()} />
-          <Button label={t("save")} size="sm" disabled={busy} onPress={() => void save()} />
-          {testResult ? (
-            <Text style={[styles.testResult, testFailed && { color: colors.danger }]} numberOfLines={2}>
-              {testResult}
-            </Text>
-          ) : null}
+          <Button
+            label={busy ? t("loading") : t("save")}
+            size="sm"
+            disabled={busy || !dirty || !trimmedName}
+            onPress={() => void save()}
+          />
         </View>
 
         <SectionLabel>{t("hostFingerprint")}</SectionLabel>
@@ -239,6 +314,14 @@ export default function EditHostScreen() {
   )
 }
 
+function routeKey(route: Transport): string {
+  return `${route.kind}|${route.url}|${route.kind === "relay" ? route.room : ""}`
+}
+
+function routeSignature(routes: Transport[]): string {
+  return routes.map((route) => routeKey(route)).join("\n")
+}
+
 function formatFingerprint(value: string): string {
   return value.toUpperCase().match(/.{1,4}/gu)?.join(" ") ?? value.toUpperCase()
 }
@@ -258,7 +341,7 @@ const editStyles = (colors: Palette) =>
     title: { fontSize: 17, fontWeight: "700", color: colors.text },
     content: { paddingHorizontal: 16, paddingBottom: 44 },
     input: {
-      flex: 1,
+      alignSelf: "stretch",
       minHeight: 42,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
@@ -276,7 +359,7 @@ const editStyles = (colors: Palette) =>
     routeMeta: { fontSize: 11, color: colors.faint, marginTop: 2 },
     formLabel: { fontSize: 11.5, fontWeight: "600", color: colors.faint },
     error: { fontSize: 12.5, color: colors.danger, marginTop: 8 },
-    testResult: { flex: 1, fontSize: 11.5, color: colors.success },
+    routeTestText: { fontSize: 10.5, lineHeight: 15, marginTop: 3 },
     fingerprint: { fontSize: 17, fontWeight: "700", letterSpacing: 1.4, color: colors.text },
     emptyTitle: { fontSize: 19, fontWeight: "600", color: colors.text },
   })

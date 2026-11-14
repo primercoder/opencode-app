@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react"
-import { Animated, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
+import { useEffect, useMemo, useState } from "react"
+import { Animated, Easing, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Icon } from "@/components/Icon"
 import { IconButton } from "@/components/ui"
@@ -12,6 +12,9 @@ import { useTheme } from "@/theme"
 
 export function SessionDrawer(props: {
   visible: boolean
+  active: boolean
+  progress: Animated.Value
+  width: number
   hostId: string
   hostName: string
   currentSessionId?: string
@@ -25,44 +28,53 @@ export function SessionDrawer(props: {
   const t = useT()
   const language = usePreferences((state) => state.language)
   const insets = useSafeAreaInsets()
-  const index = useSessionIndex(props.hostId, props.visible)
+  const index = useSessionIndex(props.hostId, props.active)
   const [query, setQuery] = useState("")
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
-  const slide = useRef(new Animated.Value(-360)).current
-  const fade = useRef(new Animated.Value(0)).current
-  const [mounted, setMounted] = useState(props.visible)
 
   useEffect(() => {
-    if (props.visible) {
-      setMounted(true)
-      setQuery("")
-      Animated.parallel([
-        Animated.timing(slide, {
-          toValue: 0,
-          duration: 250,
-          easing: Easing.out(Easing.cubic),
-          isInteraction: false,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fade, { toValue: 1, duration: 220, useNativeDriver: true }),
-      ]).start()
-    } else {
-      Animated.parallel([
-        Animated.timing(slide, {
-          toValue: -360,
-          duration: 220,
-          easing: Easing.in(Easing.cubic),
-          isInteraction: false,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fade, { toValue: 0, duration: 200, useNativeDriver: true }),
-      ]).start(({ finished }) => {
-        if (finished) setMounted(false)
-      })
-    }
-  }, [props.visible, slide, fade])
+    if (props.visible) setQuery("")
+  }, [props.visible])
 
-  if (!mounted) return null
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+          props.visible &&
+          Math.abs(gesture.dx) > 7 &&
+          Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.4,
+        onPanResponderMove: (_event, gesture) => {
+          props.progress.setValue(clamp(1 + gesture.dx / props.width, 0, 1))
+        },
+        onPanResponderRelease: (_event, gesture) => {
+          const next = clamp(1 + gesture.dx / props.width, 0, 1)
+          if (next < 0.72 || gesture.vx < -0.35) {
+            props.onClose()
+            return
+          }
+          Animated.timing(props.progress, {
+            toValue: 1,
+            duration: 160,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }).start()
+        },
+        onPanResponderTerminate: () => {
+          Animated.timing(props.progress, {
+            toValue: 1,
+            duration: 160,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }).start()
+        },
+      }),
+    [props.onClose, props.progress, props.visible, props.width],
+  )
+
+  const translateX = props.progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-props.width, 0],
+  })
 
   const value = query.trim().toLowerCase()
   const filteredGroups: SessionGroup[] = value
@@ -83,27 +95,25 @@ export function SessionDrawer(props: {
     : index.groups
 
   return (
-    <Modal transparent visible={mounted} animationType="none" onRequestClose={props.onClose} statusBarTranslucent>
-      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: colors.overlap, opacity: fade }]}>
+    <View pointerEvents={props.visible ? "box-none" : "none"} style={styles.overlay}>
+      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: colors.overlap, opacity: props.progress }]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={props.onClose} />
       </Animated.View>
       <Animated.View
+        {...pan.panHandlers}
         renderToHardwareTextureAndroid
         shouldRasterizeIOS
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: 330,
-          maxWidth: "88%",
-          backgroundColor: colors.bg,
-          borderRightWidth: StyleSheet.hairlineWidth,
-          borderRightColor: colors.border,
-          paddingTop: insets.top + 8,
-          paddingBottom: insets.bottom + 8,
-          transform: [{ translateX: slide }],
-        }}
+        style={[
+          styles.panel,
+          {
+            width: props.width,
+            backgroundColor: colors.bg,
+            borderRightColor: colors.border,
+            paddingTop: insets.top + 8,
+            paddingBottom: insets.bottom + 8,
+            transform: [{ translateX }],
+          },
+        ]}
       >
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingBottom: 10, gap: 8 }}>
           <View style={{ flex: 1 }}>
@@ -256,7 +266,7 @@ export function SessionDrawer(props: {
           )}
         </ScrollView>
       </Animated.View>
-    </Modal>
+    </View>
   )
 }
 
@@ -315,3 +325,26 @@ function SessionRow(props: {
     </Pressable>
   )
 }
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
+}
+
+const styles = StyleSheet.create({
+  overlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 20,
+    elevation: 20,
+  },
+  panel: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRightWidth: StyleSheet.hairlineWidth,
+  },
+})

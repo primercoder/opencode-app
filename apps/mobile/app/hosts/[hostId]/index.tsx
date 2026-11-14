@@ -3,8 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Animated,
+  BackHandler,
   Easing,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   PanResponder,
   Platform,
@@ -71,9 +73,26 @@ type CommandChoice = {
   run: () => void
 }
 
+/**
+ * These are app-level actions, not OpenCode server commands. The server only
+ * exposes commands such as init/review/goal, and `compact` uses a separate API.
+ */
+const LOCAL_COMMAND_NAMES = new Set([
+  "new",
+  "sessions",
+  "agent",
+  "model",
+  "reasoning",
+  "mcp",
+  "skills",
+  "compact",
+  "stop",
+  "help",
+])
+
 export default function WorkspaceScreen() {
   const insets = useSafeAreaInsets()
-  const { height: windowHeight } = useWindowDimensions()
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions()
   const panelHeight = Math.round(windowHeight * 0.7)
   const params = useLocalSearchParams<{ hostId: string; session?: string; new?: string }>()
   const hostId = params.hostId
@@ -106,6 +125,10 @@ export default function WorkspaceScreen() {
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [showJump, setShowJump] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [drawerDragging, setDrawerDragging] = useState(false)
+  const drawerProgress = useRef(new Animated.Value(0)).current
+  const drawerOpenRef = useRef(false)
+  const drawerWidth = Math.min(330, Math.round(windowWidth * 0.88))
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelMode, setPanelMode] = useState<PanelMode>("main")
   const panelFade = useRef(new Animated.Value(1)).current
@@ -128,17 +151,72 @@ export default function WorkspaceScreen() {
   const listRef = useRef<FlatList<SessionMessage>>(null)
   const inputRef = useRef<TextInput>(null)
   const statusGesture = useRef({ x: 0, y: 0, scrolled: false })
+
+  const openDrawer = useCallback(() => {
+    drawerOpenRef.current = true
+    setDrawerOpen(true)
+    Keyboard.dismiss()
+    Animated.timing(drawerProgress, {
+      toValue: 1,
+      duration: 240,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start()
+  }, [drawerProgress])
+
+  const closeDrawer = useCallback(() => {
+    drawerOpenRef.current = false
+    Animated.timing(drawerProgress, {
+      toValue: 0,
+      duration: 200,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) setDrawerOpen(false)
+    })
+  }, [drawerProgress])
+
+  const finishDrawerDrag = useCallback(
+    (dx: number, vx: number) => {
+      setDrawerDragging(false)
+      const next = Math.max(0, Math.min(1, dx / drawerWidth))
+      if (next > 0.32 || vx > 0.35) openDrawer()
+      else closeDrawer()
+    },
+    [closeDrawer, drawerWidth, openDrawer],
+  )
+
   const drawerSwipe = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gesture) =>
-          gesture.dx > 42 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.6,
-        onPanResponderRelease: (_event, gesture) => {
-          if (gesture.dx > 80) setDrawerOpen(true)
+        // Capture from the content ScrollView once the finger is clearly moving
+        // right, then drive the drawer position directly from dx.
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+          !drawerOpenRef.current &&
+          gesture.dx > 10 &&
+          Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.35,
+        onPanResponderGrant: () => {
+          setDrawerDragging(true)
+          drawerProgress.setValue(0)
+          Keyboard.dismiss()
         },
+        onPanResponderMove: (_event, gesture) => {
+          drawerProgress.setValue(Math.max(0, Math.min(1, gesture.dx / drawerWidth)))
+        },
+        onPanResponderRelease: (_event, gesture) => finishDrawerDrag(gesture.dx, gesture.vx),
+        onPanResponderTerminate: () => finishDrawerDrag(0, 0),
       }),
-    [],
+    [drawerProgress, drawerWidth, finishDrawerDrag],
   )
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (!drawerOpenRef.current) return false
+      closeDrawer()
+      return true
+    })
+    return () => subscription.remove()
+  }, [closeDrawer])
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const sessionIdRef = useRef(sessionId)
@@ -232,11 +310,11 @@ export default function WorkspaceScreen() {
 
   useEffect(() => {
     if (!ready || !sessionId) {
-      streamRef.current.reset()
+      streamRef.current.setSession(undefined)
       setLiveMessages([])
       return
     }
-    streamRef.current.reset()
+    streamRef.current.setSession(sessionId)
     const timer = setInterval(() => {
       if (streamRef.current.pump()) setLiveMessages(streamRef.current.snapshot())
     }, STREAM_FRAME_MS)
@@ -402,7 +480,9 @@ export default function WorkspaceScreen() {
       // of only after leaving and re-entering the screen.
       const shellEvent = event.type.startsWith("shell.")
       const contentEvent =
-        /^(?:message\.|session\.(?:text|reasoning|tool|step|assistant)\.)/u.test(event.type) || shellEvent
+        /^(?:message\.|session\.(?:text|reasoning|tool|step|assistant|compaction)\.)/u.test(event.type) ||
+        event.type === "session.synthetic" ||
+        shellEvent
       const sessionEvent = (event.type.startsWith("session.") || shellEvent) && !contentEvent
       const kind = contentEvent
         ? "message"
@@ -691,7 +771,16 @@ export default function WorkspaceScreen() {
       if (text.startsWith("/")) {
         const match = /^\/([^\s]+)\s*([\s\S]*)$/u.exec(text)
         if (!match) return
-        await client.runCommand(sessionId, match[1] as string, match[2] ?? "")
+        const name = match[1] as string
+        const args = (match[2] ?? "").trim()
+        const local = LOCAL_COMMAND_NAMES.has(name)
+          ? commandChoices.find((command) => command.name === name)
+          : undefined
+        if (local) {
+          local.run()
+          return
+        }
+        await client.runCommand(sessionId, name, args)
         setTimeout(() => void loadSession(sessionId), 350)
         return
       }
@@ -951,7 +1040,7 @@ export default function WorkspaceScreen() {
       {...drawerSwipe.panHandlers}
     >
       <View style={styles.header}>
-        <IconButton label={t("sessions")} onPress={() => setDrawerOpen(true)}>
+        <IconButton label={t("sessions")} onPress={openDrawer}>
           <Icon name="menu" size={22} color={colors.text} />
         </IconButton>
         <View style={styles.headerCenter}>
@@ -1272,11 +1361,14 @@ export default function WorkspaceScreen() {
 
       <SessionDrawer
         visible={drawerOpen}
+        active={drawerOpen || drawerDragging}
+        progress={drawerProgress}
+        width={drawerWidth}
         hostId={hostId}
         hostName={host.name}
         statusLabel={statusLabel}
         currentSessionId={sessionId}
-        onClose={() => setDrawerOpen(false)}
+        onClose={closeDrawer}
         onSelect={(next) => selectSession(next.id)}
         onNewSession={() => void openProjectPicker()}
         onSettings={() => router.push({ pathname: "/hosts/[hostId]/edit", params: { hostId } })}
@@ -1760,7 +1852,14 @@ function mergeAssistantRuns(messages: SessionMessage[]): SessionMessage[] {
     run = []
   }
   for (const message of messages) {
-    if (message.type !== "user" && message.type !== "assistant" && message.type !== "shell") continue
+    if (
+      message.type !== "user" &&
+      message.type !== "assistant" &&
+      message.type !== "shell" &&
+      message.type !== "compaction"
+    ) {
+      continue
+    }
     if (message.type === "assistant") {
       run.push(message)
       continue

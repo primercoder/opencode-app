@@ -32,6 +32,10 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
     )
   }
 
+  if (message.type === "compaction") {
+    return <CompactionView message={message} />
+  }
+
   if (message.type === "shell") {
     const status = message.status ?? "unknown"
     const running = status === "running"
@@ -112,6 +116,87 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
 
   return null
 })
+
+function CompactionView({ message }: { message: SessionMessage }) {
+  const { colors } = useTheme()
+  const t = useT()
+  const [open, setOpen] = useState(false)
+  const running = message.status === "running"
+  const failed = message.status === "failed"
+  const summary = message.summary?.trim() ?? ""
+  const status = failed
+    ? t("compactionFailed")
+    : running
+      ? t("compactionRunning")
+      : t("compactionCompleted")
+  const reason = message.reason === "auto" ? t("compactionAuto") : t("compactionManual")
+  const tone = failed ? colors.danger : running ? colors.warning : colors.success
+
+  return (
+    <View
+      style={{
+        borderRadius: 12,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
+        overflow: "hidden",
+      }}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open, disabled: !summary }}
+        disabled={!summary}
+        onPress={() => setOpen((value) => !value)}
+        style={({ pressed }) => [
+          { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 11, paddingVertical: 9 },
+          pressed && { opacity: 0.7 },
+        ]}
+      >
+        {running ? (
+          <ActivityIndicator size="small" color={tone} />
+        ) : (
+          <Icon name={failed ? "close" : "bolt"} size={15} color={tone} />
+        )}
+        <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: tone }}>{status}</Text>
+        <Text style={{ fontSize: 10.5, color: colors.faint }}>{reason}</Text>
+        {summary ? <Icon name={open ? "chevronDown" : "chevronRight"} size={14} color={colors.faint} /> : null}
+      </Pressable>
+      {failed && message.error?.message ? (
+        <Text
+          style={{
+            paddingHorizontal: 11,
+            paddingBottom: 10,
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: colors.border,
+            paddingTop: 8,
+            fontSize: 12,
+            lineHeight: 18,
+            color: colors.danger,
+          }}
+        >
+          {message.error.message}
+        </Text>
+      ) : null}
+      {open && summary ? (
+        <Text
+          selectable
+          style={{
+            paddingHorizontal: 11,
+            paddingBottom: 11,
+            borderTopWidth: StyleSheet.hairlineWidth,
+            borderTopColor: colors.border,
+            paddingTop: 8,
+            fontSize: 12.5,
+            lineHeight: 19,
+            color: colors.muted,
+          }}
+        >
+          {summary}
+        </Text>
+      ) : null}
+    </View>
+  )
+}
 
 type BlockGroup = { kind: "text"; text: string } | { kind: "activity"; blocks: AssistantContent[] }
 

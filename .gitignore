@@ -89,6 +89,7 @@ Thumbs.db
 
 # Local remediation/design notes
 /REMEDIATION_PLAN.md
+/FIX_PLAN.zh-CN.md
 
 # Local-only encryption flow document
 /encryption-flow.html

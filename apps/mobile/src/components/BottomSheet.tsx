@@ -56,7 +56,11 @@ export function BottomSheet(props: {
             </IconButton>
           </View>
           <ScrollView
-            style={{ flex: 1 }}
+            // A `flex: 1` scroll view inside an auto-height sheet collapses to
+            // zero height under Yoga. Only stretch when the caller supplied a
+            // fixed height; otherwise let the content determine the sheet size
+            // and shrink it under maxHeight.
+            style={props.height ? { flex: 1 } : { flexGrow: 0, flexShrink: 1 }}
             contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 20 }}
             keyboardShouldPersistTaps="handled"
           >

@@ -88,6 +88,44 @@ describe("OpencodeClient", () => {
     })
   })
 
+  test("always sends command text, even without arguments", async () => {
+    const { client: api, calls } = client()
+    await api.runCommand("ses_1", "init")
+    await api.runCommand("ses_1", "review", "commit")
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      path: "/api/session/ses_1/command",
+      body: '{"name":"init","text":""}',
+    })
+    expect(calls[1]?.body).toBe('{"name":"review","text":"commit"}')
+  })
+
+  test("compacts with an empty object payload", async () => {
+    const { client: api, calls } = client()
+    await api.compactSession("ses_1")
+    expect(calls[0]).toMatchObject({
+      method: "POST",
+      path: "/api/session/ses_1/compact",
+      body: "{}",
+    })
+  })
+
+  test("surfaces the server error message instead of a bare status", async () => {
+    const runtime = {
+      async request() {
+        return {
+          status: 404,
+          headers: {},
+          body: '{"_tag":"CommandNotFoundError","command":"compact","message":"Command not found: compact"}',
+        }
+      },
+    } as unknown as HostRuntime
+    const api = new OpencodeClient(runtime)
+    await expect(api.runCommand("ses_1", "compact", "")).rejects.toThrow(
+      "Command not found: compact",
+    )
+  })
+
   test("loads the session diff", async () => {
     const { client: api, calls } = client('{"data":[{"file":"a.ts","patch":"+x","additions":1,"deletions":0,"status":"modified"}]}')
     const diffs = await api.sessionDiff("ses_1")

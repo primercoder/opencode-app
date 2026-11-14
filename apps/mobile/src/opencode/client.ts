@@ -179,6 +179,8 @@ export type SessionMessage = {
   shellID?: string
   exit?: number
   output?: { output?: string; cursor?: number; size?: number; truncated?: boolean }
+  summary?: string
+  reason?: "manual" | "auto"
   metadata?: Record<string, unknown>
 }
 
@@ -254,10 +256,11 @@ export class OpencodeClient {
     return result.data
   }
 
-  async runCommand(sessionId: string, name: string, text: string): Promise<void> {
+  async runCommand(sessionId: string, name: string, text = ""): Promise<void> {
+    // OpenCode 2 requires `text` even when the command has no arguments.
     await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/command`, {
       name,
-      ...(text ? { text } : {}),
+      text,
     })
   }
 
@@ -266,7 +269,8 @@ export class OpencodeClient {
   }
 
   async compactSession(sessionId: string): Promise<void> {
-    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/compact`)
+    // The route requires an object payload even though every field is optional.
+    await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/compact`, {})
   }
 
   async listInbox(sessionId: string): Promise<InboxItem[]> {
@@ -418,11 +422,41 @@ export class OpencodeClient {
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     })
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`opencode ${method} ${path} returned HTTP ${response.status}`)
+      throw new Error(apiError(method, path, response.status, response.body))
     }
     if (!response.body) return undefined as T
     return JSON.parse(response.body) as T
   }
+}
+
+/**
+ * OpenCode returns `{ message, _tag, error: { message } }` for API failures.
+ * Prefer the server message so the UI can show "Command not found: x" instead
+ * of a long request path.
+ */
+function apiError(method: string, path: string, status: number, body: string): string {
+  let detail: string | undefined
+  try {
+    const parsed = JSON.parse(body) as {
+      message?: unknown
+      error?: { message?: unknown } | string
+    }
+    if (typeof parsed.message === "string" && parsed.message.trim()) detail = parsed.message
+    else if (typeof parsed.error === "string") detail = parsed.error
+    else if (
+      typeof parsed.error === "object" &&
+      parsed.error !== null &&
+      typeof parsed.error.message === "string"
+    ) {
+      detail = parsed.error.message
+    }
+  } catch {
+    // Non-JSON bodies fall back to the HTTP status.
+  }
+  const clean = detail?.replace(/\s+/gu, " ").trim()
+  return clean
+    ? `opencode ${method} ${path} returned HTTP ${status}: ${clean}`
+    : `opencode ${method} ${path} returned HTTP ${status}`
 }
 
 function withDirectory(path: string, directory: string | undefined): string {

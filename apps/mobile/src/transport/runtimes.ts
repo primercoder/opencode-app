@@ -42,6 +42,61 @@ export function getRuntime(hostId: string): HostRuntime | undefined {
   return runtimes.get(hostId)
 }
 
+/**
+ * Opens a short-lived session over one saved transport and checks opencode.
+ * It intentionally does not touch the active runtime so a user can test a
+ * route that is not currently selected.
+ */
+export async function testTransport(
+  hostId: string,
+  transport: Transport,
+  timeoutMs = 6_000,
+): Promise<number> {
+  const host = useHosts.getState().getHost(hostId)
+  if (!host) throw new HostError("network", "主机不存在")
+  const credentials = await credentialsFor(hostId)
+  if (!credentials) throw new HostError("auth", "这台主机的设备令牌已丢失，请重新配对")
+  const relayAuth = await relayAuthFor([transport])
+  const runtime = new HostRuntime({
+    hostId,
+    hostPublicKey: host.publicKey,
+    candidates: candidateUrls([transport]),
+    deviceId: credentials.deviceId,
+    token: credentials.token,
+    device: deviceInfo,
+    autoReconnect: false,
+    ...(relayAuth ? { relayAuth } : {}),
+  })
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const started = Date.now()
+    await Promise.race([
+      runtime.connect(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new HostError("timeout", "连接测试超时")),
+          timeoutMs,
+        )
+      }),
+    ])
+    const response = await runtime.request({
+      method: "GET",
+      path: "/api/info",
+      timeoutMs: Math.max(1_000, timeoutMs - (Date.now() - started)),
+    })
+    if (response.status !== 200) {
+      throw new HostError("http", `opencode returned HTTP ${response.status}`, {
+        status: response.status,
+      })
+    }
+    return Date.now() - started
+  } finally {
+    if (timer) clearTimeout(timer)
+    runtime.disconnect()
+  }
+}
+
 export function closeRuntime(hostId: string): void {
   eventStreams.get(hostId)?.stop()
   eventStreams.delete(hostId)

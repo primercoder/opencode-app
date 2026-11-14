@@ -78,7 +78,6 @@ export function RelayAccessCard(props: {
   return (
     <Card style={{ padding: props.compact ? 12 : 14, gap: 8, marginTop: 10 }}>
       <Text style={styles.title}>{t("relayAccessTitle")}</Text>
-      <Text style={styles.hint}>{t("relayAccessHint")}</Text>
       {enrolled ? (
         <View style={styles.status}>
           <Text style={styles.ok}>{t("relayEnrolled")}</Text>
