@@ -20,3 +20,11 @@ export async function saveLastSession(hostId: string, sessionId: string): Promis
     // best effort
   }
 }
+
+export async function clearLastSession(hostId: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(key(hostId))
+  } catch {
+    // best effort
+  }
+}

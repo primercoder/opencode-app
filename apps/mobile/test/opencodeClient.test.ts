@@ -74,6 +74,18 @@ describe("OpencodeClient", () => {
     expect(calls[1]?.path).toBe("/api/fs/read/src/a%20b.ts?location%5Bdirectory%5D=%2Fwork%2Fproject")
   })
 
+  test("attaches selected skills to a prompt", async () => {
+    const { client: api, calls } = client()
+    await api.prompt("ses_1", {
+      text: "use a skill",
+      skills: [{ id: "sk_1" }],
+    })
+    expect(JSON.parse(calls[0]?.body ?? "")).toEqual({
+      text: "use a skill",
+      skills: [{ id: "sk_1" }],
+    })
+  })
+
   test("sends prompt files and metadata", async () => {
     const { client: api, calls } = client()
     await api.prompt("ses_1", {

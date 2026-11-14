@@ -128,14 +128,22 @@ visits reopen the last session you were reading.
 ### Commands
 
 - `/` at the start of an empty message opens the command palette.
-- Built-in commands include `/new`, `/sessions`, `/agent`, `/model`,
-  `/reasoning`, `/mcp`, `/skills`, `/compact`, `/stop`, `/help`.
+- `/models`, `/agents`, `/mcps` and `/variants` open the matching picker sheet.
+- `/skills` opens the skill list; selected skills are attached to the next
+  message sent from the phone.
+- `/sessions`, `/new`, `/compact`, `/status`, `/diff` and `/help` are handled
+  locally.
 - Server commands from opencode are also listed, such as `/init`, `/review` and
   `/goal`.
+- Terminal-only TUI commands are shown greyed out and disabled instead of being
+  sent to the server.
+- Aliases such as `/model`, `/agent`, `/mcp`, `/thinking`, `/effort` and
+  `/resume` are accepted.
 - `!command` runs a shell command in the session working directory and shows
   the command, exit code and output.
 - While a session is active, normal messages are queued and sent when the
-  session becomes idle.
+  session becomes idle. Agent/model changes made in another client refresh the
+  phone through the event stream without leaving the screen.
 
 ### Code review
 

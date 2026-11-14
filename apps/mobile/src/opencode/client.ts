@@ -399,6 +399,7 @@ export class OpencodeClient {
   async prompt(sessionId: string, input: string | {
     text: string
     files?: Array<{ uri: string; mime: string; name?: string }>
+    skills?: Array<{ id: string; mention?: { start: number; end: number; text: string } }>
     metadata?: Record<string, unknown>
     delivery?: "queue" | "steer"
   }): Promise<void> {

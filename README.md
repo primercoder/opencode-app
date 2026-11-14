@@ -78,12 +78,16 @@ adb install ocremote-0.1.0-android-arm64-v8a.apk
 | 输入 | 行为 |
 |---|---|
 | `/` | 打开命令面板 |
-| `/compact` | 压缩当前会话上下文 |
-| `/new`、`/sessions`、`/agent`、`/model`、`/reasoning`、`/mcp`、`/skills`、`/stop`、`/help` | 执行手机端操作 |
+| `/models`、`/agents`、`/mcps`、`/variants` | 弹出模型、Agent、MCP、思考深度面板 |
+| `/skills` | 弹出 Skill 列表；选中的 Skill 附加到下一次发送 |
+| `/sessions`、`/new`、`/compact`、`/status`、`/diff`、`/help` | 会话切换、新建、压缩、状态、Diff 和命令帮助 |
 | `/init`、`/review`、`/goal`、其他服务端命令 | 调用 opencode 命令接口 |
 | `!命令` | 在会话工作目录执行 shell 命令 |
+| 手机端不支持的 TUI 命令 | 在面板中置灰失活，不会发送请求 |
 
-会话运行中继续发送普通消息会排队，等当前任务结束后自动发送。
+`/model`、`/agent`、`/mcp`、`/thinking`、`/effort`、`/resume` 等是兼容别名。
+
+会话运行中继续发送普通消息会排队，等当前任务结束后自动发送。其他终端切换 Agent、模型或修改配置时，手机端会通过事件流自动刷新，不需要切换页面。
 
 ### 语音
 

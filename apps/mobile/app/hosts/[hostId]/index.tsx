@@ -46,6 +46,13 @@ import {
 } from "@/opencode/client"
 import type { FormAnswers } from "@/opencode/forms"
 import { contextUsage, formatTokens, runningActivities, type RunningActivity } from "@/features/session/activity"
+import {
+  CORE_COMMANDS,
+  findCoreCommand,
+  isUnavailableCommand,
+  UNAVAILABLE_COMMANDS,
+  type CoreCommandAction,
+} from "@/features/session/commands"
 import { SessionStreamController, STREAM_FRAME_MS } from "@/features/session/streamController"
 import { invalidateSessionIndex } from "@/features/sessions/useSessionIndex"
 import { listMobileModels } from "@/features/voice/models"
@@ -60,35 +67,26 @@ import {
   type VoiceEnginePreference,
 } from "@/stores/preferences"
 import { useForeground } from "@/lib/useForeground"
-import { loadLastSession, saveLastSession } from "@/storage/lastSession"
+import { clearLastSession, loadLastSession, saveLastSession } from "@/storage/lastSession"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
 import { useConnections } from "@/stores/connections"
 import { useHosts } from "@/stores/hosts"
 
-type PanelMode = "main" | "agent" | "model" | "variant" | "mcp" | "skill" | "voice"
+type PanelMode = "main" | "agent" | "model" | "variant" | "mcp" | "skill" | "voice" | "status" | "help"
 
 type CommandChoice = {
   name: string
+  aliases: string[]
   description: string
+  category: "session" | "agent" | "system" | "server" | "unavailable"
+  enabled: boolean
   run: () => void
 }
 
-/**
- * These are app-level actions, not OpenCode server commands. The server only
- * exposes commands such as init/review/goal, and `compact` uses a separate API.
- */
-const LOCAL_COMMAND_NAMES = new Set([
-  "new",
-  "sessions",
-  "agent",
-  "model",
-  "reasoning",
-  "mcp",
-  "skills",
-  "compact",
-  "stop",
-  "help",
-])
+type StagedSkill = {
+  id: string
+  name: string
+}
 
 export default function WorkspaceScreen() {
   const insets = useSafeAreaInsets()
@@ -142,6 +140,8 @@ export default function WorkspaceScreen() {
   const [models, setModels] = useState<ModelInfo[] | null>(null)
   const [mcp, setMcp] = useState<McpServer[] | null>(null)
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
+  const [selectedSkills, setSelectedSkills] = useState<StagedSkill[]>([])
+  const [catalogRevision, setCatalogRevision] = useState(0)
   const [optionsBusy, setOptionsBusy] = useState(false)
   const [optionError, setOptionError] = useState<string | null>(null)
   const [modelQuery, setModelQuery] = useState("")
@@ -232,7 +232,7 @@ export default function WorkspaceScreen() {
   }, [hostId])
 
   useEffect(() => {
-    if (!ready || models) return
+    if (!ready) return
     let cancelled = false
     void (async () => {
       try {
@@ -246,7 +246,7 @@ export default function WorkspaceScreen() {
     return () => {
       cancelled = true
     }
-  }, [hostId, models, ready])
+  }, [catalogRevision, hostId, ready])
 
   useEffect(() => {
     const next = typeof params.session === "string" ? params.session : undefined
@@ -255,6 +255,7 @@ export default function WorkspaceScreen() {
 
   useEffect(() => {
     setVoiceOverride(undefined)
+    setSelectedSkills([])
     void loadSessionVoiceEngine(sessionId ?? "").then(setVoiceOverride).catch(() => undefined)
   }, [sessionId])
 
@@ -276,7 +277,7 @@ export default function WorkspaceScreen() {
     return () => {
       cancelled = true
     }
-  }, [hostId, ready, session?.location?.directory, sessionId])
+  }, [catalogRevision, hostId, ready, session?.location?.directory, sessionId])
 
   useEffect(() => {
     void listMobileModels()
@@ -452,12 +453,12 @@ export default function WorkspaceScreen() {
   )
 
   useEffect(() => {
-    if (!ready || !both(hostId, sessionId)) return
+    if (!ready || !hostId) return
     let timer: ReturnType<typeof setTimeout> | undefined
     let lastRefresh = 0
     const pendingKinds = new Set<string>()
     const scheduleRefresh = () => {
-      if (timer) return
+      if (timer || !sessionIdRef.current) return
       // Throttle rather than debounce: token deltas can arrive continuously for
       // many seconds, and resetting a timer on every delta would postpone the
       // transcript update until the turn is already over.
@@ -471,26 +472,79 @@ export default function WorkspaceScreen() {
       }, wait)
     }
     const unsubscribe = subscribeHostEvents(hostId, (event) => {
-      if (!event.type) return
+      const type = event.type
+      if (!type) return
+
+      if (type === "server.connected") {
+        // The SSE stream reconnects silently after a network change. Pull the
+        // current state once so events missed while offline are not lost.
+        invalidateSessionIndex(hostId)
+        setCatalogRevision((value) => value + 1)
+        if (sessionIdRef.current) {
+          pendingKinds.add("session")
+          pendingKinds.add("message")
+          pendingKinds.add("permission")
+          pendingKinds.add("form")
+          scheduleRefresh()
+        }
+        return
+      }
+
+      if (type === "session.deleted") {
+        const deletedId = eventSessionID(event)
+        invalidateSessionIndex(hostId)
+        if (deletedId && deletedId === sessionIdRef.current) {
+          setSessionId(undefined)
+          setSession(null)
+          setMessages(null)
+          setChildren([])
+          setInbox([])
+          setPermissions([])
+          setForms([])
+          setOlderCursor(undefined)
+          setError(null)
+          streamRef.current.setSession(undefined)
+          void clearLastSession(hostId)
+          router.setParams({ session: "" })
+          notify(t("sessionDeleted"))
+        }
+        return
+      }
+
+      if (type === "config.updated" || type.startsWith("mcp.")) {
+        setCatalogRevision((value) => value + 1)
+        if (type === "config.updated") invalidateSessionIndex(hostId)
+        return
+      }
+
+      if (/^session\.(?:created|renamed|archived|unarchived|moved|forked)$/u.test(type)) {
+        invalidateSessionIndex(hostId)
+      }
+
+      if (!sessionIdRef.current) return
+      const eventSession = eventSessionID(event)
+      if (eventSession && eventSession !== sessionIdRef.current) return
+
       streamRef.current.ingest(event)
       // OpenCode 2 streams content as `session.text.delta`,
       // `session.reasoning.*`, `session.tool.*` and `session.step.*` events,
       // not only as `message.*` events. Treat every session event as a content
       // change so the transcript refreshes while the agent is working instead
       // of only after leaving and re-entering the screen.
-      const shellEvent = event.type.startsWith("shell.")
+      const shellEvent = type.startsWith("shell.")
       const contentEvent =
-        /^(?:message\.|session\.(?:text|reasoning|tool|step|assistant|compaction)\.)/u.test(event.type) ||
-        event.type === "session.synthetic" ||
+        /^(?:message\.|session\.(?:text|reasoning|tool|step|assistant|compaction)\.)/u.test(type) ||
+        type === "session.synthetic" ||
+        type === "session.skill.activated" ||
         shellEvent
-      const sessionEvent = (event.type.startsWith("session.") || shellEvent) && !contentEvent
+      const sessionEvent = (type.startsWith("session.") || shellEvent) && !contentEvent
       const kind = contentEvent
         ? "message"
         : sessionEvent
           ? "session"
-          : event.type.startsWith("permission.")
+          : type.startsWith("permission.")
             ? "permission"
-            : event.type.startsWith("form.")
+            : type.startsWith("form.")
               ? "form"
               : undefined
       if (!kind) return
@@ -501,7 +555,7 @@ export default function WorkspaceScreen() {
       unsubscribe()
       if (timer) clearTimeout(timer)
     }
-  }, [hostId, ready, refreshFromEvents, sessionId])
+  }, [hostId, notify, ready, refreshFromEvents, t])
 
   useForeground(
     useCallback(() => {
@@ -591,9 +645,9 @@ export default function WorkspaceScreen() {
   }
 
   const loadOptions = useCallback(
-    async (force = false) => {
-      if (!force && agents && models && mcp && skills) return
-      setOptionsBusy(true)
+    async () => {
+      const hasCache = Boolean(agents && models && mcp && skills)
+      if (!hasCache) setOptionsBusy(true)
       setOptionError(null)
       try {
         const runtime = await ensureConnection(hostId)
@@ -609,6 +663,9 @@ export default function WorkspaceScreen() {
         setModels(modelList)
         setMcp(mcpList)
         setSkills(skillList)
+        setSelectedSkills((current) =>
+          current.filter((selected) => skillList.some((skill) => skill.id === selected.id)),
+        )
       } catch (cause) {
         setOptionError(cause instanceof Error ? cause.message : t("error"))
       } finally {
@@ -617,6 +674,14 @@ export default function WorkspaceScreen() {
     },
     [agents, hostId, mcp, models, session?.location?.directory, skills, t],
   )
+
+  useEffect(() => {
+    if (!ready || catalogRevision === 0) return
+    void loadOptions()
+    // Intentionally keyed only by the catalog revision; loadOptions changes
+    // identity whenever its cached data changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogRevision, ready])
 
   const refreshMcp = useCallback(async () => {
     try {
@@ -636,7 +701,7 @@ export default function WorkspaceScreen() {
   const openPanelMode = (mode: PanelMode) => {
     setPanelMode(mode)
     setPanelOpen(true)
-    void loadOptions(mode === "mcp" || mode === "model")
+    if (mode !== "voice" && mode !== "status" && mode !== "help") void loadOptions()
   }
 
   useEffect(() => {
@@ -773,15 +838,23 @@ export default function WorkspaceScreen() {
         if (!match) return
         const name = match[1] as string
         const args = (match[2] ?? "").trim()
-        const local = LOCAL_COMMAND_NAMES.has(name)
-          ? commandChoices.find((command) => command.name === name)
-          : undefined
-        if (local) {
-          local.run()
+        const key = name.toLowerCase()
+        const core = findCoreCommand(key)
+        if (core) {
+          runCoreCommand(core.action)
           return
         }
-        await client.runCommand(sessionId, name, args)
-        setTimeout(() => void loadSession(sessionId), 350)
+        if (commands.some((command) => command.name === name)) {
+          await client.runCommand(sessionId, name, args)
+          setTimeout(() => void loadSession(sessionId), 350)
+          return
+        }
+        setDraft(text)
+        notify(
+          isUnavailableCommand(key)
+            ? t("commandUnsupported", { name })
+            : t("commandUnknown", { name }),
+        )
         return
       }
       const queued = active
@@ -792,7 +865,11 @@ export default function WorkspaceScreen() {
       await client.prompt(sessionId, {
         text,
         ...(queued ? { delivery: "queue" as const } : {}),
+        ...(selectedSkills.length > 0
+          ? { skills: selectedSkills.map((skill) => ({ id: skill.id })) }
+          : {}),
       })
+      setSelectedSkills([])
       if (queued) notify(t("sessionQueueing"))
       await loadSession(sessionId)
     } catch (cause) {
@@ -814,37 +891,136 @@ export default function WorkspaceScreen() {
     }
   }
 
+  const compactContext = () => {
+    if (!sessionId) return
+    void ensureConnection(hostId)
+      .then((runtime) => new OpencodeClient(runtime).compactSession(sessionId))
+      .then(() => loadSession(sessionId))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t("error")))
+  }
+
+  const toggleSkill = (skill: SkillInfo) => {
+    setSelectedSkills((current) =>
+      current.some((selected) => selected.id === skill.id)
+        ? current.filter((selected) => selected.id !== skill.id)
+        : [...current, { id: skill.id, name: skill.name }],
+    )
+  }
+
+  const runCoreCommand = (action: CoreCommandAction) => {
+    setDraft("")
+    const leavePanel = (run: () => void) => {
+      if (!panelOpen) {
+        run()
+        return
+      }
+      setPanelOpen(false)
+      setTimeout(run, 240)
+    }
+    switch (action) {
+      case "models":
+        openPanelMode("model")
+        return
+      case "agents":
+        openPanelMode("agent")
+        return
+      case "mcps":
+        openPanelMode("mcp")
+        return
+      case "skills":
+        openPanelMode("skill")
+        return
+      case "variants":
+        openPanelMode("variant")
+        return
+      case "status":
+        openPanelMode("status")
+        return
+      case "help":
+        openPanelMode("help")
+        return
+      case "sessions":
+        leavePanel(openDrawer)
+        return
+      case "new":
+        leavePanel(() => void openProjectPicker())
+        return
+      case "compact":
+        leavePanel(compactContext)
+        return
+      case "diff":
+        leavePanel(() => {
+          if (!sessionId) return
+          router.push({
+            pathname: "/hosts/[hostId]/sessions/[sessionId]/diff",
+            params: { hostId, sessionId },
+          })
+        })
+        return
+      case "stop":
+        void stop()
+        return
+    }
+  }
+
+  const serverCommandNames = new Set(commands.map((command) => command.name))
   const commandChoices: CommandChoice[] = [
-    { name: "new", description: t("newSession"), run: () => { setDraft(""); void openProjectPicker() } },
-    { name: "sessions", description: t("sessions"), run: () => { setDraft(""); setDrawerOpen(true) } },
-    { name: "agent", description: t("agent"), run: () => { setDraft(""); openPanelMode("agent") } },
-    { name: "model", description: t("model"), run: () => { setDraft(""); openPanelMode("model") } },
-    { name: "reasoning", description: t("reasoningDepth"), run: () => { setDraft(""); openPanelMode("variant") } },
-    { name: "mcp", description: t("mcp"), run: () => { setDraft(""); openPanelMode("mcp") } },
-    { name: "skills", description: t("skills"), run: () => { setDraft(""); openPanelMode("skill") } },
-    {
-      name: "compact",
-      description: t("compactContext"),
-      run: () => {
-        setDraft("")
-        if (!sessionId) return
-        void ensureConnection(hostId)
-          .then((runtime) => new OpencodeClient(runtime).compactSession(sessionId))
-          .then(() => loadSession(sessionId))
-          .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t("error")))
-      },
-    },
-    { name: "stop", description: t("stop"), run: () => { setDraft(""); void stop() } },
-    { name: "help", description: t("commandHelpHint"), run: () => { setDraft(""); notify(t("commandHelpHint")) } },
-    ...commands.map((command) => ({
+    ...CORE_COMMANDS.map<CommandChoice>((command) => ({
       name: command.name,
-      description: command.description ?? t("command"),
-      run: () => {
-        setDraft(`/${command.name} `)
-        inputRef.current?.focus()
-      },
+      aliases: command.aliases,
+      description: t(command.descriptionKey),
+      category: command.category,
+      enabled: true,
+      run: () => runCoreCommand(command.action),
+    })),
+    ...commands
+      .filter((command) => !findCoreCommand(command.name))
+      .map<CommandChoice>((command) => ({
+        name: command.name,
+        aliases: [],
+        description: command.description ?? t("command"),
+        category: "server",
+        enabled: true,
+        run: () => {
+          const fill = () => {
+            setDraft(`/${command.name} `)
+            inputRef.current?.focus()
+          }
+          if (!panelOpen) {
+            fill()
+            return
+          }
+          setPanelOpen(false)
+          setTimeout(fill, 240)
+        },
+      })),
+    ...UNAVAILABLE_COMMANDS.filter(
+      (name) => !findCoreCommand(name) && !serverCommandNames.has(name),
+    ).map<CommandChoice>((name) => ({
+      name,
+      aliases: [],
+      description: t("commandUnavailable"),
+      category: "unavailable",
+      enabled: false,
+      run: () => notify(t("commandUnsupported", { name })),
     })),
   ]
+
+  const commandGroups = (
+    [
+      ["session", t("commandCategorySession")],
+      ["agent", t("commandCategoryAgent")],
+      ["system", t("commandCategorySystem")],
+      ["server", t("commandCategoryServer")],
+      ["unavailable", t("commandCategoryUnavailable")],
+    ] as const
+  )
+    .map(([category, label]) => ({
+      category,
+      label,
+      commands: commandChoices.filter((command) => command.category === category),
+    }))
+    .filter((group) => group.commands.length > 0)
 
   const stopActivity = async (activity: RunningActivity) => {
     if (activity.kind === "shell") return
@@ -1013,9 +1189,13 @@ export default function WorkspaceScreen() {
   const commandMatches =
     commandQuery === null
       ? []
-      : commandChoices.filter((command) =>
-          command.name.toLowerCase().startsWith(commandQuery.toLowerCase()),
-        )
+      : commandChoices.filter((command) => {
+          const query = commandQuery.toLowerCase()
+          return (
+            command.name.toLowerCase().startsWith(query) ||
+            command.aliases.some((alias) => alias.toLowerCase().startsWith(query))
+          )
+        })
 
   if (!hydrated) return <View style={styles.screen} />
 
@@ -1238,6 +1418,28 @@ export default function WorkspaceScreen() {
               </View>
             ) : null}
 
+            {selectedSkills.length > 0 ? (
+              <View style={styles.skillChips}>
+                {selectedSkills.map((skill) => (
+                  <Pressable
+                    key={skill.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${t("remove")} ${skill.name}`}
+                    onPress={() =>
+                      setSelectedSkills((current) => current.filter((item) => item.id !== skill.id))
+                    }
+                    style={({ pressed }) => [styles.skillChip, pressed && { opacity: 0.65 }]}
+                  >
+                    <Icon name="spark" size={11} color={colors.accent} />
+                    <Text style={styles.skillChipText} numberOfLines={1}>
+                      {skill.name}
+                    </Text>
+                    <Icon name="close" size={11} color={colors.faint} />
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+
             {commandMatches.length > 0 ? (
               <ScrollView
                 style={styles.commandPanel}
@@ -1249,10 +1451,23 @@ export default function WorkspaceScreen() {
                   <Pressable
                     key={command.name}
                     accessibilityRole="button"
+                    accessibilityState={{ disabled: !command.enabled }}
+                    disabled={!command.enabled}
                     onPress={command.run}
-                    style={({ pressed }) => [styles.commandRow, pressed && { opacity: 0.65 }]}
+                    style={({ pressed }) => [
+                      styles.commandRow,
+                      pressed && { opacity: 0.65 },
+                      !command.enabled && { opacity: 0.4 },
+                    ]}
                   >
-                    <Text style={styles.commandName}>/{command.name}</Text>
+                    <Text
+                      style={[
+                        styles.commandName,
+                        !command.enabled && { color: colors.faint },
+                      ]}
+                    >
+                      /{command.name}
+                    </Text>
                     <Text style={styles.commandDescription} numberOfLines={1}>
                       {command.description}
                     </Text>
@@ -1626,23 +1841,95 @@ export default function WorkspaceScreen() {
 
         {panelMode === "skill" ? (
           <View>
-            <Text style={styles.sheetMuted}>{t("skillHint")}</Text>
+            <Text style={styles.sheetMuted}>{t("skillAttachHint")}</Text>
+            {selectedSkills.length > 0 ? (
+              <Text style={[styles.sheetMuted, { color: colors.accent }]}>
+                {t("skillAttached", { n: selectedSkills.length })}
+              </Text>
+            ) : null}
             {skills === null ? <Text style={styles.sheetMuted}>{t("loading")}</Text> : null}
             {skills?.length === 0 ? <Text style={styles.sheetMuted}>{t("noSkills")}</Text> : null}
-            {(skills ?? []).map((skill) => (
-              <View key={skill.id} style={styles.optionRow}>
-                <Icon name="spark" size={16} color={colors.muted} />
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                    <Text style={styles.optionTitle}>{skill.name}</Text>
-                    {skill.autoinvoke ? <Badge text={t("autoInvoke")} tone="accent" /> : null}
+            {(skills ?? []).map((skill) => {
+              const selected = selectedSkills.some((item) => item.id === skill.id)
+              return (
+                <Pressable
+                  key={skill.id}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: selected }}
+                  onPress={() => toggleSkill(skill)}
+                  style={({ pressed }) => [
+                    styles.optionRow,
+                    pressed && { opacity: 0.7 },
+                    selected && { backgroundColor: colors.accentSoft },
+                  ]}
+                >
+                  <Icon name="spark" size={16} color={selected ? colors.accent : colors.muted} />
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <Text style={[styles.optionTitle, selected && { color: colors.accent }]}>{skill.name}</Text>
+                      {skill.autoinvoke ? <Badge text={t("autoInvoke")} tone="accent" /> : null}
+                    </View>
+                    {skill.description ? (
+                      <Text style={styles.optionBody} numberOfLines={2}>
+                        {skill.description}
+                      </Text>
+                    ) : null}
                   </View>
-                  {skill.description ? (
-                    <Text style={styles.optionBody} numberOfLines={2}>
-                      {skill.description}
+                  {selected ? <Icon name="check" size={18} color={colors.accent} /> : null}
+                </Pressable>
+              )
+            })}
+          </View>
+        ) : null}
+
+        {panelMode === "status" ? (
+          <View>
+            <StatusRow label={t("agent")} value={agentName} />
+            <StatusRow label={t("model")} value={modelName} />
+            <StatusRow label={t("reasoningDepth")} value={variantName} />
+            <StatusRow label={t("statusState")} value={active ? t("statusRunning") : t("statusIdle")} />
+            <StatusRow
+              label={t("statusContext")}
+              value={`${contextTokens}${usage?.percent !== undefined ? ` · ${usage.percent}%` : ""}`}
+            />
+            <StatusRow label={t("statusSession")} value={sessionId ?? t("noContext")} />
+            <StatusRow label={t("statusDirectory")} value={session?.location?.directory ?? t("noContext")} />
+          </View>
+        ) : null}
+
+        {panelMode === "help" ? (
+          <View>
+            <Text style={styles.sheetMuted}>{t("commandGroupsHint")}</Text>
+            {commandGroups.map((group) => (
+              <View key={group.category} style={{ marginTop: 6 }}>
+                <Text style={styles.providerLabel}>{group.label}</Text>
+                {group.commands.map((command) => (
+                  <Pressable
+                    key={command.name}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !command.enabled }}
+                    disabled={!command.enabled}
+                    onPress={command.run}
+                    style={({ pressed }) => [
+                      styles.optionRow,
+                      pressed && { opacity: 0.7 },
+                      !command.enabled && { opacity: 0.4 },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.commandName,
+                        { minWidth: 88 },
+                        !command.enabled && { color: colors.faint },
+                      ]}
+                    >
+                      /{command.name}
                     </Text>
-                  ) : null}
-                </View>
+                    <Text style={styles.commandDescription} numberOfLines={1}>
+                      {command.description}
+                    </Text>
+                  </Pressable>
+                ))}
               </View>
             ))}
           </View>
@@ -1684,6 +1971,27 @@ export default function WorkspaceScreen() {
         </Animated.View>
       </BottomSheet>
     </KeyboardAvoidingView>
+  )
+}
+
+function StatusRow(props: { label: string; value: string }) {
+  const { colors } = useTheme()
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 12,
+        paddingVertical: 11,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: colors.border,
+      }}
+    >
+      <Text style={{ width: 96, fontSize: 13, color: colors.faint }}>{props.label}</Text>
+      <Text style={{ flex: 1, fontSize: 13.5, color: colors.text }} selectable>
+        {props.value}
+      </Text>
+    </View>
   )
 }
 
@@ -1806,6 +2114,10 @@ function panelTitle(mode: PanelMode, t: ReturnType<typeof useT>): string {
       return t("skills")
     case "voice":
       return t("engine")
+    case "status":
+      return t("statusTitle")
+    case "help":
+      return t("commandHelp")
     default:
       return t("sessionSettings")
   }
@@ -1889,6 +2201,15 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {}
 }
 
+function eventSessionID(event: OpencodeEvent): string | undefined {
+  const data = asRecord(event.data)
+  for (const key of ["sessionID", "sessionId"]) {
+    const value = data[key]
+    if (typeof value === "string" && value) return value
+  }
+  return undefined
+}
+
 function mergeMessages(incoming: SessionMessage[], existing: SessionMessage[]): SessionMessage[] {
   const byId = new Map<string, SessionMessage>()
   for (const message of existing) {
@@ -1970,6 +2291,26 @@ const workspaceStyles = (colors: Palette) =>
     queueRow: { flexDirection: "row", alignItems: "center", gap: 6 },
     queueText: { flex: 1, fontSize: 11.5, color: colors.muted },
     queueHint: { fontSize: 10.5, color: colors.faint },
+    skillChips: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: 6,
+      marginHorizontal: 4,
+      marginBottom: 6,
+    },
+    skillChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      maxWidth: "100%",
+      paddingHorizontal: 9,
+      paddingVertical: 5,
+      borderRadius: 999,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: colors.accentSoft,
+    },
+    skillChipText: { maxWidth: 180, fontSize: 11.5, fontWeight: "600", color: colors.accent },
     voiceBar: { flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 4, marginBottom: 6, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10, backgroundColor: colors.surface },
     voiceText: { flex: 1, fontSize: 12, color: colors.muted },
     voiceStop: { fontSize: 12, fontWeight: "600", color: colors.accent },
