@@ -601,8 +601,8 @@ h1 .accent {
 .hero-terminal {
   position: absolute;
   left: 0;
-  bottom: 30px;
-  z-index: 3;
+  bottom: 26px;
+  z-index: 1;
   width: min(370px, 82%);
 }
 
@@ -675,6 +675,7 @@ h1 .accent {
   position: absolute;
   top: 0;
   right: 4px;
+  z-index: 3;
   width: 258px;
 }
 
@@ -684,34 +685,70 @@ h1 .accent {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 85%, transparent);
+  border-radius: 10px;
   background: var(--code-bg);
-  box-shadow: var(--shadow-sm);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 18px 45px rgba(16, 16, 16, 0.16);
+}
+
+[data-theme="dark"] .terminal-shell {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 45px rgba(0, 0, 0, 0.42);
 }
 
 .terminal-bar {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 12px;
+  gap: 8px;
+  height: 38px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--code-line);
-  background: var(--code-head);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--code-head) 62%, #fff) 0%,
+    var(--code-head) 100%
+  );
+}
+
+[data-theme="dark"] .terminal-bar {
+  background: linear-gradient(180deg, #24282f 0%, #191d22 100%);
 }
 
 .terminal-bar i {
-  width: 7px;
-  height: 7px;
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
-  background: var(--line-strong);
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+}
+
+.terminal-bar i:nth-child(1) {
+  background: #ff5f57;
+}
+
+.terminal-bar i:nth-child(2) {
+  background: #febc2e;
+}
+
+.terminal-bar i:nth-child(3) {
+  background: #28c840;
 }
 
 .terminal-bar span {
-  margin-left: 8px;
+  position: absolute;
+  left: 50%;
+  max-width: 56%;
+  overflow: hidden;
+  transform: translateX(-50%);
   font-family: var(--mono);
   font-size: 13px;
   color: var(--code-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .terminal-code {
@@ -2256,6 +2293,7 @@ details p {
     align-items: center;
     min-height: 0;
     width: min(370px, 100%);
+    padding-bottom: 8px;
   }
 
   .e2ee-chip {
@@ -2272,11 +2310,18 @@ details p {
     top: auto;
     right: auto;
     order: 1;
+    align-self: flex-end;
     width: 218px;
+    margin-right: 4px;
   }
 
   .hero-terminal {
-    display: none;
+    position: absolute;
+    left: 0;
+    bottom: 8px;
+    z-index: 1;
+    width: 80%;
+    margin: 0;
   }
 
   .platform-visual .phone-wrap {
