@@ -28,15 +28,9 @@
       <div class="wrap nav-row">
         <a class="brand" href="index.html" aria-label="OC Remote 首页">
           <img src="assets/icon.png" alt="" width="30" height="30" />
-          <span class="brand-name"><strong>OC Remote</strong><span>for opencode</span></span>
+          <span class="brand-name"><strong>OC Remote</strong></span>
         </a>
-        <nav class="nav-links" id="site-menu" aria-label="主导航">
-          <a href="index.html#features">功能</a>
-          <a href="index.html#platforms">三端</a>
-          <a href="index.html#security">安全</a>
-          <a href="quick-start.html">快速开始</a>
-          <a href="faq.html">FAQ</a>
-        </nav>
+        <nav class="nav-links" id="site-menu" aria-label="主导航"><a href="index.html" aria-current="page">首页</a><a href="quick-start.html">快速开始</a><a href="security.html">安全模型</a><a href="faq.html">FAQ</a></nav>
         <div class="nav-actions">
           <div class="lang-switch" aria-label="语言">
             <a href="index.html" aria-current="true">中</a>
@@ -81,20 +75,23 @@
           <div class="hero-stage" aria-label="OC Remote 手机端和主机端界面">
             <div class="terminal-shell hero-terminal">
               <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote — host</span></div>
-              <img src="assets/screenshots/host-terminal.webp" alt="OC Remote 主机端启动和状态输出" width="1439" height="620" />
+              <pre class="terminal-code"><span class="cmd">$</span> ocremote status
+
+listen    <span class="ok">0.0.0.0:8797</span>
+direct    ws://192.168.1.42:8797
+relay     off
+opencode  127.0.0.1:49374 (2.3.0)
+clients   0
+uptime    2h 14m</pre>
             </div>
             <figure class="phone hero-phone">
               <img src="assets/screenshots/session_main.webp" alt="OC Remote 手机端会话界面，显示实时消息和工具调用" width="760" height="1680" />
             </figure>
             <div class="e2ee-chip">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                <rect x="5" y="10" width="14" height="10" rx="2.5" />
-                <path d="M8 10V7a4 4 0 0 1 8 0v3" />
-              </svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2.5" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
               NOISE NK · E2EE
             </div>
           </div>
-        </div>
       </section>
 
       <section class="section" id="features">
@@ -110,62 +107,77 @@
             </p>
           </div>
 
-          <div class="bento">
-            <article class="card card-wide card-split">
-              <div class="card-copy">
-                <h3>设置就在会话里</h3>
-                <p>底部面板切换 Agent、模型、思考深度、MCP 和 Skill，不离开当前对话。会话运行中继续输入，会自动排队。</p>
+          <div class="feature-stack">
+            <article class="feature-row">
+              <div class="feature-copy">
+                <h3>会话，不用缩小桌面。</h3>
+                <p>流式文字、思考过程、工具调用和排队输入都保留。需要时再打开底部面板，换 Agent、模型、MCP 或 Skill。</p>
+                <ul class="feature-list">
+                  <li>实时流式输出，长内容自动折叠</li>
+                  <li>运行中继续输入，结束后自动发送</li>
+                  <li>Agent、模型和思考深度就在会话底部</li>
+                </ul>
               </div>
-              <div class="card-visual">
-                <figure class="phone phone--sm phone--xs">
-                  <img src="assets/screenshots/session_settings_bar.webp" alt="会话底部设置面板" width="760" height="1680" />
-                </figure>
+              <div class="feature-visual">
+                <figure class="phone"><img src="assets/screenshots/session_settings_bar.webp" alt="会话底部设置面板" width="760" height="1680" /></figure>
               </div>
             </article>
 
-            <article class="card card-narrow">
-              <div class="card-copy">
-                <h3>命令，还是原来的名字</h3>
-                <p>对齐 opencode TUI：/models、/agents、/skills、/status。终端专属命令会置灰，不会假装能用。</p>
+            <article class="feature-row reverse">
+              <div class="feature-copy">
+                <h3>命令，还是原来的名字。</h3>
+                <p>对齐 opencode TUI。终端专属命令直接置灰，不在手机上假装可用。</p>
+                <ul class="feature-list">
+                  <li>兼容 /model、/agent、/thinking 等别名</li>
+                  <li>/skills 选中后附加到下一次发送</li>
+                </ul>
               </div>
-              <div class="card-visual">
-                <div class="command-mock" aria-label="手机端命令面板示例">
-                  <div class="line"><code>/models</code><span class="dim">切换模型</span></div>
-                  <div class="line"><code>/agents</code><span class="dim">切换 Agent</span></div>
-                  <div class="line"><code>/skills</code><span class="dim">附加到下一次发送</span></div>
-                  <div class="line"><code>/status</code><span class="dim">查看会话状态</span></div>
-                  <div class="line"><code>/help</code><span class="dim">查看全部命令</span></div>
-                  <div class="line muted"><code>/terminal</code><span class="dim">手机端不支持</span></div>
+              <div class="feature-visual">
+                <div class="command-panel" aria-label="手机端命令面板示例">
+                  <div class="command-panel-head"><span>命令面板</span><span>/</span></div>
+                  <div class="command-panel-row"><code>/models</code><span>切换模型</span></div>
+                  <div class="command-panel-row"><code>/agents</code><span>切换 Agent</span></div>
+                  <div class="command-panel-row"><code>/skills</code><span>附加到下一次发送</span></div>
+                  <div class="command-panel-row"><code>/status</code><span>查看会话状态</span></div>
+                  <div class="command-panel-row"><code>/help</code><span>查看全部命令</span></div>
+                  <div class="command-panel-row disabled"><code>/terminal</code><span>手机端不支持</span></div>
                 </div>
               </div>
             </article>
 
-            <article class="card card-narrow card-split">
-              <div class="card-copy">
-                <h3>审阅不用来回传文件</h3>
-                <p>浏览项目文件、切换换行、选中行区间写评论；评论会合成一条 review prompt 发回会话。</p>
+            <article class="feature-row">
+              <div class="feature-copy">
+                <h3>审阅，不用来回传文件。</h3>
+                <p>浏览项目文件、切换换行、选中行区间写评论。评论会合成一条 review prompt 发回当前会话。</p>
+                <ul class="feature-list">
+                  <li>文件类型图标和二进制预览保护</li>
+                  <li>行评论合并为一条 prompt</li>
+                  <li>Diff 与审阅保持在同一个上下文里</li>
+                </ul>
               </div>
-              <div class="card-visual">
-                <figure class="phone phone--sm phone--xs">
-                  <img src="assets/screenshots/browse_files.webp" alt="手机端代码审阅文件列表" width="760" height="1680" />
-                </figure>
+              <div class="feature-visual">
+                <figure class="phone"><img src="assets/screenshots/browse_files.webp" alt="手机端代码审阅文件列表" width="760" height="1680" /></figure>
               </div>
             </article>
 
-            <article class="card card-wide">
-              <div class="card-copy">
-                <h3>会话状态跟着所有端走</h3>
-                <p>其他终端切了 Agent 或模型，手机状态栏自动变化；手机改了设置，服务端事件也会带到其他客户端。</p>
+            <article class="feature-row reverse">
+              <div class="feature-copy">
+                <h3>状态跟着所有端走。</h3>
+                <p>其他终端切了 Agent 或模型，手机不切页就更新；手机改了设置，服务端事件也会带给其他客户端。</p>
+                <ul class="feature-list">
+                  <li>当前会话自动刷新，不需要手动重连</li>
+                  <li>会话被删除时回到空会话页</li>
+                  <li>MCP、配置和压缩状态同步</li>
+                </ul>
               </div>
-              <div class="card-visual">
-                <div class="sync-visual" aria-label="多端同步事件示例">
-                  <div class="sync-event"><span>session.agent.selected</span><strong>build → <em>plan</em></strong></div>
-                  <div class="sync-event"><span>session.model.selected</span><strong>DeepSeek V4.1 <em class="live">Flash</em></strong></div>
-                  <div class="sync-event"><span>session.deleted</span><strong>回到空会话页</strong></div>
-                  <div class="sync-event"><span>mcp.status.changed</span><strong>面板自动刷新</strong></div>
-                  <div class="sync-event"><span>session.skill.activated</span><strong>Skill 已附加</strong></div>
-                  <div class="sync-event"><span>session.compaction.ended</span><strong>上下文已压缩</strong></div>
-                  <div class="sync-phone"><span class="mini-dot"></span><b>手机停留在当前会话，无需切页</b><small>~1s</small></div>
+              <div class="feature-visual">
+                <div class="event-panel" aria-label="多端同步事件示例">
+                  <div class="event-panel-head"><span>event stream</span><span>shared service</span></div>
+                  <div class="event-panel-row"><code>session.agent.selected</code><span>build → plan</span></div>
+                  <div class="event-panel-row"><code>session.model.selected</code><span>DeepSeek V4.1 Flash</span></div>
+                  <div class="event-panel-row"><code>session.deleted</code><span>回到空会话页</span></div>
+                  <div class="event-panel-row"><code>mcp.status.changed</code><span>面板自动刷新</span></div>
+                  <div class="event-panel-foot"><span class="mini-dot"></span><span>手机停留在当前会话，无需切页</span><small>~1s</small></div>
                 </div>
               </div>
             </article>
@@ -195,7 +207,14 @@
               <div class="platform-visual">
                 <div class="terminal-shell">
                   <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote</span></div>
-                  <img src="assets/screenshots/host-terminal.webp" alt="主机端 ocremote status 输出" width="1439" height="620" />
+                  <pre class="terminal-code"><span class="cmd">$</span> ocremote status
+
+listen    <span class="ok">0.0.0.0:8787</span>
+direct    ws://192.168.1.42:8787/ws
+relay     off
+opencode  127.0.0.1:49374 (2.3.0)
+clients   0
+uptime    2h 14m</pre>
                 </div>
               </div>
               <div class="platform-command">./ocremote start --listen 0.0.0.0:8787 --pair</div>
@@ -224,7 +243,15 @@
               <div class="platform-visual">
                 <div class="terminal-shell">
                   <div class="terminal-bar" aria-hidden="true"><i></i><i></i><i></i><span>ocremote-relay</span></div>
-                  <img src="assets/screenshots/relay-terminal.webp" alt="中继端初始化和管理命令输出" width="1439" height="600" />
+                  <pre class="terminal-code"><span class="cmd">$</span> ocremote-relay admin status
+{
+  "relayId": "relay_4d5b8c0…",
+  "wsUrl": "wss://relay.example/ws",
+  "v": 2,
+  "hosts": 0,
+  "clients": 0,
+  "rooms": []
+}</pre>
                 </div>
               </div>
               <div class="platform-command">./ocremote-relay init --data-dir ./data</div>
