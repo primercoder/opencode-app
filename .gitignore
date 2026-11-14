@@ -90,6 +90,9 @@ Thumbs.db
 # Local remediation/design notes
 /REMEDIATION_PLAN.md
 
+# Local-only encryption flow document
+/encryption-flow.html
+
 # Generated development TLS material
 /deploy/tls/
 /apps/mobile/android/app/src/qa/res/raw/relay_test_ca.pem
