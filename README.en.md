@@ -1,6 +1,6 @@
 # OC Remote
 
-English | [简体中文](README.md)
+English | [简体中文](README.md) | [Website](https://primercoder.github.io/opencode-app/)
 
 Remote control for [opencode](https://opencode.ai) from Android.
 

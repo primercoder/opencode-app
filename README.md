@@ -1,6 +1,6 @@
 # OC Remote
 
-[English](README.en.md) | 简体中文
+[English](README.en.md) | 简体中文 | [项目主页](https://primercoder.github.io/opencode-app/)
 
 用 Android 手机远程操作电脑上的 [opencode](https://opencode.ai)。
 
