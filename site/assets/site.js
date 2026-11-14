@@ -235,51 +235,67 @@
     window.addEventListener("resize", update);
     update();
 
-    if (!reduceMotion && window.PointerEvent) {
+    if (window.PointerEvent) {
       var dragging = false;
       var moved = false;
+      var suppressClick = false;
       var startX = 0;
       var startLeft = 0;
+      var pointerId = null;
 
       rail.addEventListener("pointerdown", function (event) {
-        if (event.pointerType === "mouse" && event.button !== 0) return;
+        // Touch already scrolls natively; only add mouse/pen dragging.
+        if (event.pointerType === "touch") return;
+        if (event.button !== 0) return;
         dragging = true;
         moved = false;
         startX = event.clientX;
         startLeft = rail.scrollLeft;
+        pointerId = event.pointerId;
+        rail.classList.add("dragging");
       });
 
       rail.addEventListener("pointermove", function (event) {
-        if (!dragging) return;
+        if (!dragging || event.pointerId !== pointerId) return;
         var delta = event.clientX - startX;
-        if (Math.abs(delta) > 6) {
+        if (!moved && Math.abs(delta) < 6) return;
+        if (!moved) {
           moved = true;
-          rail.classList.add("dragging");
-          rail.scrollLeft = startLeft - delta;
+          event.preventDefault();
           if (rail.setPointerCapture) {
             try {
-              rail.setPointerCapture(event.pointerId);
+              rail.setPointerCapture(pointerId);
             } catch (e) {}
           }
         }
+        rail.scrollLeft = startLeft - delta;
       });
 
-      function endDrag() {
+      function endDrag(event) {
+        if (!dragging) return;
+        if (event && event.pointerId !== pointerId) return;
         dragging = false;
         rail.classList.remove("dragging");
+        if (moved) {
+          suppressClick = true;
+          window.setTimeout(function () {
+            suppressClick = false;
+          }, 0);
+        }
+        pointerId = null;
       }
 
       rail.addEventListener("pointerup", endDrag);
       rail.addEventListener("pointercancel", endDrag);
-      rail.addEventListener("pointerleave", endDrag);
+      window.addEventListener("blur", endDrag);
 
       rail.addEventListener(
         "click",
         function (event) {
-          if (moved) {
+          if (suppressClick) {
             event.preventDefault();
             event.stopPropagation();
-            moved = false;
+            suppressClick = false;
           }
         },
         true

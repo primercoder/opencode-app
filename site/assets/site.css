@@ -1293,6 +1293,9 @@ h1 .accent {
   scroll-snap-type: x mandatory;
   scrollbar-width: none;
   overscroll-behavior-x: contain;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .rail::-webkit-scrollbar {
@@ -1304,6 +1307,21 @@ h1 .accent {
   cursor: grabbing;
 }
 
+.rail.dragging .shot,
+.rail.dragging .shot-frame {
+  cursor: grabbing;
+}
+
+.rail.dragging .shot-frame {
+  transform: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.rail img {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
 .shot {
   flex: 0 0 auto;
   padding: 0;
@@ -1311,12 +1329,12 @@ h1 .accent {
   background: none;
   text-align: left;
   scroll-snap-align: start;
-  cursor: zoom-in;
+  cursor: grab;
 }
 
 .shot-frame {
   display: block;
-  height: clamp(310px, 32vw, 440px);
+  height: clamp(372px, 38.4vw, 528px);
   padding: 5px;
   border-radius: 26px;
   background: var(--device);
@@ -2347,7 +2365,7 @@ details p {
   }
 
   .shot-frame {
-    height: 320px;
+    height: 384px;
   }
 
   .rail {
@@ -2450,7 +2468,7 @@ details p {
   }
 
   .shot-frame {
-    height: 300px;
+    height: 360px;
   }
 
   .shot-cap span {
