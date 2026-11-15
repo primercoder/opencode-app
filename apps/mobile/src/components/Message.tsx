@@ -5,10 +5,20 @@ import { useTheme } from "@/theme"
 import type { AssistantContent, SessionMessage } from "@/opencode/client"
 import { Icon } from "./Icon"
 import { Markdown } from "./Markdown"
+import { useSelectionGuard } from "./selectionGuard"
 
-export const MessageView = memo(function MessageView({ message }: { message: SessionMessage }) {
+export const MessageView = memo(function MessageView({
+  message,
+  onBeforeExpand,
+  onAfterExpand,
+}: {
+  message: SessionMessage
+  onBeforeExpand?: (opening: boolean, y: number) => void
+  onAfterExpand?: (y: number) => void
+}) {
   const { colors } = useTheme()
   const t = useT()
+  const guard = useSelectionGuard()
 
   if (message.type === "user") {
     return (
@@ -24,7 +34,12 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
             paddingVertical: 10,
           }}
         >
-          <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }} selectable>
+          <Text
+            style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}
+            selectable
+            onPressIn={guard?.onPressIn}
+            onLongPress={guard?.onLongPress}
+          >
             {message.text ?? ""}
           </Text>
         </View>
@@ -33,7 +48,7 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
   }
 
   if (message.type === "compaction") {
-    return <CompactionView message={message} />
+    return <CompactionView message={message} onBeforeExpand={onBeforeExpand} onAfterExpand={onAfterExpand} />
   }
 
   if (message.type === "shell") {
@@ -81,6 +96,8 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
               fontFamily: "monospace",
             }}
             selectable
+            onPressIn={guard?.onPressIn}
+            onLongPress={guard?.onLongPress}
           >
             {output.length > 4_000 ? `${output.slice(0, 4_000)}\n…` : output}
           </Text>
@@ -105,7 +122,13 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
               showCursor={streaming && index === groups.length - 1}
             />
           ) : (
-            <ActivityGroup key={`activity-${index}`} blocks={group.blocks} live={live} />
+            <ActivityGroup
+              key={`activity-${index}`}
+              blocks={group.blocks}
+              live={live}
+              onBeforeExpand={onBeforeExpand}
+              onAfterExpand={onAfterExpand}
+            />
           ),
         )}
         {message.error?.message ? (
@@ -184,10 +207,61 @@ function StreamingCursor() {
   )
 }
 
-function CompactionView({ message }: { message: SessionMessage }) {
+/**
+ * Measures the collapsible header in window coordinates before and after the
+ * toggle. The transcript uses that delta to preserve the user's reading anchor
+ * instead of jumping by the height of the expanded content.
+ */
+function useAnchoredToggle(
+  open: boolean,
+  setOpen: (update: (value: boolean) => boolean) => void,
+  onBeforeExpand?: (opening: boolean, y: number) => void,
+  onAfterExpand?: (y: number) => void,
+) {
+  const ref = useRef<View>(null)
+  const pending = useRef(false)
+
+  const toggle = () => {
+    const next = !open
+    const apply = () => {
+      pending.current = true
+      setOpen(() => next)
+    }
+    if (ref.current?.measureInWindow) {
+      ref.current.measureInWindow((_x, y) => {
+        onBeforeExpand?.(next, y)
+        apply()
+      })
+    } else {
+      onBeforeExpand?.(next, 0)
+      apply()
+    }
+  }
+
+  useEffect(() => {
+    if (!pending.current) return
+    pending.current = false
+    requestAnimationFrame(() => {
+      ref.current?.measureInWindow?.((_x, y) => onAfterExpand?.(y))
+    })
+  }, [onAfterExpand, open])
+
+  return { ref, toggle }
+}
+
+function CompactionView({
+  message,
+  onBeforeExpand,
+  onAfterExpand,
+}: {
+  message: SessionMessage
+  onBeforeExpand?: (opening: boolean, y: number) => void
+  onAfterExpand?: (y: number) => void
+}) {
   const { colors } = useTheme()
   const t = useT()
   const [open, setOpen] = useState(false)
+  const { ref: toggleRef, toggle } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
   const running = message.status === "running"
   const failed = message.status === "failed"
   const summary = message.summary?.trim() ?? ""
@@ -212,7 +286,8 @@ function CompactionView({ message }: { message: SessionMessage }) {
         accessibilityRole="button"
         accessibilityState={{ expanded: open, disabled: !summary }}
         disabled={!summary}
-        onPress={() => setOpen((value) => !value)}
+        ref={toggleRef}
+        onPress={toggle}
         style={({ pressed }) => [
           { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 11, paddingVertical: 9 },
           pressed && { opacity: 0.7 },
@@ -282,10 +357,21 @@ function groupBlocks(blocks: AssistantContent[]): BlockGroup[] {
   return groups
 }
 
-function ActivityGroup({ blocks, live = false }: { blocks: AssistantContent[]; live?: boolean }) {
+function ActivityGroup({
+  blocks,
+  live = false,
+  onBeforeExpand,
+  onAfterExpand,
+}: {
+  blocks: AssistantContent[]
+  live?: boolean
+  onBeforeExpand?: (opening: boolean, y: number) => void
+  onAfterExpand?: (y: number) => void
+}) {
   const { colors } = useTheme()
   const t = useT()
   const [open, setOpen] = useState(false)
+  const { ref: toggleRef, toggle } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
   const running =
     live || blocks.some((block) => block.type === "tool" && (block.state?.status ?? "running") === "running")
 
@@ -303,7 +389,8 @@ function ActivityGroup({ blocks, live = false }: { blocks: AssistantContent[]; l
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((value) => !value)}
+        ref={toggleRef}
+        onPress={toggle}
         style={({ pressed }) => [
           { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 11, paddingVertical: 8 },
           pressed && { opacity: 0.7 },
@@ -329,9 +416,19 @@ function ActivityGroup({ blocks, live = false }: { blocks: AssistantContent[]; l
         >
           {blocks.map((block, index) =>
             block.type === "reasoning" ? (
-              <ReasoningBlock key={`reasoning-${index}`} text={block.text} />
+              <ReasoningBlock
+                key={`reasoning-${index}`}
+                text={block.text}
+                onBeforeExpand={onBeforeExpand}
+                onAfterExpand={onAfterExpand}
+              />
             ) : block.type === "tool" ? (
-              <ToolBlockView key={`tool-${index}`} block={block} />
+              <ToolBlockView
+                key={`tool-${index}`}
+                block={block}
+                onBeforeExpand={onBeforeExpand}
+                onAfterExpand={onAfterExpand}
+              />
             ) : null,
           )}
         </View>
@@ -340,17 +437,28 @@ function ActivityGroup({ blocks, live = false }: { blocks: AssistantContent[]; l
   )
 }
 
-function ReasoningBlock({ text }: { text: string }) {
+function ReasoningBlock({
+  text,
+  onBeforeExpand,
+  onAfterExpand,
+}: {
+  text: string
+  onBeforeExpand?: (opening: boolean, y: number) => void
+  onAfterExpand?: (y: number) => void
+}) {
   const { colors } = useTheme()
   const t = useT()
+  const guard = useSelectionGuard()
   const [open, setOpen] = useState(false)
+  const { ref: toggleRef, toggle } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
   if (!text.trim()) return null
   return (
     <View>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((value) => !value)}
+        ref={toggleRef}
+        onPress={toggle}
         style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2 }}
       >
         <Icon name={open ? "chevronDown" : "chevronRight"} size={13} color={colors.faint} />
@@ -367,6 +475,8 @@ function ReasoningBlock({ text }: { text: string }) {
             fontStyle: "italic",
           }}
           selectable
+          onPressIn={guard?.onPressIn}
+          onLongPress={guard?.onLongPress}
         >
           {text}
         </Text>
@@ -375,10 +485,20 @@ function ReasoningBlock({ text }: { text: string }) {
   )
 }
 
-function ToolBlockView({ block }: { block: Extract<AssistantContent, { type: "tool" }> }) {
+function ToolBlockView({
+  block,
+  onBeforeExpand,
+  onAfterExpand,
+}: {
+  block: Extract<AssistantContent, { type: "tool" }>
+  onBeforeExpand?: (opening: boolean, y: number) => void
+  onAfterExpand?: (y: number) => void
+}) {
   const t = useT()
   const { colors } = useTheme()
+  const guard = useSelectionGuard()
   const [open, setOpen] = useState(false)
+  const { ref: toggleRef, toggle } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
   const status = block.state?.status ?? "running"
   const tone = status === "error" ? colors.danger : status === "completed" ? colors.success : colors.warning
   const content = (block.state as { content?: Array<{ type: string; text?: string }> } | undefined)?.content ?? []
@@ -401,7 +521,8 @@ function ToolBlockView({ block }: { block: Extract<AssistantContent, { type: "to
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((value) => !value)}
+        ref={toggleRef}
+        onPress={toggle}
         style={({ pressed }) => [
           { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 10, paddingVertical: 8 },
           pressed && { opacity: 0.7 },
@@ -422,13 +543,23 @@ function ToolBlockView({ block }: { block: Extract<AssistantContent, { type: "to
           {input !== undefined ? (
             <>
               <Text style={{ fontSize: 10.5, fontWeight: "600", color: colors.faint, marginTop: 6 }}>{t("toolInput")}</Text>
-              <Text style={{ fontFamily: "monospace", fontSize: 11.5, lineHeight: 17, color: colors.text }} selectable>
+              <Text
+                style={{ fontFamily: "monospace", fontSize: 11.5, lineHeight: 17, color: colors.text }}
+                selectable
+                onPressIn={guard?.onPressIn}
+                onLongPress={guard?.onLongPress}
+              >
                 {pretty(input)}
               </Text>
             </>
           ) : null}
           <Text style={{ fontSize: 10.5, fontWeight: "600", color: colors.faint, marginTop: 4 }}>{t("toolOutput")}</Text>
-          <Text style={{ fontFamily: "monospace", fontSize: 11.5, lineHeight: 17, color: colors.text }} selectable>
+          <Text
+            style={{ fontFamily: "monospace", fontSize: 11.5, lineHeight: 17, color: colors.text }}
+            selectable
+            onPressIn={guard?.onPressIn}
+            onLongPress={guard?.onLongPress}
+          >
             {block.state?.error?.message ?? output ?? t("toolNoOutput")}
           </Text>
         </View>

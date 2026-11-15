@@ -2,6 +2,7 @@ import { router, useLocalSearchParams } from "expo-router"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   BackHandler,
   Easing,
@@ -23,6 +24,7 @@ import { ExpoSpeechRecognitionModule } from "expo-speech-recognition"
 import { BottomSheet } from "@/components/BottomSheet"
 import { Icon } from "@/components/Icon"
 import { MessageView } from "@/components/Message"
+import { SelectionGuardProvider } from "@/components/selectionGuard"
 import { PendingDock } from "@/components/PendingDock"
 import { SessionDrawer } from "@/components/SessionDrawer"
 import { Badge, Button, IconButton, Segmented } from "@/components/ui"
@@ -56,8 +58,9 @@ import {
 } from "@/features/session/commands"
 import { SessionStreamController, STREAM_FRAME_MS } from "@/features/session/streamController"
 import { invalidateSessionIndex } from "@/features/sessions/useSessionIndex"
+import { appendVoiceText } from "@/features/voice/dictationText"
 import { listMobileModels } from "@/features/voice/models"
-import { useVoiceInput } from "@/features/voice/useVoiceInput"
+import { useVoiceInput, type VoiceEngine } from "@/features/voice/useVoiceInput"
 import { ensureConnection, subscribeHostEvents, closeRuntime } from "@/transport/runtimes"
 import type { OpencodeEvent } from "@/transport/hostEvents"
 import { basename } from "@/features/sessions/useSessionIndex"
@@ -156,8 +159,16 @@ export default function WorkspaceScreen() {
   const [voiceOverride, setVoiceOverride] = useState<VoiceEnginePreference | undefined>(undefined)
   const [phoneModelReady, setPhoneModelReady] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [voiceStage, setVoiceStage] = useState<"closed" | "recording" | "confirm">("closed")
   const listRef = useRef<FlatList<SessionMessage>>(null)
   const inputRef = useRef<TextInput>(null)
+  const loadingOlderRef = useRef(false)
+  const messageOffsetRef = useRef(0)
+  const layoutAnchorRef = useRef<{ offset: number; y: number } | null>(null)
+  const selectionOffsetRef = useRef(0)
+  const oldestMessageIdRef = useRef<string | undefined>(undefined)
+  const olderCursorRef = useRef<string | undefined>(undefined)
+  const loadOlderRef = useRef<() => void>(() => undefined)
   const statusGesture = useRef({ x: 0, y: 0, scrolled: false })
 
   const openDrawer = useCallback(() => {
@@ -235,9 +246,9 @@ export default function WorkspaceScreen() {
   }, [hydrated, hydrate])
 
   useEffect(() => {
-    if (!hostId) return
+    if (!hostId || !hydrated) return
     void ensureConnection(hostId).catch(() => undefined)
-  }, [hostId])
+  }, [hostId, hydrated])
 
   useEffect(() => {
     if (!ready) return
@@ -304,9 +315,48 @@ export default function WorkspaceScreen() {
 
   const dictation = useVoiceInput(
     (text) => {
-      setDraft((current) => (current ? `${current.replace(/\s+$/u, "")} ${text}` : text))
+      setDraft((current) => appendVoiceText(current, text))
     },
     { ...(hostTranscribe ? { hostTranscribe } : {}), ...(voiceOverride ? { preference: voiceOverride } : {}) },
+  )
+
+  const openVoicePanel = () => {
+    if (voiceStage !== "closed" || !ready || readOnly || dictation.transcribing) return
+    Keyboard.dismiss()
+    setVoiceStage("recording")
+    void dictation.start("zh-CN")
+  }
+
+  const stopVoiceCapture = () => {
+    if (voiceStage !== "recording") return
+    dictation.pause()
+    setVoiceStage("confirm")
+  }
+
+  const confirmVoice = () => {
+    setVoiceStage("closed")
+    dictation.confirm()
+  }
+
+  const cancelVoice = () => {
+    setVoiceStage("closed")
+    dictation.cancel()
+  }
+
+  useEffect(() => {
+    setVoiceStage("closed")
+    dictation.cancel()
+    // Only discard when the session changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
+
+  useEffect(
+    () => () => {
+      dictation.cancel()
+    },
+    // The cancel callbacks are stable; avoid re-running on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
   )
 
   const notify = useCallback((message: string) => {
@@ -574,7 +624,8 @@ export default function WorkspaceScreen() {
   )
 
   const loadOlder = async () => {
-    if (!sessionId || !olderCursor || loadingOlder) return
+    if (!sessionId || !olderCursor || loadingOlderRef.current) return
+    loadingOlderRef.current = true
     setLoadingOlder(true)
     try {
       const runtime = await ensureConnection(hostId)
@@ -585,9 +636,75 @@ export default function WorkspaceScreen() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("error"))
     } finally {
+      loadingOlderRef.current = false
       setLoadingOlder(false)
     }
   }
+
+  olderCursorRef.current = olderCursor
+  loadOlderRef.current = () => void loadOlder()
+
+  const onViewableItemsChanged = useRef(
+    (info: { viewableItems: Array<{ item: SessionMessage }> }) => {
+      const oldest = oldestMessageIdRef.current
+      if (!oldest || !olderCursorRef.current || loadingOlderRef.current) return
+      if (info.viewableItems.some((entry) => entry.item.id === oldest)) loadOlderRef.current()
+    },
+  ).current
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current
+
+  const handleMessageScroll = (event: {
+    nativeEvent: {
+      contentOffset: { y: number }
+      contentSize: { height: number }
+      layoutMeasurement: { height: number }
+    }
+  }) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
+    messageOffsetRef.current = contentOffset.y
+    setShowJump(contentOffset.y > 240)
+    // Inverted list: scrolling towards older messages increases contentOffset.y.
+    // Start fetching before the user actually hits the very top.
+    const distanceToOldest = contentSize.height - (contentOffset.y + layoutMeasurement.height)
+    if (distanceToOldest < 420) void loadOlder()
+  }
+
+  const beginMessageLayoutChange = useCallback((_opening: boolean, y: number) => {
+    layoutAnchorRef.current = {
+      offset: messageOffsetRef.current,
+      y,
+    }
+  }, [])
+
+  const finishMessageLayoutChange = useCallback((y: number) => {
+    const anchor = layoutAnchorRef.current
+    layoutAnchorRef.current = null
+    if (!anchor) return
+    // Increasing an inverted list's offset moves content down. Compensate by
+    // the exact screen delta of the header that was toggled.
+    const target = Math.max(0, anchor.offset + (anchor.y - y))
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({ offset: target, animated: false })
+    })
+  }, [])
+
+  const selectionGuard = useMemo(
+    () => ({
+      onPressIn: () => {
+        selectionOffsetRef.current = messageOffsetRef.current
+      },
+      onLongPress: () => {
+        const offset = selectionOffsetRef.current
+        // Android requests the whole selectable TextView on screen when the
+        // selection toolbar opens. Restore the pre-selection anchor so the
+        // transcript does not jump under the user's finger.
+        setTimeout(() => {
+          listRef.current?.scrollToOffset({ offset, animated: false })
+        }, 80)
+      },
+    }),
+    [],
+  )
 
   const selectSession = (id: string) => {
     setSessionId(id)
@@ -912,6 +1029,14 @@ export default function WorkspaceScreen() {
     }
   }
 
+  const confirmStop = () => {
+    if (!agentWorking || readOnly) return
+    Alert.alert(t("stopTaskTitle"), t("stopTaskBody"), [
+      { text: t("cancel"), style: "cancel" },
+      { text: t("stop"), style: "destructive", onPress: () => void stop() },
+    ])
+  }
+
   const compactContext = () => {
     if (!sessionId) return
     void ensureConnection(hostId)
@@ -1121,6 +1246,7 @@ export default function WorkspaceScreen() {
     })
     return mergeAssistantRuns([...combined, ...liveById.values()]).reverse()
   }, [liveMessages, messages])
+  oldestMessageIdRef.current = displayMessages[displayMessages.length - 1]?.id
   const currentModel = useMemo(
     () =>
       models?.find(
@@ -1326,33 +1452,46 @@ export default function WorkspaceScreen() {
               <Text style={styles.connectionText}>{t("syncingSession")}</Text>
             </View>
           ) : (
-            <FlatList
-              key={sessionId}
-              ref={listRef}
-              inverted
-              data={displayMessages}
-              keyExtractor={(item) => item.id}
-              renderItem={({ item }) => <MessageView message={item} />}
-              contentContainerStyle={styles.messages}
-              keyboardShouldPersistTaps="handled"
-              onEndReached={() => void loadOlder()}
-              onEndReachedThreshold={0.25}
-              onScroll={(event) => setShowJump(event.nativeEvent.contentOffset.y > 240)}
-              scrollEventThrottle={100}
-              removeClippedSubviews={Platform.OS === "android"}
-              ListFooterComponent={
-                olderCursor ? (
-                  <Pressable accessibilityRole="button" onPress={() => void loadOlder()} style={styles.olderButton}>
-                    <Text style={styles.olderText}>{loadingOlder ? t("loadingOlder") : t("loadOlder")}</Text>
-                  </Pressable>
-                ) : (
-                  <View style={{ height: 4 }} />
-                )
-              }
-              ListEmptyComponent={
-                <Text style={styles.emptyMessages}>{t("noMessages")}</Text>
-              }
-            />
+            <SelectionGuardProvider value={selectionGuard}>
+              <FlatList
+                key={sessionId}
+                ref={listRef}
+                inverted
+                data={displayMessages}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
+                  <MessageView
+                    message={item}
+                    onBeforeExpand={beginMessageLayoutChange}
+                    onAfterExpand={finishMessageLayoutChange}
+                  />
+                )}
+                contentContainerStyle={styles.messages}
+                keyboardShouldPersistTaps="handled"
+                onEndReached={() => void loadOlder()}
+                onEndReachedThreshold={0.4}
+                onViewableItemsChanged={onViewableItemsChanged}
+                viewabilityConfig={viewabilityConfig}
+                onScroll={handleMessageScroll}
+                scrollEventThrottle={80}
+                // Keep the visible message anchored when a card expands or
+                // collapses, and avoid recycled Text views jumping on selection.
+                maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 40 }}
+                removeClippedSubviews={false}
+                ListFooterComponent={
+                  olderCursor ? (
+                    <Pressable accessibilityRole="button" onPress={() => void loadOlder()} style={styles.olderButton}>
+                      <Text style={styles.olderText}>{loadingOlder ? t("loadingOlder") : t("scrollForOlder")}</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={{ height: 4 }} />
+                  )
+                }
+                ListEmptyComponent={
+                  <Text style={styles.emptyMessages}>{t("noMessages")}</Text>
+                }
+              />
+            </SelectionGuardProvider>
           )}
 
           {showJump ? (
@@ -1385,6 +1524,16 @@ export default function WorkspaceScreen() {
                   <Icon name="activity" size={14} color={colors.warning} />
                   <Text style={styles.activityText}>{t("backgroundRunning", { n: activities.length })}</Text>
                   <Icon name="chevronRight" size={14} color={colors.faint} />
+                </Pressable>
+              ) : null}
+              {agentWorking && !readOnly ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("stopTaskTitle")}
+                  onPress={confirmStop}
+                  style={({ pressed }) => [styles.stopTaskButton, pressed && { opacity: 0.72 }]}
+                >
+                  <Icon name="stop" size={13} color="#FFFFFF" />
                 </Pressable>
               ) : null}
             </View>
@@ -1460,7 +1609,7 @@ export default function WorkspaceScreen() {
               </View>
             ) : null}
 
-            {dictation.listening || dictation.transcribing || dictation.error ? (
+            {voiceStage === "closed" && (dictation.transcribing || dictation.error) ? (
               <View style={styles.voiceBar}>
                 {dictation.transcribing ? <ActivityIndicator size="small" color={colors.accent} /> : null}
                 <Text style={[styles.voiceText, dictation.error && { color: colors.danger }]} numberOfLines={2}>
@@ -1469,20 +1618,16 @@ export default function WorkspaceScreen() {
                     : dictation.transcribing
                       ? dictation.engine === "host"
                         ? t("transcribingHost")
-                        : t("transcribingLocal")
-                      : dictation.engine === "local"
-                        ? t("listeningLocal")
-                        : dictation.engine === "host"
-                          ? t("listeningHost")
-                          : t("listeningSystem")}
+                        : dictation.engine === "system"
+                          ? t("transcribingSystem")
+                          : t("transcribingLocal")
+                      : ""}
                 </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => (dictation.error ? dictation.clearError() : dictation.stop())}
-                  hitSlop={8}
-                >
-                  <Text style={styles.voiceStop}>{dictation.error ? t("close") : t("stop")}</Text>
-                </Pressable>
+                {dictation.error ? (
+                  <Pressable accessibilityRole="button" onPress={dictation.clearError} hitSlop={8}>
+                    <Text style={styles.voiceStop}>{t("close")}</Text>
+                  </Pressable>
+                ) : null}
               </View>
             ) : null}
 
@@ -1549,7 +1694,7 @@ export default function WorkspaceScreen() {
             <View style={styles.composerRow}>
               <TextInput
                 ref={inputRef}
-                editable={ready && !sending && !readOnly}
+                editable={ready && !sending && !readOnly && voiceStage === "closed"}
                 multiline
                 onChangeText={setDraft}
                 onSelectionChange={(event) => setDraftSelection(event.nativeEvent.selection)}
@@ -1559,27 +1704,46 @@ export default function WorkspaceScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("dictation")}
-                disabled={!ready || readOnly || sending || dictation.transcribing || !voiceReady}
-                onPress={() => (dictation.listening ? dictation.stop() : void dictation.start("zh-CN"))}
+                disabled={
+                  !ready ||
+                  readOnly ||
+                  sending ||
+                  dictation.transcribing ||
+                  !voiceReady ||
+                  voiceStage !== "closed"
+                }
+                onPress={openVoicePanel}
                 style={({ pressed }) => [
                   styles.iconAction,
-                  (!ready || readOnly || sending || !voiceReady) && { opacity: 0.32 },
+                  (!ready || readOnly || sending || !voiceReady || voiceStage !== "closed") && { opacity: 0.32 },
                   pressed && { opacity: 0.6 },
                 ]}
               >
-                <Icon name="mic" size={19} color={dictation.listening ? colors.accent : colors.muted} />
+                <Icon
+                  name="mic"
+                  size={19}
+                  color={voiceStage === "recording" ? colors.accent : colors.muted}
+                />
               </Pressable>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("send")}
                 disabled={
-                  !ready || sending || readOnly || (draft.trim().length === 0 && stagedComments.length === 0)
+                  !ready ||
+                  sending ||
+                  readOnly ||
+                  voiceStage !== "closed" ||
+                  (draft.trim().length === 0 && stagedComments.length === 0)
                 }
                 onPress={() => void send()}
                 style={({ pressed }) => [
                   styles.sendButton,
                   { backgroundColor: colors.accent },
-                  (!ready || sending || readOnly || (draft.trim().length === 0 && stagedComments.length === 0)) && {
+                  (!ready ||
+                    sending ||
+                    readOnly ||
+                    voiceStage !== "closed" ||
+                    (draft.trim().length === 0 && stagedComments.length === 0)) && {
                     opacity: 0.32,
                   },
                   pressed && { opacity: 0.75 },
@@ -1593,10 +1757,22 @@ export default function WorkspaceScreen() {
               </Pressable>
             </View>
 
-            <View style={styles.statusBar}>
-              <ScrollView
-                horizontal
-                nestedScrollEnabled
+            {voiceStage !== "closed" ? (
+              <VoicePanel
+                stage={voiceStage}
+                error={dictation.error}
+                engine={dictation.engine}
+                onStop={stopVoiceCapture}
+                onConfirm={confirmVoice}
+                onCancel={cancelVoice}
+              />
+            ) : null}
+
+            {voiceStage === "closed" ? (
+              <View style={styles.statusBar}>
+                <ScrollView
+                  horizontal
+                  nestedScrollEnabled
                 overScrollMode="never"
                 showsHorizontalScrollIndicator={false}
                 onTouchStart={(event) => {
@@ -1640,8 +1816,9 @@ export default function WorkspaceScreen() {
                     </Text>
                   </View>
                 ))}
-              </ScrollView>
-            </View>
+                </ScrollView>
+              </View>
+            ) : null}
           </View>
         </View>
       )}
@@ -1743,6 +1920,12 @@ export default function WorkspaceScreen() {
 
         {panelMode === "main" ? (
           <View style={{ gap: 2 }}>
+            <SheetRow
+              icon="activity"
+              label={t("statusTitle")}
+              value={active ? t("statusRunning") : t("statusIdle")}
+              onPress={() => setPanelMode("status")}
+            />
             <SheetRow icon="spark" label={t("agent")} value={agentName} onPress={() => setPanelMode("agent")} />
             <SheetRow icon="message" label={t("model")} value={modelName} onPress={() => setPanelMode("model")} />
             <SheetRow icon="sliders" label={t("reasoningDepth")} value={variantName} onPress={() => setPanelMode("variant")} />
@@ -2138,6 +2321,212 @@ function RunningDot() {
   return <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.warning }} />
 }
 
+function VoicePanel(props: {
+  stage: "recording" | "confirm"
+  error: string | null
+  engine: VoiceEngine | null
+  onStop: () => void
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const { colors } = useTheme()
+  const t = useT()
+  const styles = useThemedStyles(voicePanelStyles)
+  const [seconds, setSeconds] = useState(0)
+  const opacity = useRef(new Animated.Value(0)).current
+  const offset = useRef(new Animated.Value(14)).current
+  const bars = useRef(Array.from({ length: 5 }, () => new Animated.Value(0.35))).current
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, {
+        toValue: 1,
+        duration: 180,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }),
+      Animated.timing(offset, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start()
+  }, [offset, opacity])
+
+  useEffect(() => {
+    if (props.stage !== "recording" || props.error) return
+    setSeconds(0)
+    const timer = setInterval(() => setSeconds((value) => value + 1), 1_000)
+    return () => clearInterval(timer)
+  }, [props.error, props.stage])
+
+  useEffect(() => {
+    if (props.stage !== "recording" || props.error) return
+    const animations = bars.map((bar, index) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(index * 90),
+          Animated.timing(bar, { toValue: 1, duration: 320, useNativeDriver: true }),
+          Animated.timing(bar, { toValue: 0.35, duration: 360, useNativeDriver: true }),
+          Animated.delay((bars.length - index) * 60),
+        ]),
+      ),
+    )
+    animations.forEach((animation) => animation.start())
+    return () => {
+      animations.forEach((animation) => animation.stop())
+      bars.forEach((bar) => bar.setValue(0.35))
+    }
+  }, [bars, props.error, props.stage])
+
+  const engineLabel =
+    props.engine === "host"
+      ? t("engineHost")
+      : props.engine === "local"
+        ? t("engineLocal")
+        : props.engine === "system"
+          ? t("engineSystem")
+          : t("engineAuto")
+
+  return (
+    <Animated.View style={[styles.panel, { opacity, transform: [{ translateY: offset }] }]}>
+      {props.stage === "recording" ? (
+        <View style={styles.row}>
+          <View style={styles.wave}>
+            {bars.map((bar, index) => (
+              <Animated.View key={index} style={[styles.waveBar, { transform: [{ scaleY: bar }] }]} />
+            ))}
+          </View>
+          <View style={styles.copy}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Text style={[styles.title, props.error && { color: colors.danger }]} numberOfLines={1}>
+                {props.error ?? t("voicePanelRecording")}
+              </Text>
+              {!props.error ? <Text style={styles.timer}>{formatSeconds(seconds)}</Text> : null}
+            </View>
+            <Text style={styles.hint} numberOfLines={2}>
+              {props.error ? t("voicePanelErrorHint") : t("voicePanelHint", { engine: engineLabel })}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={props.error ? t("close") : t("stop")}
+            onPress={props.error ? props.onCancel : props.onStop}
+            style={({ pressed }) => [
+              props.error ? styles.closeButton : styles.stopButton,
+              pressed && { opacity: 0.72 },
+            ]}
+          >
+            {props.error ? (
+              <Icon name="close" size={18} color={colors.muted} />
+            ) : (
+              <Icon name="stop" size={15} color="#FFFFFF" />
+            )}
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.row}>
+          <View style={[styles.confirmIcon, { backgroundColor: colors.accentSoft }]}>
+            <Icon name="mic" size={18} color={colors.accent} />
+          </View>
+          <View style={styles.copy}>
+            <Text style={styles.title}>{t("voicePanelReady")}</Text>
+            <Text style={styles.hint} numberOfLines={2}>
+              {t("voicePanelConfirmHint", { engine: engineLabel })}
+            </Text>
+          </View>
+          <View style={styles.actions}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={props.onCancel}
+              style={({ pressed }) => [styles.cancelButton, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={styles.cancelText}>{t("cancel")}</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={props.onConfirm}
+              style={({ pressed }) => [styles.confirmButton, pressed && { opacity: 0.8 }]}
+            >
+              <Text style={styles.confirmText}>{t("confirm")}</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+    </Animated.View>
+  )
+}
+
+function formatSeconds(value: number): string {
+  const minutes = Math.floor(value / 60)
+  const seconds = value % 60
+  return `${minutes}:${String(seconds).padStart(2, "0")}`
+}
+
+const voicePanelStyles = (colors: Palette) =>
+  StyleSheet.create({
+    panel: {
+      minHeight: 64,
+      marginTop: 6,
+      marginHorizontal: 4,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderRadius: 14,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      justifyContent: "center",
+    },
+    row: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 44 },
+    wave: { width: 44, height: 26, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 3 },
+    waveBar: { width: 3, height: 20, borderRadius: 2, backgroundColor: colors.danger },
+    copy: { flex: 1, minWidth: 0 },
+    title: { fontSize: 13, fontWeight: "600", color: colors.text },
+    timer: { fontSize: 11, color: colors.muted, fontFamily: "monospace" },
+    hint: { marginTop: 2, fontSize: 11, lineHeight: 16, color: colors.faint },
+    stopButton: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.danger,
+    },
+    closeButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.bg,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    confirmIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" },
+    actions: { flexDirection: "row", alignItems: "center", gap: 6 },
+    cancelButton: {
+      height: 34,
+      paddingHorizontal: 12,
+      borderRadius: 17,
+      alignItems: "center",
+      justifyContent: "center",
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.bg,
+    },
+    cancelText: { fontSize: 12, fontWeight: "600", color: colors.muted },
+    confirmButton: {
+      height: 34,
+      paddingHorizontal: 14,
+      borderRadius: 17,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.accent,
+    },
+    confirmText: { fontSize: 12, fontWeight: "700", color: colors.accentText },
+  })
+
 function statusText(status: string | undefined, t: ReturnType<typeof useT>): string {
   switch (status) {
     case "ready":
@@ -2201,6 +2590,7 @@ function voiceLabel(value: VoiceEnginePreference | undefined, t: ReturnType<type
   if (value === "system") return t("engineSystem")
   return t("engineAuto")
 }
+
 
 /**
  * OpenCode may split one assistant turn across several messages. Rendering each
@@ -2346,15 +2736,18 @@ const workspaceStyles = (colors: Palette) =>
       justifyContent: "center",
     },
     activitySlot: {
-      minHeight: 38,
+      position: "relative",
+      height: 44,
       justifyContent: "center",
-      paddingHorizontal: 14,
-      paddingBottom: 6,
+      paddingLeft: 14,
+      paddingRight: 54,
+      zIndex: 4,
     },
     activityPill: {
       flexDirection: "row",
       alignItems: "center",
       gap: 8,
+      maxWidth: "100%",
       paddingHorizontal: 12,
       paddingVertical: 8,
       borderRadius: 999,
@@ -2362,6 +2755,23 @@ const workspaceStyles = (colors: Palette) =>
       alignSelf: "flex-start",
     },
     activityText: { fontSize: 12, fontWeight: "600", color: colors.muted },
+    stopTaskButton: {
+      position: "absolute",
+      right: 14,
+      top: 6,
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.danger,
+      shadowColor: "#000000",
+      shadowOpacity: 0.16,
+      shadowRadius: 4,
+      shadowOffset: { width: 0, height: 2 },
+      elevation: 4,
+      zIndex: 8,
+    },
     error: { marginHorizontal: 16, marginBottom: 4, fontSize: 12.5, color: colors.danger },
     composer: { paddingHorizontal: 10, paddingTop: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: colors.bg },
     reviewStaging: {

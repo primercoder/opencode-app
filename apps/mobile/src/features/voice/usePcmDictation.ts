@@ -35,7 +35,8 @@ export function usePcmDictation(onFinal: (text: string) => void): {
   transcribing: boolean
   error: string | null
   start: (transcribe: PcmTranscriber) => Promise<void>
-  stop: () => void
+  pause: () => void
+  confirm: () => void
   cancel: () => void
   clearError: () => void
 } {
@@ -99,12 +100,13 @@ export function usePcmDictation(onFinal: (text: string) => void): {
     }
   }, [t])
 
-  const stop = useCallback(() => {
+  // Stop capturing but keep the PCM buffer so the user can confirm or cancel.
+  const pause = useCallback(() => {
     if (!recording) return
     stopRequested.current = true
     setRecording(false)
     activeHandler = null
-    void finish()
+    stopStream()
   }, [recording])
 
   const finish = async () => {
@@ -149,6 +151,11 @@ export function usePcmDictation(onFinal: (text: string) => void): {
     }
   }
 
+  const confirm = () => {
+    if (transcribing) return
+    void finish()
+  }
+
   const cancel = useCallback(() => {
     stopRequested.current = true
     activeHandler = null
@@ -160,5 +167,5 @@ export function usePcmDictation(onFinal: (text: string) => void): {
 
   const clearError = useCallback(() => setError(null), [])
 
-  return { recording, transcribing, error, start, stop, cancel, clearError }
+  return { recording, transcribing, error, start, pause, confirm, cancel, clearError }
 }

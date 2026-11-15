@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useRef, useState } from "react"
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -11,16 +11,18 @@ export function useDictation(onFinal: (text: string) => void): {
   error: string | null
   start: (language?: string) => Promise<void>
   stop: () => void
+  cancel: () => void
   clearError: () => void
 } {
   const t = useT()
   const [listening, setListening] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const discard = useRef(false)
 
   useSpeechRecognitionEvent("start", () => setListening(true))
   useSpeechRecognitionEvent("end", () => setListening(false))
   useSpeechRecognitionEvent("result", (event) => {
-    if (!event.isFinal) return
+    if (discard.current || !event.isFinal) return
     const text = event.results[0]?.transcript?.trim()
     if (text) onFinal(text)
   })
@@ -31,6 +33,7 @@ export function useDictation(onFinal: (text: string) => void): {
 
   const start = useCallback(async (language = "zh-CN") => {
     setError(null)
+    discard.current = false
     try {
       const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync()
       if (!permission.granted) {
@@ -53,9 +56,19 @@ export function useDictation(onFinal: (text: string) => void): {
     ExpoSpeechRecognitionModule.stop()
   }, [])
 
+  const cancel = useCallback(() => {
+    discard.current = true
+    setListening(false)
+    try {
+      ExpoSpeechRecognitionModule.abort()
+    } catch {
+      ExpoSpeechRecognitionModule.stop()
+    }
+  }, [])
+
   const clearError = useCallback(() => setError(null), [])
 
-  return { listening, error, start, stop, clearError }
+  return { listening, error, start, stop, cancel, clearError }
 }
 
 function errorMessage(code: ExpoSpeechRecognitionErrorCode, t: ReturnType<typeof useT>): string {
