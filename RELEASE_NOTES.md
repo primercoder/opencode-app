@@ -1,82 +1,113 @@
-# OC Remote 0.1.3
+# OC Remote 0.1.4
 
-三端认证体系重构：内置 Noise NK 认证，默认无需第三方 CA，同时保留可选 TLS。
+主机端、中继端和手机端一起更新。这次重点是**连接方式可控、中继部署简化、手机界面不添乱**。
 
-## 本次更新
+## 版本
 
-| 项目 | 内容 |
+| 组件 | 版本 |
 |---|---|
-| 中继认证 | 新增 Noise NK v3 握手；中继身份由邀请链接中的 X25519 公钥固定 |
-| 简化部署 | 中继可直接以 `ws://` + `--no-tls` 运行，只需要公网 IP 和端口；TLS 仍可叠加 |
-| Token 保护 | host/client 的邀请和长期 secret 只在 Noise 加密 payload 中传输，不再明文发送 |
-| 控制帧保护 | 主机的中继控制消息（邀请刷新、peer 通知等）使用 Noise transport 加密 |
-| 应用数据 | 手机↔主机仍然保持独立 Noise 端到端加密，中继只能看到密文 |
-| 身份固定 | 邀请包含 `rk` 中继公钥；主机和手机静默校验，不需要证书确认弹窗 |
-| 部署简化 | 中继数据、身份、日志和 admin socket 都集中在安装目录下 |
-| 兼容性 | 协议升级到 v3；旧的 0.1.2 中继主体和配对码需要重新登记/配对 |
+| 手机 / 主机 | `0.1.4` |
+| Android versionCode | `6` |
+| 中继 | `0.4.0` |
+| 中继协议 | `v3`（Noise NK；扩展开放主机登记） |
+
+## 主机端
+
+- 命令行重新设计：
+  - `ocremote start` 只负责启动，读取已保存的直连/中继设置
+  - `ocremote direct [地址|off]` 动态开关或修改直连
+  - `ocremote relay [host-link|on|off]` 动态登记、启用或关闭中继
+  - `ocremote pair` 只输出实际启用的线路
+- 运行中修改立即生效，不再提示 `host is running` 后拒绝：
+  - 只开中继后可以随时加直连
+  - 只开直连后可以随时加中继
+  - 修改一边不会影响另一边
+- `relay off` 保留中继身份，`relay on` 或同一 host link 可重新启用，不会重复占用中继名额。
+- 配对输出按线路拆分：
+  - `Direct · same LAN`：只包含直连
+  - `Relay · any network`：只包含中继
+  - 只有中继时不会出现 `127.0.0.1` 直连
+  - 只有直连时不会出现中继
+  - 回环地址永不放进手机配对码
+- `status` 只显示真实启用的线路。
+- 旧版 `start --listen/--pair/--relay-link` 等参数移除，帮助文档给出完整常规流程示例。
+
+## 中继端
+
+- 默认使用 `ws://` + Noise NK，公网 IP 即可启动，不需要证书或 `init`。
+- 移除自动生成自签 CA、`--no-tls`、`--tls-ca`、`--rotate-tls` 和 host invite 流程。
+- TLS 仍是可选传输层，通过 `--tls-cert/--tls-key` 或反向代理启用。
+- 任意 OC Remote 主机可自行登记，不需要预发 host invite：
+  - 主机发送稳定 `hostId`
+  - 中继分配 subject secret 和 room
+  - 同一活动 `hostId` 不能重复登记
+- 新增容量限制：
+  - `--max-hosts` 默认 `3`
+  - `--max-clients` 默认 `3`（每个主机房间）
+  - 超限返回 `RELAY_HOST_LIMIT` / `RELAY_ROOM_FULL`
+- 启动时打印可复用 `ocremote-relay://host#...`：
+  - 只固定中继 X25519 公钥
+  - 不包含一次性秘密
+  - 主机保存长期 subject secret 后重连
+- 管理命令精简为 `status`、`hosts`、`clients`、`rooms`、`link`、`revoke`。
+- 帮助文档包含公网 IP、可选 TLS、限额和常用管理示例。
+
+## 手机端
+
+- 修复主机设置里的二维码扫描：
+  - 新增全屏相机扫描层
+  - 不再把 `CameraView` 套在透明 BottomSheet 和 ScrollView 里
+  - 进入扫描自动请求相机权限
+- 移除“中继访问/已登录”手动卡片：
+  - 中继只从主机配对码里的 invite 自动登记
+  - 不再要求手动粘贴手机邀请
+- 连接方式固定为直连和中继两类：
+  - 同一类型再次添加会覆盖旧线路
+  - 最多各一条，不再堆叠
+  - 配对时按类型合并，不会因为新增直连而丢掉中继
+  - 有中继时清理旧版遗留的回环直连
+- 消息正文取消长按复制，移除选择工具栏带来的跳动。
+- 折叠区域重新使用底边锚定：
+  - 卡片在自身 `onLayout` 中报告高度变化
+  - 列表偏移按同一 delta 立即调整，不再等待 `requestAnimationFrame`
+  - 展开内容保持可见，避免固定标题导致内容被输入框遮住
+  - 折叠后回到原位置，不再出现一帧跳动
+- 展开内容仍可正常显示思考、工具输入输出和压缩摘要。
 
 ## 升级说明
 
-这次是认证协议变更，不能与旧版中继或旧配对码混用：
+- 主机和中继都需要更新到本次版本；手机 APK 也要更新。
+- 旧版中继的 host invite 不再签发。升级后：
+  1. 启动中继 0.4.0
+  2. 复制启动输出的 host link
+  3. 在主机执行 `ocremote relay '<host link>'`
+  4. 手机重新扫描主机生成的配对码
+- 旧版已保存的 relay subject 仍可用于 Noise NK 认证；如果主机配置丢失，管理员可用 `admin revoke <subjectId>` 释放名额后重新登记。
+- 旧配对码不能继续使用，需要重新生成。
 
-1. 升级中继到 `0.3.0`
-2. 主机重新执行一次 `--relay-link` 登记
-3. 手机重新扫描主机配对码
+## 安全模型
 
-主机和手机配对成功后，后续使用 `--relay` 即可复用长期身份。
-
-## 下载
-
-| 文件 | 平台 | 架构 | 用途 |
-|---|---|---|---|
-| `ocremote-0.1.3-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
-| `ocremote-0.1.3-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
-| `ocremote-host-0.1.3-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 与 sherpa-onnx |
-| `ocremote-host-0.1.3-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 与 sherpa-onnx |
-| `ocremote-relay-0.3.0-linux-amd64` | Linux | x86_64 | 中继二进制 |
-| `ocremote-relay-0.3.0-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
-| `ocremote-relay-0.3.0-linux-arm64` | Linux | arm64 | 中继二进制 |
-| `ocremote-relay-0.3.0-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
-
-## 简化中继启动
-
-```bash
-./ocremote-relay serve \
-  --data-dir /opt/ocremote/relay/data \
-  --listen 0.0.0.0:8443 \
-  --public-url ws://<公网IP>:8443/ws \
-  --no-tls
-```
-
-首次启动会打印一次性 host invite：
-
-```text
-ocremote-relay://enroll#...
-```
-
-主机登记：
-
-```bash
-ocremote start --listen 0.0.0.0:8787 \
-  --relay-link 'ocremote-relay://enroll#...'
-```
-
-## 快速开始
-
-| 端 | 操作 |
+| 项目 | 机制 |
 |---|---|
-| 手机 | 安装对应架构的 APK，打开后扫码或粘贴主机配对链接 |
-| 主机 x64 | `tar xzf ocremote-host-0.1.3-linux-x64.tar.gz && cd ocremote && ./ocremote start --listen 0.0.0.0:8787 --pair` |
-| 主机 arm64 | `tar xzf ocremote-host-0.1.3-linux-arm64.tar.gz && cd ocremote && ./ocremote start --listen 0.0.0.0:8787 --pair` |
-| 中继（可选） | 启动 `ocremote-relay`，用 host invite 登记主机，再用新的配对码连接手机 |
+| 应用数据 | 手机↔主机 Noise NK 端到端加密 |
+| 中继认证 | Noise NK；host link 固定中继 X25519 公钥 |
+| 主机/手机凭据 | subject secret 只在 Noise 加密 payload 中传输 |
+| 主机控制帧 | Noise transport 加密 |
+| 手机邀请 | 一次性、绑定 room |
+| TLS | 可选；Noise NK 认证不依赖证书 |
+| 开放登记边界 | 任何实现协议的主机可尝试登记；用 `max-hosts`、revoke 和 room 隔离控制 |
 
-## 说明
+## 验证
 
-| 项目 | 说明 |
-|---|---|
-| APK 签名 | 当前使用 Expo debug keystore，正式分发前需替换生产 keystore |
-| 加密 | 直连和中继的应用数据都保持手机↔主机 Noise 端到端加密 |
-| 中继身份 | 邀请内的 X25519 公钥固定中继身份，不依赖证书或 CA |
-| 校验 | `sha256sum -c SHA256SUMS` |
-
-完整功能与三端用法见 [README](https://github.com/primercoder/opencode-app/blob/main/README.md)。
+- 协议测试 30 项通过
+- 主机测试 14 项通过
+- 手机测试 72 项通过
+- 中继 Go 测试通过，包括开放主机登记、3 台上限、每房间 3 台手机上限
+- TypeScript 检查通过
+- Docker 中继 + 主机端到端测试通过
+- Android 模拟器验证：
+  - 只有中继时不出现直连
+  - 只有直连时不出现中继
+  - 全屏扫码入口、相机权限
+  - 连接方式覆盖与配对合并
+  - 折叠展开锚点与正文复制移除

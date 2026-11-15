@@ -52,7 +52,7 @@ async function setup() {
 
   return {
     host,
-    wsUrl: `ws://127.0.0.1:${host.port}/ws`,
+    wsUrl: `ws://127.0.0.1:${host.direct()!.port}/ws`,
     publicKey: base64UrlEncode(host.identity.publicKey),
   }
 }

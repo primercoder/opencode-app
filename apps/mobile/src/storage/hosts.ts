@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import * as SecureStore from "expo-secure-store"
 import type { Transport } from "@ocremote/protocol"
+import { normalizeTransports } from "@/lib/transports"
 
 export type HostRecord = {
   id: string
@@ -26,7 +27,10 @@ export async function loadHosts(): Promise<HostRecord[]> {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
-    return parsed.filter(isHostRecord)
+    return parsed.filter(isHostRecord).map((host) => ({
+      ...host,
+      transports: normalizeTransports(host.transports),
+    }))
   } catch {
     return []
   }

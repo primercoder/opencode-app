@@ -24,7 +24,6 @@ import { ExpoSpeechRecognitionModule } from "expo-speech-recognition"
 import { BottomSheet } from "@/components/BottomSheet"
 import { Icon } from "@/components/Icon"
 import { MessageView } from "@/components/Message"
-import { SelectionGuardProvider } from "@/components/selectionGuard"
 import { PendingDock } from "@/components/PendingDock"
 import { SessionDrawer } from "@/components/SessionDrawer"
 import { Badge, Button, IconButton, Segmented } from "@/components/ui"
@@ -164,8 +163,6 @@ export default function WorkspaceScreen() {
   const inputRef = useRef<TextInput>(null)
   const loadingOlderRef = useRef(false)
   const messageOffsetRef = useRef(0)
-  const layoutAnchorRef = useRef<{ offset: number; y: number } | null>(null)
-  const selectionOffsetRef = useRef(0)
   const oldestMessageIdRef = useRef<string | undefined>(undefined)
   const olderCursorRef = useRef<string | undefined>(undefined)
   const loadOlderRef = useRef<() => void>(() => undefined)
@@ -669,42 +666,19 @@ export default function WorkspaceScreen() {
     if (distanceToOldest < 420) void loadOlder()
   }
 
-  const beginMessageLayoutChange = useCallback((_opening: boolean, y: number) => {
-    layoutAnchorRef.current = {
-      offset: messageOffsetRef.current,
-      y,
-    }
+  const layoutAnchorRef = useRef<{ offset: number } | null>(null)
+
+  const beginMessageLayoutChange = useCallback(() => {
+    layoutAnchorRef.current = { offset: messageOffsetRef.current }
   }, [])
 
-  const finishMessageLayoutChange = useCallback((y: number) => {
+  const finishMessageLayoutChange = useCallback((delta: number) => {
     const anchor = layoutAnchorRef.current
     layoutAnchorRef.current = null
-    if (!anchor) return
-    // Increasing an inverted list's offset moves content down. Compensate by
-    // the exact screen delta of the header that was toggled.
-    const target = Math.max(0, anchor.offset + (anchor.y - y))
-    requestAnimationFrame(() => {
-      listRef.current?.scrollToOffset({ offset: target, animated: false })
-    })
+    if (!anchor || delta === 0) return
+    const target = Math.max(0, anchor.offset + delta)
+    listRef.current?.scrollToOffset({ offset: target, animated: false })
   }, [])
-
-  const selectionGuard = useMemo(
-    () => ({
-      onPressIn: () => {
-        selectionOffsetRef.current = messageOffsetRef.current
-      },
-      onLongPress: () => {
-        const offset = selectionOffsetRef.current
-        // Android requests the whole selectable TextView on screen when the
-        // selection toolbar opens. Restore the pre-selection anchor so the
-        // transcript does not jump under the user's finger.
-        setTimeout(() => {
-          listRef.current?.scrollToOffset({ offset, animated: false })
-        }, 80)
-      },
-    }),
-    [],
-  )
 
   const selectSession = (id: string) => {
     setSessionId(id)
@@ -1452,9 +1426,8 @@ export default function WorkspaceScreen() {
               <Text style={styles.connectionText}>{t("syncingSession")}</Text>
             </View>
           ) : (
-            <SelectionGuardProvider value={selectionGuard}>
-              <FlatList
-                key={sessionId}
+            <FlatList
+              key={sessionId}
                 ref={listRef}
                 inverted
                 data={displayMessages}
@@ -1474,9 +1447,9 @@ export default function WorkspaceScreen() {
                 viewabilityConfig={viewabilityConfig}
                 onScroll={handleMessageScroll}
                 scrollEventThrottle={80}
-                // Keep the visible message anchored when a card expands or
-                // collapses, and avoid recycled Text views jumping on selection.
-                maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 40 }}
+                // Native content-position maintenance handles expansion without a
+                // post-layout scroll correction, so the card never jumps a frame.
+                maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
                 removeClippedSubviews={false}
                 ListFooterComponent={
                   olderCursor ? (
@@ -1491,7 +1464,6 @@ export default function WorkspaceScreen() {
                   <Text style={styles.emptyMessages}>{t("noMessages")}</Text>
                 }
               />
-            </SelectionGuardProvider>
           )}
 
           {showJump ? (

@@ -1,5 +1,6 @@
 import type { PairingOffer } from "@ocremote/protocol"
 import { create } from "zustand"
+import { mergeTransports, normalizeTransports } from "@/lib/transports"
 import {
   loadCredentials,
   loadHosts,
@@ -38,7 +39,7 @@ export const useHosts = create<HostState>((set, get) => ({
   },
 
   async addHost(offer) {
-    const transports = offer.transports.map((transport) => {
+    const incoming = offer.transports.map((transport) => {
       if (transport.kind !== "relay") return transport
       // Pairing invites are single-use and already consumed by the time the
       // host is saved. Keep the room/URL, but do not persist the token.
@@ -47,6 +48,7 @@ export const useHosts = create<HostState>((set, get) => ({
     })
     const existing = get().hosts.find((host) => host.id === offer.hostId)
     if (existing) {
+      const transports = mergeTransports(existing.transports, incoming)
       const updated: HostRecord = {
         ...existing,
         name: offer.name,
@@ -64,7 +66,7 @@ export const useHosts = create<HostState>((set, get) => ({
       name: offer.name,
       publicKey: offer.pk,
       fingerprint: offer.fingerprint,
-      transports,
+      transports: normalizeTransports(incoming),
     }
     const hosts = [...get().hosts, host]
     set({ hosts })
@@ -109,11 +111,12 @@ export const useHosts = create<HostState>((set, get) => ({
   },
 
   async setTransports(hostId, transports) {
+    const normalized = normalizeTransports(transports)
     const hosts = get().hosts.map((host) =>
       host.id === hostId
         ? {
             ...host,
-            transports: transports.map((transport, index) => ({ ...transport, priority: index })),
+            transports: normalized,
           }
         : host,
     )

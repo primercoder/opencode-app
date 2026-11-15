@@ -1,15 +1,15 @@
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import type { RelayConfig } from "./config.ts"
 
-export const HOST_VERSION = "0.1.3"
+export const HOST_VERSION = "0.1.4"
 
 export type HostState = {
   pid: number
   startedAt: number
-  listen: string
-  lanUrls: string[]
-  relay: { url: string; room: string } | null
+  direct?: { hostname: string; port: number; urls: string[] }
+  relay: { url: string; room: string; state?: string } | null
   opencodeUrl: string
   opencodeVersion?: string
   socketPath: string
@@ -91,7 +91,11 @@ export function isAlive(pid: number | undefined): boolean {
 export type ControlCommand =
   | { cmd: "status" }
   | { cmd: "clients" }
-  | { cmd: "pair"; scope: "full" | "read"; ttlMinutes: number; url?: string }
+  | { cmd: "pair"; scope: "full" | "read"; ttlMinutes: number; directUrl?: string }
+  | { cmd: "direct.set"; hostname: string; port: number }
+  | { cmd: "direct.off" }
+  | { cmd: "relay.set"; relay: RelayConfig; caPath?: string }
+  | { cmd: "relay.off" }
   | { cmd: "stop" }
 
 export type ControlResult =

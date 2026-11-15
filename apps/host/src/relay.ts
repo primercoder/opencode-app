@@ -41,18 +41,24 @@ export function parseRelayInviteLink(input: string): RelayInvite {
 
 export type EnrollRelayInput = {
   link: string
+  hostId: string
   name?: string
+  hostPublicKey?: string
   caPath?: string
 }
 
 /**
- * Consumes a one-time relay invite and returns the long-lived host subject.
+ * Registers this host with a relay. New relays use a reusable host link and
+ * self-registration; one-time host invites from 0.3.x remain accepted.
  * The invite token is never placed in a URL.
  */
 export async function enrollRelaySubject(input: EnrollRelayInput): Promise<RelayConfig> {
   const invite = parseRelayInviteLink(input.link)
   if (invite.kind !== "host") {
-    throw new RelayError("RELAY_INVITE_INVALID", "this relay invite is for a phone, not a host")
+    throw new RelayError("RELAY_INVITE_INVALID", "this relay link is for a phone, not a host")
+  }
+  if (!input.hostId) {
+    throw new RelayError("RELAY_BAD_REQUEST", "host identity is missing")
   }
   const socket = createSocket(invite.url, input.caPath)
   socket.binaryType = "arraybuffer"
@@ -65,8 +71,10 @@ export async function enrollRelaySubject(input: EnrollRelayInput): Promise<Relay
         t: "relay.hello",
         v: 3,
         kind: "host",
-        invite: invite.invite,
-        ...(input.name ? { name: input.name } : {}),
+        hostId: input.hostId,
+        ...(input.name ? { hostName: input.name } : {}),
+        ...(input.hostPublicKey ? { hostPublicKey: input.hostPublicKey } : {}),
+        ...(invite.invite ? { invite: invite.invite } : {}),
       },
       10_000,
     )
@@ -90,6 +98,7 @@ export async function enrollRelaySubject(input: EnrollRelayInput): Promise<Relay
       subjectId,
       secret,
       relayKey: invite.rk,
+      enabled: true,
       ...(clientInvite ? { clientInvite } : {}),
     }
   } finally {

@@ -1,8 +1,8 @@
 import { parsePairingOffer, type Transport } from "@ocremote/protocol"
-import { CameraView, useCameraPermissions } from "expo-camera"
 import { useEffect, useRef, useState } from "react"
-import { ActivityIndicator, Linking, StyleSheet, Text, TextInput, View } from "react-native"
+import { ActivityIndicator, StyleSheet, Text, TextInput, View } from "react-native"
 import { BottomSheet } from "@/components/BottomSheet"
+import { QrScannerModal } from "@/components/QrScannerModal"
 import { Button, Card, Segmented } from "@/components/ui"
 import { useT } from "@/i18n"
 import { resolvePairingInput } from "@/services/pairing"
@@ -32,7 +32,7 @@ export function TransportAddSheet(props: {
   const [text, setText] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [permission, requestPermission] = useCameraPermissions()
+  const [scannerOpen, setScannerOpen] = useState(false)
   const scanLocked = useRef(false)
 
   useEffect(() => {
@@ -42,6 +42,7 @@ export function TransportAddSheet(props: {
     setText("")
     setError(null)
     setBusy(false)
+    setScannerOpen(false)
     scanLocked.current = false
   }, [props.visible])
 
@@ -52,10 +53,8 @@ export function TransportAddSheet(props: {
     setError(null)
     try {
       const transport = await buildTransport(value, kind, props.existing)
-      if (!props.onAdd(transport)) {
-        setError(t("transportExists"))
-        return
-      }
+      props.onAdd(transport)
+      setScannerOpen(false)
       props.onClose()
     } catch (cause) {
       if (cause instanceof RelayAccessError) {
@@ -71,6 +70,7 @@ export function TransportAddSheet(props: {
   const scanned = (data: string) => {
     if (scanLocked.current || busy) return
     scanLocked.current = true
+    setScannerOpen(false)
     void submit(data).finally(() => {
       setTimeout(() => {
         scanLocked.current = false
@@ -104,6 +104,7 @@ export function TransportAddSheet(props: {
           onChange={(value) => {
             setSource(value)
             setError(null)
+            if (value === "scan") setScannerOpen(true)
           }}
         />
       </View>
@@ -132,36 +133,31 @@ export function TransportAddSheet(props: {
           </View>
         </Card>
       ) : (
-        <Card style={{ padding: 12, gap: 8, marginTop: 12 }}>
-          {permission?.granted ? (
-            <View style={styles.scannerWrap}>
-              <CameraView
-                barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-                facing="back"
-                onBarcodeScanned={({ data }) => scanned(data)}
-                style={styles.scanner}
-              />
-              {busy ? (
-                <View style={styles.scannerBusy}>
-                  <ActivityIndicator color="#FFFFFF" />
-                </View>
-              ) : null}
-            </View>
-          ) : (
-            <View style={{ alignItems: "center", gap: 8, paddingVertical: 14 }}>
-              <Text style={styles.hint}>{t("cameraBody")}</Text>
-              {permission?.canAskAgain === false ? (
-                <Button label={t("openSystemSettings")} size="sm" variant="outline" onPress={() => void Linking.openSettings()} />
-              ) : (
-                <Button label={t("allowCamera")} size="sm" onPress={() => void requestPermission()} />
-              )}
-            </View>
-          )}
+        <Card style={{ padding: 14, gap: 10, marginTop: 12, alignItems: "center" }}>
           <Text style={styles.hint}>{t("scanTransportHint")}</Text>
+          <Button
+            label={busy ? t("loading") : t("openScanner")}
+            size="sm"
+            disabled={busy}
+            onPress={() => {
+              scanLocked.current = false
+              setScannerOpen(true)
+            }}
+          />
         </Card>
       )}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
+
+      <QrScannerModal
+        visible={scannerOpen}
+        title={t("scan")}
+        onClose={() => {
+          scanLocked.current = false
+          setScannerOpen(false)
+        }}
+        onScanned={scanned}
+      />
     </BottomSheet>
   )
 }
@@ -225,16 +221,4 @@ const stylesFor = (colors: ReturnType<typeof useTheme>["colors"]) =>
       textAlignVertical: "top",
     },
     error: { marginTop: 10, fontSize: 12.5, lineHeight: 18, color: colors.danger },
-    scannerWrap: { borderRadius: 12, overflow: "hidden", backgroundColor: colors.surface2 },
-    scanner: { height: 240, width: "100%" },
-    scannerBusy: {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: "rgba(0,0,0,0.25)",
-    },
   })

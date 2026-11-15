@@ -601,3 +601,96 @@ func decodeLink(t *testing.T, raw string) map[string]any {
 	}
 	return payload
 }
+
+func testServerWithLimits(t *testing.T, maxHosts, maxClients int) (*Server, *Store, *httptest.Server) {
+	t.Helper()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "relay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	key, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(Config{Store: store, RelayKey: key, MaxHosts: maxHosts, MaxClients: maxClients})
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+	return server, store, httpServer
+}
+
+func dialOpenHost(t *testing.T, httpServer *httptest.Server, server *Server, hostID, name string) *noiseClient {
+	t.Helper()
+	return dialNoise(t, httpServer, server, map[string]any{
+		"t":        "relay.hello",
+		"v":        3,
+		"kind":     "host",
+		"hostId":   hostID,
+		"hostName": name,
+	})
+}
+
+func roomClientInvite(t *testing.T, store *Store, room string) string {
+	t.Helper()
+	_, token, err := store.CreateRoomInvite(room, "phone", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func TestOpenHostRegistrationAndLimits(t *testing.T) {
+	server, store, httpServer := testServerWithLimits(t, 2, 2)
+
+	first := dialOpenHost(t, httpServer, server, "host_one", "desktop-1")
+	if first.welcome.T != "relay.welcome" || !first.welcome.Enrolled || first.welcome.Secret == "" || first.welcome.Room == "" {
+		t.Fatalf("open host registration failed: %+v", first.welcome)
+	}
+	if first.welcome.ClientInvite == "" {
+		t.Fatalf("host did not receive a phone invite: %+v", first.welcome)
+	}
+
+	duplicate := dialOpenHost(t, httpServer, server, "host_one", "desktop-1-again")
+	if duplicate.welcome.T != "relay.error" || duplicate.welcome.Code != "RELAY_HOST_EXISTS" {
+		t.Fatalf("expected duplicate host error, got %+v", duplicate.welcome)
+	}
+
+	second := dialOpenHost(t, httpServer, server, "host_two", "desktop-2")
+	if second.welcome.T != "relay.welcome" {
+		t.Fatalf("second host registration failed: %+v", second.welcome)
+	}
+
+	third := dialOpenHost(t, httpServer, server, "host_three", "desktop-3")
+	if third.welcome.T != "relay.error" || third.welcome.Code != "RELAY_HOST_LIMIT" {
+		t.Fatalf("expected host limit, got %+v", third.welcome)
+	}
+
+	phoneOne := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": roomClientInvite(t, store, first.welcome.Room), "room": first.welcome.Room, "name": "phone-1"})
+	phoneTwo := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": roomClientInvite(t, store, first.welcome.Room), "room": first.welcome.Room, "name": "phone-2"})
+	if phoneOne.welcome.T != "relay.welcome" || phoneTwo.welcome.T != "relay.welcome" {
+		t.Fatalf("room should accept two phones: %+v %+v", phoneOne.welcome, phoneTwo.welcome)
+	}
+	phoneThree := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": roomClientInvite(t, store, first.welcome.Room), "room": first.welcome.Room, "name": "phone-3"})
+	if phoneThree.welcome.T != "relay.error" || phoneThree.welcome.Code != "RELAY_ROOM_FULL" {
+		t.Fatalf("expected room full, got %+v", phoneThree.welcome)
+	}
+}
+
+func TestHostLinkShape(t *testing.T) {
+	server, _, _ := testServer(t)
+	link := server.HostLink()
+	const prefix = "ocremote-relay://host#"
+	if !strings.HasPrefix(link, prefix) {
+		t.Fatalf("unexpected host link: %s", link)
+	}
+	payload := decodeLink(t, strings.TrimPrefix(link, prefix))
+	if payload["kind"] != KindHost || payload["v"] != float64(3) {
+		t.Fatalf("unexpected host link payload: %#v", payload)
+	}
+	if payload["invite"] != nil {
+		t.Fatalf("host link must be reusable and carry no invite: %#v", payload)
+	}
+	if payload["rk"] != PublicKeyText(server.cfg.RelayKey) {
+		t.Fatalf("host link relay key mismatch: %#v", payload)
+	}
+}

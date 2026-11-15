@@ -7,11 +7,13 @@ import {
   type Transport,
 } from "@ocremote/protocol"
 import {
+  isLoopbackHostname,
   loadConfig,
   loadOrCreateIdentity,
   resolveHome,
   saveConfig,
   type DeviceScope,
+  type DirectConfig,
   type HostConfig,
   type Identity,
   type RelayConfig,
@@ -20,19 +22,22 @@ import { addPendingPair, hashPairCode } from "./pairing.ts"
 import { resolveOpencodeTarget, type OpencodeTarget } from "./opencode.ts"
 import { HostModelManager } from "./asr/modelManager.ts"
 import { HostAsr, type AsrService } from "./asr/service.ts"
-import { RelayHostClient } from "./relay.ts"
+import { RelayHostClient, type RelayState } from "./relay.ts"
 import { ConnectionSession, type ClientInfo, type HostContext } from "./session.ts"
 
 export type HostOptions = {
   homeDir?: string
+  /** Legacy direct binding. Prefer `direct`. */
   hostname?: string
   port?: number
+  /** Initial direct binding. null disables direct. undefined uses saved config. */
+  direct?: DirectConfig | null
   name?: string
   opencodeUrl?: string
   opencodePassword?: string
-  /** Relay is used only when this is set; a saved room is never activated implicitly. */
-  relay?: RelayConfig
-  /** PEM CA used to verify the relay TLS certificate (development / private CA). */
+  /** Initial relay. null disables relay. undefined uses saved config. */
+  relay?: RelayConfig | null
+  /** PEM CA used to verify an optional TLS relay certificate. */
   relayCa?: string
   modelsDir?: string
   modelBaseUrl?: string
@@ -40,22 +45,45 @@ export type HostOptions = {
   asr?: AsrService
 }
 
-export type Host = {
-  server: Bun.Server<unknown>
-  port: number
+export type DirectStatus = {
   hostname: string
+  port: number
+  urls: string[]
+}
+
+export type RelayStatus = {
+  url: string
+  room: string
+  state: RelayState
+}
+
+export type PairRoute = {
+  kind: "direct" | "relay"
+  offer: string
+  url: string
+  room?: string
+  shortUrl?: string
+  hasInvite?: boolean
+  expiresAt: number
+}
+
+export type Host = {
   identity: Identity
   config: HostConfig
   target: OpencodeTarget
-  relay?: RelayConfig
-  lanUrls: string[]
   modelsDir: string
   asr: AsrService
+  /** Current local direct listener, or undefined when direct is off. */
+  direct(): DirectStatus | undefined
+  relay(): RelayStatus | undefined
   clients(): ClientInfo[]
   issuePairCode(scope?: DeviceScope, ttlMs?: number): Promise<string>
-  pairingOffer(code: string, transportUrl?: string): Promise<string>
+  /** One labeled offer per enabled route, each with its own one-time code. */
+  pairingRoutes(input?: { scope?: DeviceScope; ttlMs?: number; directUrl?: string }): Promise<PairRoute[]>
+  setDirect(direct: DirectConfig | null): Promise<DirectStatus | undefined>
+  setRelay(relay: RelayConfig | null, caPath?: string): Promise<void>
   /** Stores the offer on the local HTTP server and returns a short QR URL. */
-  shortenOffer(offer: string, baseUrl?: string): string
+  shortenOffer(offer: string, baseUrl?: string): string | undefined
   close(): Promise<void>
 }
 
@@ -67,17 +95,10 @@ type PairPage = {
 export async function startHost(options: HostOptions = {}): Promise<Host> {
   const home = resolveHome(options.homeDir)
   const identity = await loadOrCreateIdentity(home, options.name)
-  const hostname = options.hostname ?? "127.0.0.1"
-  const port = options.port ?? 8787
   const config = await loadConfig(home, {
     hostId: identity.hostId,
     name: options.name ?? process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
-    lan: { hostname, port },
   })
-  // Only an explicitly requested relay is activated. This prevents a stale
-  // room from a previous run from taking over a direct/LAN-only start.
-  const relayConfig = options.relay
-  if (relayConfig) config.relay = relayConfig
   const target = await resolveOpencodeTarget({
     ...(options.opencodeUrl ? { url: options.opencodeUrl } : {}),
     ...(options.opencodePassword ? { password: options.opencodePassword } : {}),
@@ -91,7 +112,15 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
 
   const clientRegistry = new Map<number, ClientInfo>()
   let nextClientId = 1
-  let server: Bun.Server<unknown>
+  let directServer: Bun.Server<unknown> | undefined
+  let directStatus: DirectStatus | undefined
+  let relayConfig: RelayConfig | null = null
+  let relayClient: RelayHostClient | undefined
+  let relayState: RelayState | undefined
+  let closed = false
+
+  const pairPages = new Map<string, PairPage>()
+  const sessions = new WeakMap<object, ConnectionSession>()
 
   const ctx: HostContext = {
     identity,
@@ -118,151 +147,281 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     },
   }
 
-  const pairPages = new Map<string, PairPage>()
+  const persist = async (): Promise<void> => saveConfig(home, config)
 
-  let relayClient: RelayHostClient | undefined
-  const sessions = new WeakMap<object, ConnectionSession>()
+  const stopDirect = async (): Promise<void> => {
+    const server = directServer
+    directServer = undefined
+    directStatus = undefined
+    ctx.lanUrls = []
+    pairPages.clear()
+    if (server) await server.stop(true)
+  }
 
-  server = Bun.serve<unknown>({
-    hostname,
-    port,
-    fetch(request, server) {
-      const url = new URL(request.url)
-      if (url.pathname === "/health") return Response.json({ ok: true, v: 1, version: "0.1.0" })
-      if (url.pathname.startsWith("/p/")) {
-        const id = url.pathname.slice("/p/".length)
-        const page = pairPages.get(id)
-        if (!page) return new Response("pairing offer not found", { status: 404 })
-        if (page.expiresAt <= Date.now()) {
-          pairPages.delete(id)
-          return new Response("pairing offer expired", { status: 410 })
+  const startDirect = async (direct: DirectConfig): Promise<DirectStatus> => {
+    if (directStatus && directStatus.hostname === direct.hostname && directStatus.port === direct.port) {
+      return directStatus
+    }
+    await stopDirect()
+    const server = Bun.serve<unknown>({
+      hostname: direct.hostname,
+      port: direct.port,
+      fetch(request, current) {
+        const url = new URL(request.url)
+        if (url.pathname === "/health") return Response.json({ ok: true, v: 2, version: "0.1.4" })
+        if (url.pathname.startsWith("/p/")) {
+          const id = url.pathname.slice("/p/".length)
+          const page = pairPages.get(id)
+          if (!page) return new Response("pairing offer not found", { status: 404 })
+          if (page.expiresAt <= Date.now()) {
+            pairPages.delete(id)
+            return new Response("pairing offer expired", { status: 410 })
+          }
+          return new Response(page.offer, {
+            headers: {
+              "content-type": "text/plain; charset=utf-8",
+              "cache-control": "no-store",
+            },
+          })
         }
-        return new Response(page.offer, {
-          headers: {
-            "content-type": "text/plain; charset=utf-8",
-            "cache-control": "no-store",
-          },
-        })
-      }
-      if (url.pathname !== "/ws") return new Response("not found", { status: 404 })
-      if (server.upgrade(request, { data: {} })) return
-      return new Response("WebSocket upgrade required", { status: 426 })
-    },
-    websocket: {
-      open(ws) {
-        const session = new ConnectionSession(ws, ctx, {
-          transport: "direct",
-          ...(ws.remoteAddress ? { remoteAddress: ws.remoteAddress } : {}),
-        })
-        sessions.set(ws, session)
+        if (url.pathname !== "/ws") return new Response("not found", { status: 404 })
+        if (current.upgrade(request, { data: {} })) return
+        return new Response("WebSocket upgrade required", { status: 426 })
       },
-      message(ws, message) {
-        const session = sessions.get(ws)
-        if (!session) return
-        if (typeof message === "string") session.onText(message)
-        else session.onBinary(new Uint8Array(message))
+      websocket: {
+        open(ws) {
+          const session = new ConnectionSession(ws, ctx, {
+            transport: "direct",
+            ...(ws.remoteAddress ? { remoteAddress: ws.remoteAddress } : {}),
+          })
+          sessions.set(ws, session)
+        },
+        message(ws, message) {
+          const session = sessions.get(ws)
+          if (!session) return
+          if (typeof message === "string") session.onText(message)
+          else session.onBinary(new Uint8Array(message))
+        },
+        close(ws) {
+          sessions.get(ws)?.close()
+          sessions.delete(ws)
+        },
       },
-      close(ws) {
-        sessions.get(ws)?.close()
-        sessions.delete(ws)
-      },
-    },
-  })
+    })
+    const actualPort = server.port ?? direct.port
+    directServer = server
+    directStatus = {
+      hostname: direct.hostname,
+      port: actualPort,
+      urls: lanUrls(direct.hostname, actualPort),
+    }
+    config.direct = { hostname: direct.hostname, port: actualPort }
+    ctx.lanUrls = directStatus.urls
+    await persist()
+    return directStatus
+  }
 
-  const actualPort = server.port ?? port
-  config.lan = { hostname, port: actualPort }
-  const urls = lanUrls(hostname, actualPort)
-  ctx.lanUrls = urls
-  await saveConfig(home, config)
+  const stopRelay = (): void => {
+    relayClient?.close()
+    relayClient = undefined
+    relayState = undefined
+    if (relayConfig) relayConfig.enabled = false
+    if (config.relay) config.relay.enabled = false
+    relayConfig = null
+  }
 
-  if (relayConfig) {
-    relayClient = new RelayHostClient({
-      config: relayConfig,
-      ...(options.relayCa ? { caPath: options.relayCa } : {}),
+  const startRelay = async (next: RelayConfig, caPath?: string): Promise<void> => {
+    if (!next.relayKey) {
+      throw new Error("relay subject has no pinned relay key; re-enroll this host")
+    }
+    const previous = relayClient
+    const previousConfig = relayConfig
+    const previousCa = options.relayCa
+    previous?.close()
+    relayClient = undefined
+    relayState = "connecting"
+    next.enabled = true
+    relayConfig = next
+    config.relay = next
+    const client = new RelayHostClient({
+      config: next,
+      ...(caPath ?? previousCa ? { caPath: caPath ?? previousCa } : {}),
       createSession: (socket) => new ConnectionSession(socket, ctx, { transport: "relay" }),
       onState: (state, detail) => {
+        relayState = state
         if (state === "reconnecting" || state === "closed") {
           console.warn(`[relay] ${state}${detail ? `: ${detail}` : ""}`)
         }
       },
       onClientInvite: (link) => {
-        // Keep the last phone link on disk so "ocremote pair --relay" can still
-        // build an offer while the host is stopped.
-        relayConfig.clientInvite = link
-        void saveConfig(home, config).catch(() => undefined)
+        next.clientInvite = link
+        void persist().catch(() => undefined)
       },
     })
+    relayClient = client
     try {
-      await relayClient.start()
+      await client.start()
+      relayState = "open"
+      await persist()
     } catch (error) {
-      relayClient.close()
-      server.stop(true)
+      client.close()
+      relayClient = undefined
+      relayState = undefined
+      relayConfig = previousConfig
+      if (previousConfig) {
+        previousConfig.enabled = true
+        config.relay = previousConfig
+        if (previous) {
+          const restored = new RelayHostClient({
+            config: previousConfig,
+            ...(caPath ?? previousCa ? { caPath: caPath ?? previousCa } : {}),
+            createSession: (socket) => new ConnectionSession(socket, ctx, { transport: "relay" }),
+            onState: (state) => {
+              relayState = state
+            },
+            onClientInvite: (link) => {
+              previousConfig.clientInvite = link
+              void persist().catch(() => undefined)
+            },
+          })
+          relayClient = restored
+          try {
+            await restored.start()
+            relayState = "open"
+          } catch {
+            restored.close()
+            relayClient = undefined
+            relayState = undefined
+          }
+        }
+      } else {
+        delete config.relay
+      }
+      await persist().catch(() => undefined)
       throw error
     }
   }
 
+  const phoneDirectUrl = (override?: string): string | undefined => {
+    if (override) return override
+    if (!directStatus) return undefined
+    if (isLoopbackHostname(directStatus.hostname)) return undefined
+    const candidate = directPairUrl(directStatus.hostname, directStatus.port)
+    return isLoopbackUrl(candidate) ? undefined : candidate
+  }
+
+  const relayInvite = async (): Promise<string | undefined> => {
+    if (!relayConfig) return undefined
+    let invite = relayConfig.clientInvite
+    if (relayClient) {
+      try {
+        invite = await relayClient.requestClientInvite()
+      } catch {
+        // Keep the cached invite; the phone can still use a stored subject.
+      }
+    }
+    return invite
+  }
+
+  const buildOffer = (
+    code: string,
+    expiresAt: number,
+    transports: Transport[],
+  ): string => {
+    const offer: PairingOffer = {
+      v: 1,
+      hostId: identity.hostId,
+      name: config.name,
+      pk: "",
+      fingerprint: fingerprintOfPublicKey(identity.publicKey),
+      pairCode: code,
+      expiresAt,
+      transports,
+    }
+    return encodePairingOffer(offer, identity.publicKey)
+  }
+
   const host: Host = {
-    server,
-    port: actualPort,
-    hostname,
     identity,
     config,
     target,
-    ...(relayConfig ? { relay: relayConfig } : {}),
-    lanUrls: urls,
     modelsDir: modelManager.modelsDir,
     asr,
+    direct() {
+      return directStatus ? { ...directStatus, urls: [...directStatus.urls] } : undefined
+    },
+    relay() {
+      return relayConfig
+        ? { url: relayConfig.url, room: relayConfig.room, state: relayState ?? "closed" }
+        : undefined
+    },
     clients() {
       return [...clientRegistry.values()].sort((left, right) => (left.connectedAt ?? 0) - (right.connectedAt ?? 0))
     },
     async issuePairCode(scope: DeviceScope = "full", ttlMs?: number) {
       const { code } = addPendingPair(config, scope, ttlMs)
-      await saveConfig(home, config)
+      await persist()
       return code
     },
-    async pairingOffer(code: string, transportUrl?: string) {
-      const pending = config.pendingPairs.find((pair) => pair.codeHash === hashPairCode(code))
-      if (!pending) throw new Error("pairing code not found")
-      const transports: Transport[] = []
-      const directUrl = transportUrl ?? urls[0]
+    async pairingRoutes(input = {}) {
+      const scope = input.scope ?? "full"
+      const ttlMs = input.ttlMs
+      const routes: PairRoute[] = []
+      const directUrl = phoneDirectUrl(input.directUrl)
       if (directUrl) {
-        transports.push({ kind: "lan", url: directUrl, priority: 0 })
-      }
-      if (relayConfig) {
-        let clientInvite = relayConfig.clientInvite
-        if (relayClient) {
-          // The host is connected to the relay, so ask it for a fresh phone
-          // link for this pairing code. Fall back to the cached link when the
-          // relay is temporarily unreachable.
-          try {
-            clientInvite = await relayClient.requestClientInvite()
-          } catch {
-            // keep the cached invite
-          }
-        }
-        transports.push({
-          kind: "relay",
-          url: relayConfig.url,
-          room: relayConfig.room,
-          relayKey: relayConfig.relayKey,
-          priority: transports.length,
-          ...(clientInvite ? { invite: clientInvite } : {}),
+        const { code, pending } = addPendingPair(config, scope, ttlMs)
+        routes.push({
+          kind: "direct",
+          offer: buildOffer(code, pending.expiresAt, [{ kind: "lan", url: directUrl, priority: 0 }]),
+          url: directUrl,
+          expiresAt: pending.expiresAt,
         })
       }
-      if (transports.length === 0) throw new Error("no transport is available for pairing")
-      const offer: PairingOffer = {
-        v: 1,
-        hostId: identity.hostId,
-        name: config.name,
-        pk: "",
-        fingerprint: fingerprintOfPublicKey(identity.publicKey),
-        pairCode: code,
-        expiresAt: pending.expiresAt,
-        transports,
+      if (relayConfig) {
+        const { code, pending } = addPendingPair(config, scope, ttlMs)
+        const invite = await relayInvite()
+        routes.push({
+          kind: "relay",
+          offer: buildOffer(code, pending.expiresAt, [
+            {
+              kind: "relay",
+              url: relayConfig.url,
+              room: relayConfig.room,
+              relayKey: relayConfig.relayKey,
+              priority: 0,
+              ...(invite ? { invite } : {}),
+            },
+          ]),
+          url: relayConfig.url,
+          room: relayConfig.room,
+          hasInvite: Boolean(invite),
+          expiresAt: pending.expiresAt,
+        })
       }
-      return encodePairingOffer(offer, identity.publicKey)
+      if (routes.length === 0) throw new Error("no phone-reachable transport is enabled")
+      await persist()
+      return routes
+    },
+    async setDirect(next) {
+      if (!next) {
+        await stopDirect()
+        delete config.direct
+        await persist()
+        return undefined
+      }
+      return startDirect(next)
+    },
+    async setRelay(next, caPath) {
+      if (!next) {
+        stopRelay()
+        await persist()
+        return
+      }
+      await startRelay(next, caPath)
     },
     shortenOffer(offer, baseUrl) {
+      if (!directStatus) return undefined
+      const base = baseUrl ?? httpOrigin(directStatus.urls[0] ?? `ws://127.0.0.1:${directStatus.port}/ws`)
       const now = Date.now()
       for (const [key, page] of pairPages) {
         if (page.expiresAt <= now) pairPages.delete(key)
@@ -274,16 +433,49 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
       }
       const id = randomBytes(9).toString("base64url")
       pairPages.set(id, { offer, expiresAt: now + 10 * 60_000 })
-      const base = baseUrl ?? httpOrigin(urls[0] ?? `ws://127.0.0.1:${actualPort}/ws`)
       return `${base}/p/${id}`
     },
     async close() {
+      if (closed) return
+      closed = true
       asr.close()
       relayClient?.close()
+      relayClient = undefined
       await saveConfig(home, config)
-      server.stop(true)
+      await stopDirect()
     },
   }
+
+  const initialDirect =
+    options.direct !== undefined
+      ? options.direct
+      : options.hostname
+        ? { hostname: options.hostname, port: options.port ?? 8787 }
+        : config.direct
+  if (initialDirect) {
+    try {
+      await startDirect(initialDirect)
+    } catch (error) {
+      asr.close()
+      throw error
+    }
+  }
+
+  const initialRelay =
+    options.relay !== undefined
+      ? options.relay
+      : config.relay && config.relay.enabled !== false
+        ? config.relay
+        : undefined
+  if (initialRelay) {
+    try {
+      await startRelay(initialRelay, options.relayCa)
+    } catch (error) {
+      await host.close()
+      throw error
+    }
+  }
+
   return host
 }
 
@@ -312,4 +504,12 @@ export function directPairUrl(hostname: string, port: number): string {
     return urls.find((url) => !url.includes("127.0.0.1")) ?? urls[0] ?? `ws://127.0.0.1:${port}/ws`
   }
   return `ws://${hostname}:${port}/ws`
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    return isLoopbackHostname(new URL(value).hostname)
+  } catch {
+    return true
+  }
 }

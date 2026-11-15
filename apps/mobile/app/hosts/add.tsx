@@ -16,11 +16,10 @@ import {
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Icon } from "@/components/Icon"
-import { RelayAccessCard } from "@/components/RelayAccessCard"
 import { Button, Card, Divider, IconButton, Segmented } from "@/components/ui"
 import { useT } from "@/i18n"
 import { pairWithOffer, resolvePairingInput, type PairingStage } from "@/services/pairing"
-import { enrollRelayClient, type RelayEnrollment } from "@/services/relay"
+import { enrollRelayClient } from "@/services/relay"
 import { loadRelayAccess, normalizeRelayUrl } from "@/storage/relay"
 import { HostError, type RelayAuthResolver } from "@/transport/hostRuntime"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
@@ -39,7 +38,6 @@ export default function AddHostScreen() {
   const [mode, setMode] = useState<"scan" | "paste">("scan")
   const [scanLocked, setScanLocked] = useState(false)
   const [resolving, setResolving] = useState(false)
-  const [relayEnrolled, setRelayEnrolled] = useState<RelayEnrollment | null>(null)
   const [permission, requestPermission] = useCameraPermissions()
   const parsedParam = useRef(false)
   const busy = stage !== null || resolving
@@ -57,7 +55,6 @@ export default function AddHostScreen() {
     try {
       const resolved = await resolvePairingInput(value)
       setOffer(parsePairingOffer(resolved))
-      setRelayEnrolled(null)
       setMode("scan")
     } catch (cause) {
       setOffer(null)
@@ -71,7 +68,7 @@ export default function AddHostScreen() {
     if (!offer) return
     setError(null)
     try {
-      const relay = await relayAuthFor(offer, relayEnrolled)
+      const relay = await relayAuthFor(offer)
       if (offer.transports.every((transport) => transport.kind === "relay") && !relay.auth) {
         setError(relay.error ?? t("relayAccessRequired"))
         return
@@ -91,8 +88,6 @@ export default function AddHostScreen() {
     : t("pairingNow")
   const relayTransport = offer?.transports.find((transport) => transport.kind === "relay")
   const relayInvite = relayTransport?.kind === "relay" ? relayTransport.invite : undefined
-  const relayRoom = relayTransport?.kind === "relay" ? relayTransport.room : ""
-  const relayUrl = relayTransport?.kind === "relay" ? relayTransport.url : ""
 
   return (
     <KeyboardAvoidingView
@@ -227,12 +222,11 @@ export default function AddHostScreen() {
           </Card>
         ) : null}
 
-        {offer && relayTransport ? (
-          relayInvite ? (
-            <Text style={[styles.hint, { marginTop: 10 }]}>{t("relayAutoEnroll")}</Text>
-          ) : (
-            <RelayAccessCard room={relayRoom} url={relayUrl} onEnrolled={setRelayEnrolled} />
-          )
+        {offer && relayTransport && relayInvite ? (
+          <Text style={[styles.hint, { marginTop: 10 }]}>{t("relayAutoEnroll")}</Text>
+        ) : null}
+        {offer && relayTransport && !relayInvite ? (
+          <Text style={[styles.error, { marginTop: 10 }]}>{t("relayInviteMissing")}</Text>
         ) : null}
 
         {stage ? (
@@ -252,10 +246,7 @@ export default function AddHostScreen() {
   )
 }
 
-async function relayAuthFor(
-  offer: PairingOffer,
-  enrolled: RelayEnrollment | null,
-): Promise<{ auth?: RelayAuthResolver; error?: string }> {
+async function relayAuthFor(offer: PairingOffer): Promise<{ auth?: RelayAuthResolver; error?: string }> {
   const entries = new Map<string, { subjectId: string; secret: string; relayKey: string }>()
   let error: string | undefined
   for (const transport of offer.transports) {
@@ -288,14 +279,7 @@ async function relayAuthFor(
       })
       continue
     }
-    error ??= "这台手机还没有该中继的访问权限，请让主机重新生成配对码或在下面粘贴手机邀请。"
-  }
-  if (enrolled) {
-    entries.set(normalizeRelayUrl(enrolled.url), {
-      subjectId: enrolled.access.subjectId,
-      secret: enrolled.access.secret,
-      relayKey: enrolled.access.relayKey,
-    })
+    error ??= "这台手机还没有该中继的访问权限，请重新扫描主机生成的配对码。"
   }
   if (entries.size === 0) return error ? { error } : {}
   return {

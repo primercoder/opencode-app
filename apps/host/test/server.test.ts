@@ -48,7 +48,7 @@ describe("host LAN server", () => {
     cleanups.push(() => host.close())
 
     const pairCode = await host.issuePairCode()
-    const client = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    const client = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
     cleanups.push(() => client.close())
 
     const paired = await client.pair(pairCode)
@@ -60,7 +60,7 @@ describe("host LAN server", () => {
     expect(info.status).toBe(200)
     expect(JSON.parse(info.body).version).toBe("test-2.2.7")
 
-    const reconnect = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    const reconnect = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
     cleanups.push(() => reconnect.close())
     const welcome = await reconnect.auth(paired.device.id, paired.token)
     expect(welcome.t).toBe("welcome")
@@ -90,7 +90,7 @@ describe("host LAN server", () => {
     })
     cleanups.push(() => host.close())
 
-    const client = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    const client = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
     cleanups.push(() => client.close())
     const paired = await client.pair(await host.issuePairCode("read"))
     expect(paired.device.scope).toBe("read")
@@ -132,7 +132,7 @@ describe("host LAN server", () => {
     })
     cleanups.push(() => host.close())
 
-    const client = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    const client = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
     cleanups.push(() => client.close())
     const paired = await client.pair(await host.issuePairCode())
     expect(paired.asr.host.available).toBe(true)
@@ -167,10 +167,10 @@ describe("host LAN server", () => {
     })
     cleanups.push(() => host.close())
 
-    const first = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    const first = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
     cleanups.push(() => first.close())
     await first.pair(await host.issuePairCode())
-    const second = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    const second = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
     cleanups.push(() => second.close())
     await second.pair(await host.issuePairCode())
 
@@ -216,13 +216,15 @@ describe("host LAN server", () => {
       homeDir: home,
       hostname: "127.0.0.1",
       port: 0,
+      relay: null,
       opencodeUrl: `http://127.0.0.1:${opencode.port}`,
       opencodePassword: "x",
     })
     cleanups.push(() => host.close())
-    expect(host.relay).toBeUndefined()
-    const offer = parsePairingOffer(await host.pairingOffer(await host.issuePairCode()))
-    expect(offer.transports.map((transport) => transport.kind)).toEqual(["lan"])
+    expect(host.relay()).toBeUndefined()
+    // Loopback direct is alive for local tooling but is never offered to phones.
+    expect(host.direct()?.hostname).toBe("127.0.0.1")
+    await expect(host.pairingRoutes()).rejects.toThrow(/no phone-reachable transport/u)
   })
 
   test("cancels an in-flight upstream request", async () => {
@@ -261,7 +263,7 @@ describe("host LAN server", () => {
     cleanups.push(() => host.close())
 
     const pairCode = await host.issuePairCode()
-    const client = await connectClient(`ws://127.0.0.1:${host.port}/ws`, host.identity.publicKey)
+    const client = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
     cleanups.push(() => client.close())
     await client.pair(pairCode)
 

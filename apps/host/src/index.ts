@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rm } from "node:fs/promises"
 import { isIP } from "node:net"
 import { Command } from "commander"
 import qrcode from "qrcode-terminal"
-import { encodePairingOffer, fingerprintOfPublicKey, type PairingOffer, type Transport } from "@ocremote/protocol"
+import { base64UrlEncode, fingerprintOfPublicKey, parseRelayInviteLink } from "@ocremote/protocol"
 import { formatModelSize } from "@ocremote/models"
 import {
   loadConfig,
@@ -11,16 +11,17 @@ import {
   resolveHome,
   saveConfig,
   type DeviceScope,
+  type DirectConfig,
   type HostConfig,
   type Identity,
   type RelayConfig,
 } from "./config.ts"
 import { HostModelManager } from "./asr/modelManager.ts"
 import { HostAsr } from "./asr/service.ts"
-import { addPendingPair, revokeDevice } from "./pairing.ts"
+import { revokeDevice } from "./pairing.ts"
 import { enrollRelaySubject } from "./relay.ts"
 import { resolveOpencodeTarget } from "./opencode.ts"
-import { directPairUrl, httpOrigin, startHost, type Host } from "./server.ts"
+import { httpOrigin, lanUrls, startHost, type DirectStatus, type Host, type PairRoute } from "./server.ts"
 import {
   HOST_VERSION,
   clearState,
@@ -34,9 +35,8 @@ import {
   waitForExit,
   writeState,
   type ClientEntry,
+  type HostState,
 } from "./daemon.ts"
-
-const DEFAULT_LISTEN = "127.0.0.1:8787"
 
 const program = new Command()
   .name("ocremote")
@@ -46,84 +46,72 @@ const program = new Command()
 program.addHelpText(
   "after",
   `
-Examples:
-  ocremote start                        direct, local only (127.0.0.1:8787)
-  ocremote start --listen 0.0.0.0:8787  direct, phones on the same LAN
-  ocremote start --listen 192.168.1.23:8787
-                                        direct, bind one network card
-  ocremote start --foreground --listen 0.0.0.0:8787
-                                        stay attached (tmux/systemd)
-  ocremote start --relay-link 'ocremote-relay://enroll#...'
-                                        enroll this host with a self-hosted relay
-  ocremote start --listen 0.0.0.0:8787 --relay-link '...'
-                                        offer both direct and relay
-  ocremote pair                        print a pairing QR for a running host
-  ocremote status | clients | stop      manage the detached host
+Common workflows:
+  Direct on the same Wi-Fi
+    ocremote start
+    ocremote direct 0.0.0.0:8787
+    ocremote pair
 
-Connection modes: direct (LAN) and relay are independent. Direct is always on for
-the --listen address; a saved relay subject is used only when --relay-link or
---relay is passed. Each relay invite can be enrolled exactly once.`,
+  Relay only (phone and computer on different networks)
+    ocremote start
+    ocremote relay 'ocremote-relay://host#...'
+    ocremote pair
+
+  Direct and relay together
+    ocremote start
+    ocremote direct 192.168.1.20:8787
+    ocremote relay 'ocremote-relay://host#...'
+    ocremote pair
+
+  Change routes while the host is running
+    ocremote direct 192.168.1.20:8787
+    ocremote relay off
+    ocremote direct off
+
+  Inspect or stop
+    ocremote status
+    ocremote clients
+    ocremote stop
+
+Connection modes:
+  Direct and relay are independent. The host only offers routes that are
+  actually enabled. Pair prints a separate QR and link for every enabled route.
+  A loopback-only direct listener is never offered to phones.`,
 )
 
 program
   .command("start")
-  .description("Start the host (detaches by default; --foreground keeps it attached)")
-  .option(
-    "-l, --listen <address>",
-    `bind address: 127.0.0.1 = local only, 0.0.0.0 = all interfaces, or one LAN IP`,
-    DEFAULT_LISTEN,
-  )
-  .option("--port <port>", "port override for --listen", (value) => Number(value))
-  .option("-f, --foreground", "stay in the foreground (tmux/systemd)", false)
-  .option("-d, --background", "detach (default; kept for scripts)", false)
+  .description("Start the host with the saved direct/relay settings")
+  .option("-f, --foreground", "stay in the foreground (systemd/tmux)", false)
   .option("-n, --name <name>", "host name shown on the phone")
   .option("--opencode-url <url>", "opencode server URL (requires --opencode-password)")
   .option("--opencode-password <password>", "opencode server password")
-  .option("--pair", "print a pairing QR after startup", false)
-  .option("--pair-url <ws-url>", "override the direct URL placed in the pairing offer")
-  .option("--read-only", "issue a read-only pairing code", false)
-  .option("--ttl <minutes>", "pairing code lifetime in minutes", (value) => Number(value), 5)
-  .option("--relay <ws-url>", "reuse a relay subject saved for this URL")
-  .option("--relay-link <link>", "consume a one-time host invite")
-  .option("--relay-ca <pem>", "CA certificate used to verify the relay")
   .option("--models-dir <dir>", "local speech model directory")
   .option("--model-server <url>", "development model server base URL")
   .option("--asr-model <id>", "default host speech model id")
   .addHelpText(
     "after",
     `
-Direct mode:
-  --listen 127.0.0.1:8787  Default. Only this machine can connect. Useful with
-                           "adb reverse tcp:8787 tcp:8787" or --pair-url.
-  --listen 0.0.0.0:8787    Listen on every card; the QR offers all LAN IPv4s.
-  --listen 192.168.1.23:8787
-                           Bind one card. Use the address the phone can reach.
-  Prints the pairing QR with --pair. When the host is already running, use
-  "ocremote pair" instead.
+Examples:
+  ocremote start
+      Start in the background with the saved config.
 
-Relay mode (independent, optional):
-  --relay <ws-url>         Reuse a relay subject saved by --relay-link.
-  --relay-link <link>      Consume a one-time host invite and remember the
-                           returned subject. The relay also returns a one-time
-                           phone link; pairing codes carry it so the phone
-                           enrolls automatically.
-  --relay-ca <pem>         CA used to verify the relay certificate (dev/private
-                           CA). For the relay's generated CA use
-                           <relay-data>/tls/ca.crt. Also read from
-                           OCREMOTE_RELAY_CA.
-  The QR offers direct first, then relay. Relay never sees plaintext.
+  ocremote start --foreground
+      Stay attached for systemd or tmux.
 
-Background:
-  start detaches by default. Manage it with:
-    ocremote status | clients | stop
-  Use --foreground for tmux/systemd. Log: ~/.local/state/ocremote/host.log`,
+  ocremote start --foreground --name 'Study PC'
+      Override the display name for this run.
+
+First run:
+  ocremote start
+  ocremote direct 0.0.0.0:8787
+  ocremote pair
+  # or
+  ocremote relay 'ocremote-relay://host#...'
+  ocremote pair`,
   )
   .action(async (options: StartOptions) => {
-    if (process.env.OCREMOTE_DAEMON_CHILD === "1") {
-      await runForeground(options)
-      return
-    }
-    if (options.foreground) {
+    if (process.env.OCREMOTE_DAEMON_CHILD === "1" || options.foreground) {
       await runForeground(options)
       return
     }
@@ -131,65 +119,172 @@ Background:
   })
 
 program
-  .command("pair")
-  .description("Print a pairing QR (talks to a running host when available)")
-  .option("-l, --listen <address>", `direct address to put in the offer (default: ${DEFAULT_LISTEN})`, DEFAULT_LISTEN)
-  .option("--lan", "deprecated alias for --listen 0.0.0.0:8787", false)
-  .option("--port <port>", "port override for --listen", (value) => Number(value))
-  .option("--url <ws-url>", "override the direct URL in the offer")
-  .option("--read-only", "create a read-only device code", false)
-  .option("--ttl <minutes>", "pairing code lifetime in minutes", (value) => Number(value), 5)
-  .option("--relay", "include the saved relay room in the offer", false)
+  .command("direct [address]")
+  .description("Show, enable, update or disable direct/LAN access")
+  .addHelpText(
+    "after",
+    `
+Address:
+  0.0.0.0:8787          listen on every interface; QR uses a LAN IPv4
+  192.168.1.20:8787     bind one interface
+  127.0.0.1:8787        local only; not offered to phones
+  off                   disable direct
+
+Examples:
+  ocremote direct 0.0.0.0:8787
+  ocremote direct 192.168.1.20:8787
+  ocremote direct off
+  ocremote direct
+
+Changes apply immediately while the host is running and persist for the next
+start. Loopback-only direct is never placed in a phone pairing offer.`,
+  )
+  .action(async (address: string | undefined) => {
+    const running = await currentStatus()
+    if (!address) {
+      const current = running?.direct ?? (await loadLocal()).config.direct
+      if (!current) {
+        console.log("direct is off")
+        return
+      }
+      console.log(`direct ${current.hostname}:${current.port}`)
+      if (isLoopbackHostname(current.hostname)) console.log("local only — not offered to phones")
+      return
+    }
+    if (address.trim().toLowerCase() === "off") {
+      if (running) await requireControl({ cmd: "direct.off" })
+      else {
+        const { home, config } = await loadLocal()
+        delete config.direct
+        await saveConfig(home, config)
+      }
+      console.log("direct off")
+      return
+    }
+    const listen = parseListen(address)
+    const status = running
+      ? await requireControl<DirectStatus>({ cmd: "direct.set", hostname: listen.hostname, port: listen.port })
+      : await saveDirect(listen)
+    console.log(`direct ${status.hostname}:${status.port}`)
+    if (isLoopbackHostname(status.hostname)) {
+      console.log("local only — phones cannot use this route")
+    } else {
+      console.log(`phone URL ${directUrl(status)}`)
+    }
+  })
+
+program
+  .command("relay [link]")
+  .description("Show, enroll or disable relay access")
+  .option("--ca <pem>", "CA certificate for an optional self-signed TLS relay")
   .addHelpText(
     "after",
     `
 Examples:
-  ocremote pair                         ask the running host for a new code
-  ocremote pair --read-only             read-only phone
-  ocremote pair --listen 192.168.1.23:8787
-                                        prepare a code before "start"
-  ocremote pair --relay                 include the saved relay room
+  ocremote relay
+  ocremote relay 'ocremote-relay://host#...'
+  ocremote relay on
+  ocremote relay off
 
-If the host is running this command uses its live state and ignores --listen.
-If it is not running the code is stored in config.json and becomes usable on
-the next "ocremote start".`,
+The relay prints a reusable host link at startup. Copy it once; the host keeps
+the returned subject secret. "off" keeps the saved identity so "on" (or the
+same host link) can re-enable it without consuming another relay host slot.
+Changes apply immediately while the host is running and persist for the next
+start.`,
   )
-  .action(async (options: PairOptions) => {
-    const listen = parseListen(options.lan ? "0.0.0.0" : options.listen, options.port)
-    const scope: DeviceScope = options.readOnly ? "read" : "full"
-    const ttl = Math.max(1, options.ttl)
-
-    const running = await control<PairResult>({
-      cmd: "pair",
-      scope,
-      ttlMinutes: ttl,
-      ...(options.url ? { url: options.url } : {}),
-    })
-    if (running) {
-      printPairing(running.offer, running.qrText, running.shortUrl)
+  .action(async (link: string | undefined, options: { ca?: string }) => {
+    const running = await currentStatus()
+    const local = await loadLocal()
+    const saved = local.config.relay
+    if (!link) {
+      const current = running?.relay
+      if (current) {
+        console.log(`relay ${current.url} · room ${current.room}`)
+        return
+      }
+      if (saved) {
+        console.log(`relay off (saved ${saved.url} · room ${saved.room})`)
+      } else {
+        console.log("relay is off")
+      }
+      return
+    }
+    const action = link.trim().toLowerCase()
+    if (action === "off") {
+      if (running) await requireControl({ cmd: "relay.off" })
+      else if (saved) {
+        saved.enabled = false
+        await saveConfig(local.home, local.config)
+      }
+      console.log("relay off")
+      return
+    }
+    if (action === "on") {
+      if (!saved) throw new Error("no saved relay identity. Use: ocremote relay '<host-link>'")
+      saved.enabled = true
+      if (running) await requireControl({ cmd: "relay.set", relay: saved })
+      else await saveConfig(local.home, local.config)
+      console.log(`relay ${saved.url} · room ${saved.room}`)
       return
     }
 
-    const home = resolveHome()
-    const identity = await loadOrCreateIdentity(home)
-    const config = await loadConfig(home, {
-      hostId: identity.hostId,
-      name: process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
-      lan: { hostname: listen.hostname, port: listen.port },
+    const parsed = parseRelayInviteLink(link)
+    const sameRelay = saved && sameRelayUrl(saved.url, parsed.url) && saved.relayKey === parsed.rk
+    let relay = saved
+    if (!sameRelay) {
+      const identity = await loadOrCreateIdentity(local.home, local.config.name)
+      relay = await enrollRelaySubject({
+        link,
+        hostId: identity.hostId,
+        name: local.config.name,
+        hostPublicKey: base64UrlEncode(identity.publicKey),
+        ...(options.ca ? { caPath: options.ca } : {}),
+      })
+    }
+    if (!relay) throw new Error("relay enrollment failed")
+    relay.enabled = true
+    if (running) {
+      await requireControl({ cmd: "relay.set", relay, ...(options.ca ? { caPath: options.ca } : {}) })
+    } else {
+      local.config.relay = relay
+      await saveConfig(local.home, local.config)
+    }
+    console.log(`relay ${relay.url} · room ${relay.room}`)
+  })
+
+program
+  .command("pair")
+  .description("Print one QR/link for every enabled route")
+  .option("--read-only", "create read-only device codes", false)
+  .option("--ttl <minutes>", "pairing code lifetime in minutes", (value) => Number(value), 5)
+  .option("--json", "print machine-readable JSON", false)
+  .addHelpText(
+    "after",
+    `
+Examples:
+  ocremote pair
+  ocremote pair --read-only
+  ocremote pair --ttl 10
+  ocremote pair --json
+
+The host must be running. Every enabled route gets its own one-time code:
+  Direct — same LAN
+  Relay  — any network
+If only relay is enabled, no loopback direct route is printed. If only direct
+is enabled, no relay route is printed.`,
+  )
+  .action(async (options: { readOnly: boolean; ttl: number; json: boolean }) => {
+    const ttl = Math.max(1, Math.floor(options.ttl))
+    const routes = await requireControl<PairRoute[]>({
+      cmd: "pair",
+      scope: options.readOnly ? "read" : "full",
+      ttlMinutes: ttl,
     })
-    const offer = await createOffer({
-      config,
-      identity,
-      hostname: listen.hostname,
-      port: listen.port,
-      scope,
-      ttlMs: ttl * 60_000,
-      ...(options.url ? { url: options.url } : {}),
-      ...(options.relay ? { includeRelay: true } : {}),
-    })
-    await saveConfig(home, config)
-    printPairing(offer, offer)
-    console.log("Start the host with: ocremote start --listen " + formatListen(listen))
+    if (options.json) {
+      console.log(JSON.stringify(routes, null, 2))
+      return
+    }
+    printPairing(routes)
   })
 
 program
@@ -225,18 +320,16 @@ program
 
 program
   .command("status")
-  .description("Show the running host, listen address and client count")
-  .action(async () => {
-    const state = await readState()
-    const pid = state?.pid ?? (await readPid())
-    if (!pid || !isAlive(pid)) {
-      await clearState()
+  .description("Show the running host and its enabled routes")
+  .option("--json", "print machine-readable JSON", false)
+  .action(async (options: { json: boolean }) => {
+    const snapshot = await currentStatus()
+    if (!snapshot) {
       console.log("host is not running")
       return
     }
-    const snapshot = await control<StatusResult>({ cmd: "status" })
-    if (!snapshot) {
-      console.log(`host process is running (pid ${pid}) but is not responding`)
+    if (options.json) {
+      console.log(JSON.stringify(snapshot, null, 2))
       return
     }
     printStatus(snapshot)
@@ -374,9 +467,12 @@ program
     const home = resolveHome()
     const identity = await loadOrCreateIdentity(home)
     const target = await resolveOpencodeTarget()
+    const { config } = await loadLocal()
     console.log(`host id: ${identity.hostId}`)
     console.log(`fingerprint: ${fingerprintOfPublicKey(identity.publicKey)}`)
     console.log(`opencode: ${target.url} (${target.version ?? "unknown"})`)
+    console.log(`direct: ${config.direct ? `${config.direct.hostname}:${config.direct.port}` : "off"}`)
+    console.log(`relay: ${config.relay ? `${config.relay.url} room=${config.relay.room}` : "off"}`)
     console.log(`config: ${home}`)
     console.log(`state: ${stateDir()}`)
   })
@@ -389,62 +485,33 @@ if (import.meta.main) {
 }
 
 type StartOptions = {
-  listen: string
-  lan: boolean
-  port?: number
-  background: boolean
   foreground: boolean
   name?: string
   opencodeUrl?: string
   opencodePassword?: string
-  pair: boolean
-  pairUrl?: string
-  readOnly: boolean
-  ttl: number
-  relay?: string
-  relayLink?: string
-  relayCa?: string
   modelsDir?: string
   modelServer?: string
   asrModel?: string
 }
 
-type PairOptions = {
-  listen: string
-  lan: boolean
-  port?: number
-  url?: string
-  readOnly: boolean
-  ttl: number
-  relay: boolean
-}
-
-type Listen = {
-  hostname: string
-  port: number
-}
-
 type StatusResult = {
   pid: number
   startedAt: number
-  listen: string
-  lanUrls: string[]
-  relay: { url: string; room: string } | null
+  direct?: DirectStatus
+  relay: { url: string; room: string; state?: string } | null
   opencodeUrl: string
   opencodeVersion?: string
   clients: number
   logPath: string
+  version: string
 }
 
-type PairResult = {
-  offer: string
-  shortUrl?: string
+type PairResult = PairRoute & {
   qrText: string
-  expiresAt: number
+  shortUrl?: string
 }
 
 async function runForeground(options: StartOptions): Promise<void> {
-  const listen = parseListen(options.lan ? "0.0.0.0" : options.listen, options.port)
   const existingPid = (await readState())?.pid ?? (await readPid())
   if (isAlive(existingPid)) {
     throw new Error(`another host is already running (pid ${existingPid}). Use "ocremote stop" first.`)
@@ -453,27 +520,22 @@ async function runForeground(options: StartOptions): Promise<void> {
   await mkdir(stateDir(), { recursive: true, mode: 0o700 })
   await rm(socketPath(), { force: true })
 
-  const relay = await resolveRelay(options)
-  const relayCa = options.relayCa ?? process.env.OCREMOTE_RELAY_CA
   const host = await startHost({
-    hostname: listen.hostname,
-    port: listen.port,
     ...(options.name ? { name: options.name } : {}),
     ...(options.opencodeUrl ? { opencodeUrl: options.opencodeUrl } : {}),
     ...(options.opencodePassword ? { opencodePassword: options.opencodePassword } : {}),
-    ...(relay ? { relay } : {}),
-    ...(relayCa ? { relayCa } : {}),
     ...(options.modelsDir ? { modelsDir: options.modelsDir } : {}),
     ...(options.modelServer ? { modelBaseUrl: options.modelServer } : {}),
     ...(options.asrModel ? { asrModelId: options.asrModel } : {}),
   })
 
-  const state = {
+  const currentDirect = host.direct()
+  const currentRelay = host.relay()
+  const state: HostState = {
     pid: process.pid,
     startedAt: Date.now(),
-    listen: formatListen(listen),
-    lanUrls: host.lanUrls,
-    relay: relay ? { url: relay.url, room: relay.room } : null,
+    ...(currentDirect ? { direct: currentDirect } : {}),
+    relay: currentRelay ? { url: currentRelay.url, room: currentRelay.room, state: currentRelay.state } : null,
     opencodeUrl: host.target.url,
     ...(host.target.version ? { opencodeVersion: host.target.version } : {}),
     socketPath: socketPath(),
@@ -482,13 +544,13 @@ async function runForeground(options: StartOptions): Promise<void> {
   }
   await writeState(state)
 
+  let controlServer: Bun.Server<unknown> | undefined
   let shuttingDown = false
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
     try {
-      host.server.stop(true)
-      controlServer.stop(true)
+      controlServer?.stop(true)
       await host.close()
     } finally {
       await rm(socketPath(), { force: true })
@@ -497,7 +559,19 @@ async function runForeground(options: StartOptions): Promise<void> {
     }
   }
 
-  const controlServer = Bun.serve({
+  const snapshot = async (): Promise<StatusResult> => {
+    const direct = host.direct()
+    const relay = host.relay()
+    const result: StatusResult = {
+      ...state,
+      relay: relay ? { url: relay.url, room: relay.room, state: relay.state } : null,
+      clients: host.clients().length,
+    }
+    if (direct) result.direct = direct
+    return result
+  }
+
+  controlServer = Bun.serve({
     unix: socketPath(),
     async fetch(request) {
       let body: Record<string, unknown> = {}
@@ -508,30 +582,62 @@ async function runForeground(options: StartOptions): Promise<void> {
       }
       try {
         switch (body.cmd) {
-          case "status": {
-            const data: StatusResult = {
-              ...state,
-              clients: host.clients().length,
-            }
-            return Response.json({ ok: true, data })
-          }
+          case "status":
+            return Response.json({ ok: true, data: await snapshot() })
           case "clients":
             return Response.json({ ok: true, data: host.clients() })
           case "pair": {
             const scope: DeviceScope = body.scope === "read" ? "read" : "full"
             const ttl = typeof body.ttlMinutes === "number" ? Math.max(1, body.ttlMinutes) : 5
-            const code = await host.issuePairCode(scope, ttl * 60_000)
-            const directUrl =
-              typeof body.url === "string" ? body.url : pairUrlFor(listen, options.pairUrl)
-            const offer = await host.pairingOffer(code, directUrl)
-            const shortUrl = shortPairUrl(host, directUrl, offer)
-            const result: PairResult = {
-              offer,
-              ...(shortUrl ? { shortUrl } : {}),
-              qrText: shortUrl ?? offer,
-              expiresAt: Date.now() + ttl * 60_000,
-            }
+            const routes = await host.pairingRoutes({
+              scope,
+              ttlMs: ttl * 60_000,
+              ...(typeof body.directUrl === "string" ? { directUrl: body.directUrl } : {}),
+            })
+            const result: PairResult[] = routes.map((route) => {
+              const shortUrl =
+                route.kind === "direct" ? host.shortenOffer(route.offer, httpOrigin(route.url)) : undefined
+              return {
+                ...route,
+                ...(shortUrl ? { shortUrl } : {}),
+                qrText: shortUrl ?? route.offer,
+              }
+            })
             return Response.json({ ok: true, data: result })
+          }
+          case "direct.set": {
+            const hostname = typeof body.hostname === "string" ? body.hostname : ""
+            const port = typeof body.port === "number" ? body.port : 0
+            if (!hostname || !Number.isInteger(port) || port < 1 || port > 65535) {
+              return Response.json({ ok: false, error: "invalid direct address" }, { status: 400 })
+            }
+            const direct = await host.setDirect({ hostname, port })
+            if (direct) state.direct = direct
+            await writeState(state)
+            return Response.json({ ok: true, data: direct })
+          }
+          case "direct.off": {
+            await host.setDirect(null)
+            delete state.direct
+            await writeState(state)
+            return Response.json({ ok: true, data: null })
+          }
+          case "relay.set": {
+            const relay = body.relay as RelayConfig | undefined
+            if (!relay || typeof relay.url !== "string" || typeof relay.secret !== "string") {
+              return Response.json({ ok: false, error: "invalid relay configuration" }, { status: 400 })
+            }
+            await host.setRelay(relay, typeof body.caPath === "string" ? body.caPath : undefined)
+            const current = host.relay()
+            state.relay = current ? { url: current.url, room: current.room, state: current.state } : null
+            await writeState(state)
+            return Response.json({ ok: true, data: current })
+          }
+          case "relay.off": {
+            await host.setRelay(null)
+            state.relay = null
+            await writeState(state)
+            return Response.json({ ok: true, data: null })
           }
           case "stop":
             setTimeout(() => void shutdown(), 20)
@@ -550,27 +656,21 @@ async function runForeground(options: StartOptions): Promise<void> {
 
   console.log(`ocremote ${HOST_VERSION}`)
   console.log(`opencode  ${host.target.url} (${host.target.version ?? "unknown"})`)
-  console.log(`listen    ${formatListen(listen)}`)
-  printTransports(host, listen)
+  printTransports(host)
   const caps = (await host.asr.capabilities()) as { available?: boolean; models?: Array<{ id: string }> }
   console.log(
     `ASR       ${caps.available ? caps.models?.map((model) => model.id).join(", ") : "unavailable (ocremote asr install host-sense-voice-int8)"}`,
   )
   console.log(`log       ${logPath()}`)
   console.log("")
-
-  if (options.pair) {
-    const code = await host.issuePairCode(options.readOnly ? "read" : "full", Math.max(1, options.ttl) * 60_000)
-    const directUrl = pairUrlFor(listen, options.pairUrl)
-    const offer = await host.pairingOffer(code, directUrl)
-    const shortUrl = shortPairUrl(host, directUrl, offer)
-    printPairing(offer, shortUrl ?? offer, shortUrl)
+  const phoneDirect = host.direct()
+  if ((!phoneDirect || !isPhoneDirect(phoneDirect)) && !host.relay()) {
+    printRouteHint()
   }
 
   process.on("SIGINT", () => void shutdown())
   process.on("SIGTERM", () => void shutdown())
 
-  // Bun keeps the process alive while the servers are listening.
   await new Promise<void>(() => undefined)
 }
 
@@ -586,16 +686,10 @@ async function startBackground(options: StartOptions): Promise<void> {
   const args = [
     ...command.prefix,
     "start",
-    "--listen",
-    options.lan ? "0.0.0.0" : options.listen,
-    ...(options.port ? ["--port", String(options.port)] : []),
+    "--foreground",
     ...(options.name ? ["--name", options.name] : []),
     ...(options.opencodeUrl ? ["--opencode-url", options.opencodeUrl] : []),
     ...(options.opencodePassword ? ["--opencode-password", options.opencodePassword] : []),
-    ...(options.readOnly ? ["--read-only"] : []),
-    ...(options.relay ? ["--relay", options.relay] : []),
-    ...(options.relayLink ? ["--relay-link", options.relayLink] : []),
-    ...(options.relayCa ? ["--relay-ca", options.relayCa] : []),
     ...(options.modelsDir ? ["--models-dir", options.modelsDir] : []),
     ...(options.modelServer ? ["--model-server", options.modelServer] : []),
     ...(options.asrModel ? ["--asr-model", options.asrModel] : []),
@@ -627,190 +721,159 @@ async function startBackground(options: StartOptions): Promise<void> {
 
   console.log(`ocremote ${HOST_VERSION} started in the background (pid ${snapshot.pid})`)
   printStatus(snapshot)
-  if (options.pair) {
-    const result = await control<PairResult>({
-      cmd: "pair",
-      scope: options.readOnly ? "read" : "full",
-      ttlMinutes: Math.max(1, options.ttl),
-      ...(options.pairUrl ? { url: options.pairUrl } : {}),
-    })
-    if (result) printPairing(result.offer, result.qrText, result.shortUrl)
-  }
+  if ((!snapshot.direct || !isPhoneDirect(snapshot.direct)) && !snapshot.relay) printRouteHint()
 }
 
 function selfCommand(): { prefix: string[]; cwd: string } {
   const entry = process.argv[1]
-  // `bun src/index.ts` and `bun app/main.js` keep the script in argv[1];
-  // a compiled binary has the first CLI argument there instead.
   if (entry && (entry.endsWith(".ts") || entry.endsWith(".js") || entry.endsWith(".mjs"))) {
     return { prefix: [process.execPath, entry], cwd: process.cwd() }
   }
   return { prefix: [process.execPath], cwd: process.cwd() }
 }
 
-function parseListen(value: string, portOverride?: number): Listen {
-  const trimmed = value.trim()
-  if (!trimmed) throw new Error("--listen cannot be empty")
-  let hostname = trimmed
-  let port = portOverride
+async function currentStatus(): Promise<StatusResult | undefined> {
+  const pid = (await readState())?.pid ?? (await readPid())
+  if (!pid || !isAlive(pid)) return undefined
+  return control<StatusResult>({ cmd: "status" })
+}
 
+async function requireControl<T = unknown>(command: Parameters<typeof control>[0]): Promise<T> {
+  const value = await control<T>(command)
+  if (value === undefined) throw new Error("host is not running. Start it with: ocremote start")
+  return value
+}
+
+async function saveDirect(listen: DirectConfig): Promise<DirectStatus> {
+  const { home, config } = await loadLocal()
+  config.direct = listen
+  await saveConfig(home, config)
+  return { ...listen, urls: lanUrls(listen.hostname, listen.port) }
+}
+
+async function loadLocal(): Promise<{ home: string; config: HostConfig }> {
+  const home = resolveHome()
+  const identity = await loadOrCreateIdentity(home)
+  const config = await loadConfig(home, {
+    hostId: identity.hostId,
+    name: process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
+  })
+  return { home, config }
+}
+
+function sameRelayUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).toString() === new URL(right).toString()
+  } catch {
+    return left === right
+  }
+}
+
+function parseListen(value: string): DirectConfig {
+  const trimmed = value.trim()
+  if (!trimmed) throw new Error("direct address cannot be empty")
+  let hostname = trimmed
+  let port = 8787
   if (trimmed.startsWith("[")) {
     const match = /^\[([^\]]+)\](?::(\d+))?$/u.exec(trimmed)
-    if (!match) throw new Error(`invalid --listen address: ${value}`)
+    if (!match) throw new Error(`invalid direct address: ${value}`)
     hostname = match[1] ?? ""
     if (match[2]) port = Number(match[2])
   } else if (trimmed.includes(":")) {
     const index = trimmed.lastIndexOf(":")
     hostname = trimmed.slice(0, index) || "0.0.0.0"
     port = Number(trimmed.slice(index + 1))
-  } else if (/^\d+$/u.test(trimmed)) {
-    hostname = "127.0.0.1"
-    port = Number(trimmed)
+  } else {
+    throw new Error(`direct address needs IP:port, got: ${value}`)
   }
-
   if (hostname === "localhost") hostname = "127.0.0.1"
-  if (isIP(hostname) === 0) throw new Error(`--listen needs an IP address, got: ${hostname}`)
-  const resolvedPort = port ?? 8787
-  if (!Number.isInteger(resolvedPort) || resolvedPort < 1 || resolvedPort > 65535) {
-    throw new Error(`--listen port must be 1-65535, got: ${resolvedPort}`)
+  if (isIP(hostname) === 0) throw new Error(`direct address needs an IP, got: ${hostname}`)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`direct port must be 1-65535, got: ${port}`)
   }
-  return { hostname, port: resolvedPort }
+  return { hostname, port }
 }
 
-function formatListen(listen: Listen): string {
-  const host = listen.hostname.includes(":") ? `[${listen.hostname}]` : listen.hostname
-  return `${host}:${listen.port}`
-}
-
-function isLoopback(hostname: string): boolean {
+function isLoopbackHostname(hostname: string): boolean {
   return hostname === "127.0.0.1" || hostname === "::1" || hostname === "localhost"
 }
 
-function pairUrlFor(listen: Listen, override: string | undefined): string {
-  if (override) return override
-  return directPairUrl(listen.hostname, listen.port)
+function isPhoneDirect(status: DirectStatus): boolean {
+  if (isLoopbackHostname(status.hostname)) return false
+  return status.urls.some((url) => {
+    try {
+      return !isLoopbackHostname(new URL(url).hostname)
+    } catch {
+      return false
+    }
+  })
 }
 
-function shortPairUrl(host: Host, direct: string, offer: string): string | undefined {
-  try {
-    const url = new URL(direct)
-    const loopback = url.hostname === "127.0.0.1" || url.hostname === "::1" || url.hostname === "localhost"
-    if (loopback) return undefined
-    return host.shortenOffer(offer, httpOrigin(direct))
-  } catch {
-    return undefined
+function directUrl(status: DirectStatus): string {
+  if (status.urls.length > 0) {
+    return status.urls.find((url) => !url.includes("127.0.0.1") && !url.includes("[::1]")) ?? status.urls[0]!
   }
-}
-
-function printPairing(offer: string, qrText: string, shortUrl?: string): void {
-  console.log("")
-  if (shortUrl) {
-    qrcode.generate(qrText, { small: true }, (output) => console.log(output))
-    console.log("")
-    console.log(`扫码地址：${shortUrl}`)
-  } else {
-    console.log("这次没有可扫码的局域网地址（只监听回环），请直接粘贴下面的链接。")
-    console.log("要让手机扫码：用 --listen 0.0.0.0:8787，或加 --pair-url ws://<局域网IP>:8787/ws。")
-  }
-  console.log("配对链接（可粘贴到手机）：")
-  console.log(offer)
-  console.log("")
-  console.log("手机：OC Remote → 添加主机 → 扫码或粘贴链接。")
+  return `ws://${status.hostname}:${status.port}/ws`
 }
 
 function printStatus(state: StatusResult): void {
-  console.log(`listen    ${state.listen}`)
-  if (state.lanUrls.length > 0) console.log(`direct    ${state.lanUrls.join("  ")}`)
-  console.log(
-    `relay     ${state.relay ? `${state.relay.url} · room ${state.relay.room}` : "off"}`,
-  )
+  const direct = state.direct && isPhoneDirect(state.direct) ? state.direct : undefined
+  if (direct) console.log(`direct    ${directUrl(direct)}`)
+  if (state.relay) console.log(`relay     ${state.relay.url} · room ${state.relay.room}`)
+  if (!direct && !state.relay) console.log("routes    none")
   console.log(`opencode  ${state.opencodeUrl} (${state.opencodeVersion ?? "unknown"})`)
   console.log(`clients   ${state.clients}`)
   console.log(`uptime    ${duration(Date.now() - state.startedAt)}`)
   console.log(`log       ${state.logPath}`)
 }
 
-function printTransports(host: Host, listen: Listen): void {
-  if (isLoopback(listen.hostname)) {
-    console.log("direct    local only — phones cannot connect until you use --listen 0.0.0.0 or a LAN IP")
+function printTransports(host: Host): void {
+  const current = host.direct()
+  const direct = current && isPhoneDirect(current) ? current : undefined
+  const relay = host.relay()
+  if (direct) {
+    console.log(`direct    ${directUrl(direct)}`)
+  }
+  if (relay) {
+    console.log(`relay     ${relay.url} · room ${relay.room}`)
+  }
+  if (!direct && !relay) {
+    console.log("routes    none")
+  }
+}
+
+function printRouteHint(): void {
+  console.log("No phone-reachable route is enabled. Choose one:")
+  console.log("  ocremote direct 0.0.0.0:8787")
+  console.log("  ocremote relay 'ocremote-relay://host#...'")
+  console.log("")
+}
+
+function printPairing(routes: PairRoute[]): void {
+  if (routes.length === 0) {
+    console.log("no phone-reachable route is enabled")
     return
   }
-  console.log(`direct    ${host.lanUrls.join("  ")}`)
-  if (host.relay) console.log(`relay     ${host.relay.url} · room ${host.relay.room}`)
-  else console.log("relay     off")
-}
-
-async function resolveRelay(options: StartOptions): Promise<RelayConfig | undefined> {
-  if (!options.relay && !options.relayLink) return undefined
-  const home = resolveHome()
-  const identity = await loadOrCreateIdentity(home)
-  const config = await loadConfig(home, {
-    hostId: identity.hostId,
-    name: options.name ?? process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
-    lan: { hostname: "127.0.0.1", port: 8787 },
-  })
-  if (options.relayLink) {
-    const relay = await enrollRelaySubject({
-      link: options.relayLink,
-      name: config.name,
-      ...(options.relayCa ? { caPath: options.relayCa } : {}),
-    })
-    config.relay = relay
-    await saveConfig(home, config)
-    console.log(`enrolled relay subject ${relay.subjectId} · room ${relay.room}`)
-    return relay
+  for (const [index, route] of routes.entries()) {
+    if (index > 0) console.log("")
+    if (route.kind === "direct") {
+      console.log("Direct · same LAN")
+      console.log(`  ${route.url}`)
+    } else {
+      console.log("Relay · any network")
+      console.log(`  ${route.url} · room ${route.room ?? "-"}`)
+      if (!route.hasInvite) {
+        console.log("  note: no fresh phone invite is available yet. Start the host and scan again if this phone is new.")
+      }
+    }
+    console.log("")
+    qrcode.generate(route.shortUrl ?? route.offer, { small: true }, (output) => console.log(output))
+    if (route.shortUrl) console.log(`\n  short URL: ${route.shortUrl}`)
+    console.log("  pairing link:")
+    console.log(`  ${route.offer}`)
+    console.log("")
+    console.log("  Phone: OC Remote → Add host → Scan this QR or paste the link.")
   }
-  const saved = config.relay
-  if (!saved || saved.url !== options.relay) {
-    throw new Error(
-      `no relay subject saved for ${options.relay}; enroll this host once with --relay-link`,
-    )
-  }
-  if (!saved.relayKey) {
-    throw new Error("this relay subject has no pinned relay key; re-enroll once with --relay-link")
-  }
-  return saved
-}
-
-async function createOffer(input: {
-  config: HostConfig
-  identity: Identity
-  hostname: string
-  port: number
-  scope: DeviceScope
-  ttlMs: number
-  url?: string
-  includeRelay?: boolean
-}): Promise<string> {
-  const { code, pending } = addPendingPair(input.config, input.scope, input.ttlMs)
-  const transports: Transport[] = [
-    {
-      kind: "lan",
-      url: input.url ?? directPairUrl(input.hostname, input.port),
-      priority: 0,
-    },
-  ]
-  if (input.includeRelay && input.config.relay) {
-    transports.push({
-      kind: "relay",
-      url: input.config.relay.url,
-      room: input.config.relay.room,
-      relayKey: input.config.relay.relayKey,
-      priority: 1,
-      ...(input.config.relay.clientInvite ? { invite: input.config.relay.clientInvite } : {}),
-    })
-  }
-  const offer: PairingOffer = {
-    v: 1,
-    hostId: input.identity.hostId,
-    name: input.config.name,
-    pk: "",
-    fingerprint: fingerprintOfPublicKey(input.identity.publicKey),
-    pairCode: code,
-    expiresAt: pending.expiresAt,
-    transports,
-  }
-  return encodePairingOffer(offer, input.identity.publicKey)
 }
 
 function modelManager(options: { modelsDir?: string; modelServer?: string }): HostModelManager {
@@ -829,17 +892,6 @@ function printModelProgress(progress: { phase: string; receivedBytes?: number; t
   } else {
     process.stdout.write(`\r  ${progress.phase}          `)
   }
-}
-
-async function loadLocal(): Promise<{ home: string; config: HostConfig }> {
-  const home = resolveHome()
-  const identity = await loadOrCreateIdentity(home)
-  const config = await loadConfig(home, {
-    hostId: identity.hostId,
-    name: process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
-    lan: { hostname: "127.0.0.1", port: 8787 },
-  })
-  return { home, config }
 }
 
 function truncate(value: string, length: number): string {

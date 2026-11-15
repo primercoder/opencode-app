@@ -26,41 +26,69 @@ Release 资源文件名包含操作系统和 CPU 架构。
 
 | 文件 | 平台 | 架构 | 用途 |
 |---|---|---|---|
-| `ocremote-0.1.3-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
-| `ocremote-0.1.3-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
-| `ocremote-host-0.1.3-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
-| `ocremote-host-0.1.3-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
-| `ocremote-relay-0.3.0-linux-amd64` | Linux | x86_64 | 中继二进制 |
-| `ocremote-relay-0.3.0-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
-| `ocremote-relay-0.3.0-linux-arm64` | Linux | arm64 | 中继二进制 |
-| `ocremote-relay-0.3.0-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
+| `ocremote-0.1.4-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
+| `ocremote-0.1.4-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
+| `ocremote-host-0.1.4-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
+| `ocremote-host-0.1.4-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
+| `ocremote-relay-0.4.0-linux-amd64` | Linux | x86_64 | 中继二进制 |
+| `ocremote-relay-0.4.0-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
+| `ocremote-relay-0.4.0-linux-arm64` | Linux | arm64 | 中继二进制 |
+| `ocremote-relay-0.4.0-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
 
 `SHA256SUMS` 可校验全部资源。当前 APK 仍使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。
 
 ## 快速开始
 
-| 端 | 操作 |
-|---|---|
-| 手机 | 安装与设备架构匹配的 APK |
-| 主机 | 解压 `ocremote-host-*.tar.gz`，运行 `./ocremote start --listen 0.0.0.0:8787 --pair` |
-| 配对 | 手机扫码或粘贴主机打印的配对链接 |
-| 中继（可选） | 启动中继，用 host invite 登记主机，再用新的配对码连接手机 |
+### 同一局域网：只开直连
 
-直连和中继互不依赖。只有启动主机时显式传入 `--relay-link` 或 `--relay`，才会使用已保存的中继。
+```bash
+tar xzf ocremote-host-0.1.4-linux-x64.tar.gz   # arm64 使用 linux-arm64
+cd ocremote
+./ocremote start
+./ocremote direct 0.0.0.0:8787
+./ocremote pair
+```
+
+### 跨网络：只开中继
+
+```bash
+# 中继端（公网服务器）
+./ocremote-relay --listen 0.0.0.0:8443 \
+  --public-url ws://<公网IP>:8443/ws
+
+# 主机端：复制中继启动时打印的 host link
+./ocremote start
+./ocremote relay 'ocremote-relay://host#...'
+./ocremote pair
+```
+
+`pair` 会为每个**实际启用**的线路单独打印二维码：直连只显示直连，中继只显示中继；两种都开时打印两个二维码。只有回环地址的直连不会出现在配对码里。
+
+直连和中继互不依赖，可以在主机运行期间随时增删：
+
+```bash
+./ocremote direct 192.168.1.20:8787   # 开启或更换直连
+./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay off                 # 关闭中继但保留身份
+./ocremote relay on                  # 重新启用保存的中继
+./ocremote direct off
+```
 
 ## Android 手机端
 
 ### 安装与配对
 
 ```bash
-adb install ocremote-0.1.3-android-arm64-v8a.apk
+adb install ocremote-0.1.4-android-arm64-v8a.apk
 ```
 
 1. 打开 OC Remote，点右上角 **+**。
 2. 扫描主机二维码，或选择 **粘贴链接**。
 3. 核对手机上显示的主机指纹与电脑一致。
-4. 点 **连接并配对**。配对码带中继线路时，手机会自动登记中继。
+4. 点 **连接并配对**。中继线路会自动登记，不需要手动粘贴中继邀请。
 5. 设备令牌和中继凭据保存在 Android SecureStore。
+
+主机设置里的 **添加连接方式** 只保存两类线路：直连和中继。再次添加同一类型会覆盖旧线路，不会堆叠；最多各一条。扫码入口使用全屏相机，避免嵌套弹层导致无法识别。
 
 ### 会话界面
 
@@ -99,12 +127,12 @@ adb install ocremote-0.1.3-android-arm64-v8a.apk
 ### 安装与运行
 
 ```bash
-tar xzf ocremote-host-0.1.3-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-0.1.4-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
-./ocremote start --listen 0.0.0.0:8787 --pair
+./ocremote start
 ```
 
-x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外安装运行时。`start` 默认后台运行。
+x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外安装运行时。`start` 默认后台运行，读取已保存的直连/中继设置。
 
 ```bash
 ./ocremote status
@@ -115,38 +143,54 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 调试或交给 systemd/tmux 时使用前台模式：
 
 ```bash
-./ocremote start --foreground --listen 0.0.0.0:8787
+./ocremote start --foreground
 ```
 
-默认监听 `127.0.0.1:8787`；手机在局域网访问时使用 `0.0.0.0:8787` 或指定网卡地址。
+### 连接方式
+
+| 命令 | 作用 |
+|---|---|
+| `./ocremote direct` | 查看当前直连 |
+| `./ocremote direct 0.0.0.0:8787` | 开启或修改直连，运行中立即生效 |
+| `./ocremote direct 192.168.1.20:8787` | 绑定指定网卡 |
+| `./ocremote direct 127.0.0.1:8787` | 仅本机，不会放进手机配对码 |
+| `./ocremote direct off` | 关闭直连 |
+| `./ocremote relay` | 查看当前中继 |
+| `./ocremote relay 'ocremote-relay://host#...'` | 登记并启用中继，运行中立即生效 |
+| `./ocremote relay on` | 重新启用已保存的中继身份 |
+| `./ocremote relay off` | 关闭中继但保留身份，便于再次启用 |
+| `./ocremote relay --ca ca.pem '...'` | 可选 TLS 使用自签证书时校验中继 |
+
+直连监听器和中继客户端彼此独立。修改一边不会影响另一边；只有实际启用的线路会出现在 `status` 和 `pair` 输出中。
 
 ### 配对与设备
 
 | 命令 | 作用 |
 |---|---|
-| `./ocremote pair` | 生成新的只写配对码 |
+| `./ocremote pair` | 为每个启用线路分别生成一次性配对码 |
 | `./ocremote pair --read-only` | 生成只读配对码 |
+| `./ocremote pair --ttl 10` | 自定义有效期（分钟） |
+| `./ocremote pair --json` | 脚本读取二维码和链接 |
 | `./ocremote devices list` | 查看已配对设备 |
 | `./ocremote devices revoke <id>` | 撤销设备授权 |
 
-配对码一次性有效，默认 5 分钟过期。
+配对码一次性有效，默认 5 分钟过期。中继配对码包含一次性手机 invite；手机会在配对时自动登记。
 
-### 中继模式
+### 中继登记
 
-```bash
-./ocremote start --listen 0.0.0.0:8787 --pair \
-  --relay-link 'ocremote-relay://enroll#...'
+中继启动时会打印一个**可重复使用**的 host link：
+
+```text
+host link  ocremote-relay://host#...
 ```
 
-| 参数 | 作用 |
-|---|---|
-| `--relay-link` | 消耗一次性 host invite，保存长期主机身份和中继固定公钥 |
-| `--relay-ca` | 仅在使用 `wss://` + 自签证书时需要 |
-| 保存后的中继 | 只有显式传 `--relay` / `--relay-link` 才启用 |
+复制给主机即可：
 
-中继 v3 不再依赖第三方 CA。邀请链接里带有中继的 X25519 公钥，主机和手机用 Noise NK 完成握手；认证 token 和主机控制帧在 Noise 通道里加密，应用数据仍然由手机↔主机 Noise 端到端加密。
+```bash
+./ocremote relay 'ocremote-relay://host#...'
+```
 
-主机连上中继后，中继会下发一次性手机 invite，主机把它写进配对码。
+host link 只固定中继的 X25519 公钥，不包含一次性秘密。主机首次连接后获得长期 subject secret，后续用 Noise NK 重连。`relay off` 会保留该身份，`relay on` 或再次传入同一 host link 不会重复占用中继主机名额。
 
 ### 语音模型
 
@@ -162,74 +206,90 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 | 路径 | 内容 |
 |---|---|
 | `~/.config/ocremote/identity.json` | 主机 Noise 静态密钥（0600） |
-| `~/.config/ocremote/config.json` | 设备哈希、待配对哈希、中继身份和房间（0600） |
+| `~/.config/ocremote/config.json` | 设备哈希、待配对哈希、直连/中继设置（0600） |
 | `~/.local/state/ocremote/host.log` | 主机日志 |
 | `OCREMOTE_HOME` | 覆盖配置和身份目录 |
 
 ## 中继端
 
-中继是 Go 单文件程序，只转发加密帧，不运行 opencode、ASR 或模型逻辑。
+中继是 Go 单文件程序，只转发加密帧，不运行 opencode、ASR 或模型逻辑。默认使用 `ws://` + Noise NK，不需要证书即可服务公网 IP；TLS 仍可按需叠加。
 
-### 简化启动：内置 Noise NK
+### 启动
 
 ```bash
-./ocremote-relay serve \
-  --data-dir /opt/ocremote/relay/data \
+./ocremote-relay --data-dir /opt/ocremote/relay/data \
   --listen 0.0.0.0:8443 \
-  --public-url ws://<公网IP>:8443/ws \
-  --no-tls
+  --public-url ws://<公网IP>:8443/ws
 ```
 
-首次运行会生成并打印一次性 host invite。不需要额外证书即可启动；邀请链接包含 `rk`（中继 X25519 公钥），手机和主机用它固定中继身份。TLS 仍然可以按需叠加。
+不需要 `init`，首次启动会自动创建中继身份和数据库，并打印 host link。主要参数：
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `--data-dir` | `./data` | 数据库、中继身份和管理 socket |
+| `--listen` | `:8443` | 监听地址 |
+| `--public-url` | 根据 listen 推导 | 写进 host link 的公网 ws/wss 地址 |
+| `--max-hosts` | `3` | 同时登记的主机数量 |
+| `--max-clients` | `3` | 每个主机房间可连接的手机数量 |
+| `--tls-cert` / `--tls-key` | 无 | 可选 TLS 证书 |
+| `--log-level` | `info` | 日志级别 |
 
 | 文件 | 内容 |
 |---|---|
-| `data/relay.db` | BoltDB，保存房间、主体和邀请哈希 |
+| `data/relay.db` | BoltDB，保存房间、主机/手机主体和邀请哈希 |
 | `data/relay-identity.json` | 中继 Noise 静态密钥（0600） |
 | `data/admin.sock` | 本机管理 socket（0600） |
-| `data/tls/*` | 仅在启用 wss 时生成 |
+
+### 任意主机登记
+
+中继接受实现 OC Remote 中继协议的主机自行登记，不需要预发 host invite：
+
+- 主机首次连接发送稳定的 `hostId`
+- 中继创建独立 host subject 和 room
+- 返回长期 secret，主机保存后用于后续 Noise NK 认证
+- 同一 `hostId` 已登记且未撤销时拒绝重复登记
+- 超过 `--max-hosts` 返回 `RELAY_HOST_LIMIT`
+- 每个 room 超过 `--max-clients` 返回 `RELAY_ROOM_FULL`
+
+这种开放登记意味着任何拿到中继地址并实现协议的主机都能尝试占用名额；用主机数量上限、`admin revoke` 和房间隔离控制滥用。它是可用性边界，不是“官方主机”密码学证明。
 
 ### 认证模型
 
 | 项目 | 机制 |
 |---|---|
-| 中继身份 | 邀请里的 X25519 公钥；不会弹证书确认，也不需要 CA |
-| 主机/手机认证 | Noise NK 握手，token 只在加密 payload 中传输 |
+| 中继身份 | host link 里的 X25519 公钥；不会弹证书确认，也不需要 CA |
+| 主机/手机认证 | Noise NK 握手，subject secret 只在加密 payload 中传输 |
 | 主机控制帧 | 使用 Noise transport 加密（`relay.invite`、`peer` 等） |
+| 手机邀请 | 主机连上中继后获取一次性、绑定 room 的手机 invite |
 | 应用数据 | 手机↔主机 Noise 端到端加密，中继只看到密文 |
-| 重放 | Noise 临时密钥 + 一次性 invite + 服务端状态 |
+| 重放 | Noise 临时密钥 + 一次性手机 invite + 服务端状态 |
 | 持久化 | `relay.db` 重启不丢失 |
 
-### 初始化与管理
+### 管理
 
 ```bash
-./ocremote-relay init --data-dir ./data \
-  --public-url ws://<公网IP>:8443/ws --no-tls
-
 ./ocremote-relay admin --data-dir ./data status
-./ocremote-relay admin --data-dir ./data subjects
-./ocremote-relay admin --data-dir ./data invites
+./ocremote-relay admin --data-dir ./data hosts
+./ocremote-relay admin --data-dir ./data clients
 ./ocremote-relay admin --data-dir ./data rooms
-./ocremote-relay admin --data-dir ./data add-host --name office
+./ocremote-relay admin --data-dir ./data link
 ./ocremote-relay admin --data-dir ./data revoke <subject-id>
 ```
 
-| 规则 | 说明 |
-|---|---|
-| invite | 一次性使用 |
-| subject | 长期有效，直到主动撤销 |
-| 认证 | Noise NK v3；token 不放在 URL，也不明文发送 |
-| TLS | 可选；内置 Noise NK 认证可独立运行，TLS 可按需叠加 |
+`status` 输出当前主机数/上限、每房间手机上限和可复用 host link。`revoke` 会断开该主体并释放主机名额。
 
 ### 可选 TLS
 
-如果希望给传输层再加一层 TLS，可以使用证书；这时主机需要 `--relay-ca`，Android Release 仍只信任系统 CA。
+TLS 是可选传输层，Noise NK 认证和加密控制帧不依赖它。中继不自动生成自签 CA；需要 TLS 时直接提供证书，或放在 Caddy/nginx 后面：
 
 ```bash
-./ocremote-relay serve --data-dir ./data --listen :8443 \
+./ocremote-relay --data-dir ./data --listen 0.0.0.0:8443 \
   --public-url wss://relay.example/ws \
-  --tls-cert relay.crt --tls-key relay.key --tls-ca ca.crt
+  --tls-cert /etc/ocremote/fullchain.pem \
+  --tls-key /etc/ocremote/privkey.pem
 ```
+
+使用公共 CA 时主机不需要额外参数；只有自签证书才需要在主机端 `--ca`，并把 CA 安装到 Android 系统信任库。
 
 ## 安全模型
 
@@ -267,7 +327,9 @@ cd apps/relay && go test ./...
 开发运行：
 
 ```bash
-bun run host start --listen 0.0.0.0:8787 --pair
+bun run --cwd apps/host src/index.ts start
+bun run --cwd apps/host src/index.ts direct 0.0.0.0:8787
+bun run --cwd apps/host src/index.ts pair
 cd apps/relay && go run ./cmd/relay
 cd apps/mobile && bunx expo run:android
 ```
@@ -276,12 +338,12 @@ cd apps/mobile && bunx expo run:android
 
 | 现象 | 处理 |
 |---|---|
-| 手机连不上主机 | 主机使用 `--listen 0.0.0.0:8787`；确认同一网络和防火墙允许 TCP 8787 |
-| 中继身份校验失败 | 用新的 host invite 重新登记主机，并让手机重新扫描配对码；确认中继的 `rk` 没有变化 |
+| 手机连不上主机 | 运行 `ocremote direct 0.0.0.0:8787`；确认同一网络、防火墙允许 TCP 8787，并且 `pair` 输出的是直连二维码 |
+| 中继身份校验失败 | 确认中继 host link 的 `rk` 没有变化；必要时删除主机上的中继配置后重新登记，并让手机重新扫描配对码 |
 | 可选 TLS 证书错误 | 只有启用 `wss://` 时涉及；使用公共 CA，或把自签 CA 安装到系统信任库 |
-| 主机无法登记中继 | 确认 host invite 未被使用；用 `admin add-host` 重新生成；只有启用 `wss://` 且自签时才需要 `--relay-ca` |
+| 主机无法登记中继 | 确认中继地址可达、`--max-hosts` 未满、同一 `hostId` 没有被旧主体占用；只有自签 `wss://` 才需要 `--ca` |
 | APK 架构不匹配 | 真机用 `android-arm64-v8a`，x86_64 模拟器用 `android-x86_64` |
-| 升级后中继不可用 | 从 0.1.2 升级到 0.1.3 后需要重新登记一次中继并重新配对；之后会复用长期身份 |
+| 升级后中继不可用 | 从旧版升级后重新登记一次中继；`relay off/on` 会复用已保存身份 |
 | `/compact` 没反应 | 先确认会话已有可压缩内容；压缩结果会显示在消息区 |
 
 ## 许可证

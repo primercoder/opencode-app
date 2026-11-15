@@ -23,12 +23,11 @@ import (
 	"github.com/flynn/noise"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 func main() {
 	var err error
 	if len(os.Args) < 2 {
-		// No arguments: run the default wss relay (auto-created CA/cert).
 		err = runServe(nil)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -36,11 +35,11 @@ func main() {
 		}
 		return
 	}
-	switch os.Args[1] {
+	first := os.Args[1]
+	switch first {
 	case "serve":
+		// Hidden compatibility alias for older service files.
 		err = runServe(os.Args[2:])
-	case "init":
-		err = runInit(os.Args[2:])
 	case "admin":
 		err = runAdmin(os.Args[2:])
 	case "version", "--version", "-v":
@@ -48,7 +47,11 @@ func main() {
 	case "help", "--help", "-h":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
+		if strings.HasPrefix(first, "-") {
+			err = runServe(os.Args[1:])
+			break
+		}
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", first)
 		usage()
 		os.Exit(2)
 	}
@@ -59,122 +62,112 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `ocremote-relay %s
+	fmt.Fprintf(os.Stderr, `ocremote-relay %s — encrypted relay for OC Remote
 
 Usage:
-  ocremote-relay                                  run the default wss relay (:8443)
-  ocremote-relay init   [options]                 create relay identity and a host invite
-  ocremote-relay serve  [options]                 run the relay (ws or wss)
-  ocremote-relay admin  [options] <command> ...   manage subjects, invites and rooms
+  ocremote-relay [options]              start the relay
+  ocremote-relay admin <command>        inspect or revoke subjects
+  ocremote-relay version
 
-Serve options:
+Start options:
   --data-dir <dir>        data directory (default ./data, env RELAY_DATA_DIR)
   --listen <addr>         listen address (default :8443, env RELAY_LISTEN)
-  --public-url <url>      public ws(s) URL placed in invites (env RELAY_PUBLIC_URL)
-  --tls-cert <file>       user TLS certificate (PEM); wins over local files
-  --tls-key <file>        user TLS private key (PEM)
-  --tls-ca <file>         CA certificate used to verify the user certificate
-  --rotate-tls            regenerate the local CA/certificate set
-  --no-tls                serve plain ws (development only)
+  --public-url <url>      public ws:// or wss:// URL for host links
+  --tls-cert <pem>        optional TLS certificate
+  --tls-key <pem>         optional TLS private key
+  --max-hosts <n>         active hosts (default 3, env RELAY_MAX_HOSTS)
+  --max-clients <n>       phones per host room (default 3, env RELAY_MAX_CLIENTS)
   --admin-socket <path>   admin Unix socket (default <data-dir>/admin.sock)
-  --max-clients <n>       clients per room (default 8)
-  --max-frame <bytes>     maximum websocket frame (default 1 MiB)
   --log-level <level>     debug|info|warn|error (default info)
 
-Init options:
-  --data-dir, --public-url, --name <host label>, --json
-  --tls-cert, --tls-key, --tls-ca, --rotate-tls, --no-tls
-
 Admin commands:
-  status
-  subjects [--kind host|client] [--json]
-  invites [--json]
-  rooms [--json]
-  add-host  --name <label>
-  add-client --name <label>                    legacy manual phone invite
-  rotate    --kind host|client [--name <label>]
-  revoke    <subjectId>
-  delete-invite <hash>
+  status                  relay state, limits and reusable host link
+  hosts                   registered host identities
+  clients                 registered phone identities
+  rooms                   rooms and current occupancy
+  link                    print the reusable host link
+  revoke <subjectId>      revoke a host or phone identity
+
+Examples:
+  # Public IP, Noise NK authentication, no certificate needed
+  ocremote-relay --listen 0.0.0.0:8443 \
+    --public-url ws://203.0.113.10:8443/ws
+
+  # Optional TLS in front of the same Noise protocol
+  ocremote-relay --listen 0.0.0.0:8443 \
+    --public-url wss://relay.example.com/ws \
+    --tls-cert /etc/ocremote/fullchain.pem \
+    --tls-key /etc/ocremote/privkey.pem
+
+  # Allow at most 3 hosts, 3 phones per host
+  ocremote-relay --max-hosts 3 --max-clients 3
+
+  ocremote-relay admin status
+  ocremote-relay admin rooms
+  ocremote-relay admin revoke sub_1234
+
+Host link:
+  Copy the "host link" printed at startup into:
+    ocremote relay 'ocremote-relay://host#...'
+  The link is reusable and only pins the relay public key. Any OC Remote host
+  that implements the relay protocol may register until --max-hosts is reached.
 
 Environment:
   RELAY_DATA_DIR, RELAY_LISTEN, RELAY_PUBLIC_URL, RELAY_ADMIN_SOCKET,
-  RELAY_LOG_LEVEL, RELAY_MAX_CLIENTS, RELAY_MAX_FRAME,
-  RELAY_TLS_CERT, RELAY_TLS_KEY, RELAY_TLS_CA, RELAY_TLS_OFF
+  RELAY_MAX_HOSTS, RELAY_MAX_CLIENTS, RELAY_LOG_LEVEL,
+  RELAY_TLS_CERT, RELAY_TLS_KEY
 `, version)
 }
 
 func runServe(args []string) error {
-	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	flags := flag.NewFlagSet("ocremote-relay", flag.ContinueOnError)
 	dataDir := flags.String("data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
 	listen := flags.String("listen", env("RELAY_LISTEN", ":8443"), "listen address")
 	publicURL := flags.String("public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
-	certFile := flags.String("tls-cert", env("RELAY_TLS_CERT", ""), "user TLS certificate")
-	keyFile := flags.String("tls-key", env("RELAY_TLS_KEY", ""), "user TLS private key")
-	caFile := flags.String("tls-ca", env("RELAY_TLS_CA", ""), "CA certificate for the user TLS certificate")
-	rotateTLS := flags.Bool("rotate-tls", false, "regenerate the relay's local CA and certificate")
-	noTLS := flags.Bool("no-tls", envBool("RELAY_TLS_OFF", false), "serve plain ws (development only)")
+	certFile := flags.String("tls-cert", env("RELAY_TLS_CERT", ""), "TLS certificate")
+	keyFile := flags.String("tls-key", env("RELAY_TLS_KEY", ""), "TLS private key")
+	maxHosts := flags.Int("max-hosts", envInt("RELAY_MAX_HOSTS", 3), "active hosts")
+	maxClients := flags.Int("max-clients", envInt("RELAY_MAX_CLIENTS", 3), "phones per room")
 	adminSocket := flags.String("admin-socket", env("RELAY_ADMIN_SOCKET", ""), "admin Unix socket")
-	maxClients := flags.Int("max-clients", envInt("RELAY_MAX_CLIENTS", 8), "clients per room")
-	maxFrame := flags.Int64("max-frame", int64(envInt("RELAY_MAX_FRAME", 1024*1024)), "maximum frame")
 	level := flags.String("log-level", env("RELAY_LOG_LEVEL", "info"), "log level")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if *maxHosts <= 0 {
+		return errors.New("--max-hosts must be greater than zero")
+	}
+	if *maxClients <= 0 {
+		return errors.New("--max-clients must be greater than zero")
+	}
 	if (*certFile == "") != (*keyFile == "") {
 		return errors.New("--tls-cert and --tls-key must be provided together")
-	}
-	if *noTLS && (*certFile != "" || *caFile != "" || *rotateTLS) {
-		return errors.New("--no-tls cannot be combined with TLS certificate options")
 	}
 
 	logger := newLogger(*level)
 	slog.SetDefault(logger)
+
+	if *publicURL == "" {
+		*publicURL = derivePublicURL(*listen, *certFile != "")
+		if strings.Contains(*publicURL, "://127.0.0.1") || strings.Contains(*publicURL, "://localhost") {
+			fmt.Fprintf(os.Stderr, "warning: --public-url is not set; host links will use %s. Pass the public IP or domain for remote hosts.\n", *publicURL)
+		}
+	}
+	if *certFile != "" {
+		if _, err := relay.ResolveTLS(relay.TLSOptions{
+			DataDir:  *dataDir,
+			CertFile: *certFile,
+			KeyFile:  *keyFile,
+			Host:     relay.TLSHostFromURL(*publicURL, *listen),
+		}); err != nil {
+			return fmt.Errorf("relay TLS: %w", err)
+		}
+	}
 
 	store, err := relay.OpenStore(filepath.Join(*dataDir, "relay.db"))
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-
-	if *publicURL == "" {
-		if *noTLS {
-			*publicURL = derivePublicURL(*listen, false)
-		} else {
-			*publicURL = relay.DefaultPublicURL(*listen)
-		}
-	}
-
-	// WSS is the default. Explicit user files win; complete files in
-	// <data-dir>/tls are validated and reused; an empty directory is generated.
-	if !*noTLS {
-		files, err := relay.ResolveTLS(relay.TLSOptions{
-			DataDir:  *dataDir,
-			CertFile: *certFile,
-			KeyFile:  *keyFile,
-			CAFile:   *caFile,
-			Rotate:   *rotateTLS,
-			Host:     relay.TLSHostFromURL(*publicURL, *listen),
-		})
-		if err != nil {
-			return fmt.Errorf("relay TLS: %w", err)
-		}
-		*certFile = files.CertFile
-		*keyFile = files.KeyFile
-		*caFile = files.CAFile
-		switch {
-		case files.Generated:
-			slog.Info("generated relay TLS certificate", "ca", files.CAFile)
-			fmt.Printf("\nRelay CA certificate:\n  %s\nInstall it in the Android system trust store so phones can verify wss://.\n\n", files.CAFile)
-		case files.User:
-			slog.Info("using user TLS certificate", "cert", files.CertFile, "ca", files.CAFile)
-		default:
-			slog.Info("using saved relay TLS certificate", "cert", files.CertFile, "ca", files.CAFile)
-		}
-	}
-	socket := *adminSocket
-	if socket == "" {
-		socket = filepath.Join(*dataDir, "admin.sock")
-	}
 
 	relayKey, err := relay.LoadOrCreateRelayKey(*dataDir)
 	if err != nil {
@@ -184,10 +177,14 @@ func runServe(args []string) error {
 		Store:      store,
 		PublicURL:  *publicURL,
 		RelayKey:   relayKey,
+		MaxHosts:   *maxHosts,
 		MaxClients: *maxClients,
-		MaxFrame:   *maxFrame,
 	})
-	printFirstHostInvite(store, server)
+
+	socket := *adminSocket
+	if socket == "" {
+		socket = filepath.Join(*dataDir, "admin.sock")
+	}
 	httpServer := &http.Server{
 		Addr:              *listen,
 		Handler:           server.Handler(),
@@ -213,7 +210,24 @@ func runServe(args []string) error {
 		server.Close()
 	}()
 
-	slog.Info("ocremote relay listening", "addr", *listen, "publicUrl", *publicURL, "relayId", store.RelayID(), "tls", *certFile != "")
+	hosts, _ := store.ActiveHostCount()
+	fmt.Printf("ocremote-relay %s\n", version)
+	fmt.Printf("relay id   %s\n", store.RelayID())
+	fmt.Printf("listen     %s\n", *listen)
+	fmt.Printf("ws url     %s\n", *publicURL)
+	if *certFile == "" {
+		fmt.Printf("tls        off (Noise NK still encrypts auth and control frames)\n")
+	} else {
+		fmt.Printf("tls        on (%s)\n", *certFile)
+	}
+	fmt.Printf("hosts      %d/%d active\n", hosts, *maxHosts)
+	fmt.Printf("phones     %d per host\n", *maxClients)
+	fmt.Printf("host link  %s\n", server.HostLink())
+	fmt.Printf("data       %s\n", *dataDir)
+	fmt.Printf("admin      %s\n", socket)
+	fmt.Println()
+
+	slog.Info("ocremote relay listening", "addr", *listen, "publicUrl", *publicURL, "relayId", store.RelayID(), "tls", *certFile != "", "maxHosts", *maxHosts, "maxClients", *maxClients)
 	slog.Info("relay admin socket ready", "path", socket)
 
 	var serveErr error
@@ -228,135 +242,18 @@ func runServe(args []string) error {
 	return nil
 }
 
-func runInit(args []string) error {
-	flags := flag.NewFlagSet("init", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
-	publicURL := flags.String("public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
-	name := flags.String("name", env("RELAY_INVITE_NAME", ""), "host label for the first invite")
-	jsonOut := flags.Bool("json", false, "print JSON")
-	certFile := flags.String("tls-cert", env("RELAY_TLS_CERT", ""), "user TLS certificate")
-	keyFile := flags.String("tls-key", env("RELAY_TLS_KEY", ""), "user TLS private key")
-	caFile := flags.String("tls-ca", env("RELAY_TLS_CA", ""), "CA certificate for the user TLS certificate")
-	rotateTLS := flags.Bool("rotate-tls", false, "regenerate the relay's local CA and certificate")
-	noTLS := flags.Bool("no-tls", envBool("RELAY_TLS_OFF", false), "do not create or check TLS files")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if *noTLS && (*certFile != "" || *caFile != "" || *rotateTLS) {
-		return errors.New("--no-tls cannot be combined with TLS certificate options")
-	}
-	if *publicURL == "" {
-		if *noTLS {
-			*publicURL = derivePublicURL(":8443", false)
-		} else {
-			*publicURL = relay.DefaultPublicURL(":8443")
-		}
-	}
-
-	var tlsFiles relay.TLSFiles
-	if !*noTLS {
-		files, err := relay.ResolveTLS(relay.TLSOptions{
-			DataDir:  *dataDir,
-			CertFile: *certFile,
-			KeyFile:  *keyFile,
-			CAFile:   *caFile,
-			Rotate:   *rotateTLS,
-			Host:     relay.TLSHostFromURL(*publicURL, ":8443"),
-		})
-		if err != nil {
-			return fmt.Errorf("relay TLS: %w", err)
-		}
-		tlsFiles = files
-	}
-
-	store, err := relay.OpenStore(filepath.Join(*dataDir, "relay.db"))
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	relayKey, err := relay.LoadOrCreateRelayKey(*dataDir)
-	if err != nil {
-		return fmt.Errorf("relay identity: %w", err)
-	}
-	server := relay.New(relay.Config{Store: store, PublicURL: *publicURL, RelayKey: relayKey})
-	type inviteOutput struct {
-		Kind string `json:"kind"`
-		Name string `json:"name"`
-		Link string `json:"link"`
-	}
-	outputs := make([]inviteOutput, 0, 1)
-
-	subjects, err := store.ListSubjects()
-	if err != nil {
-		return err
-	}
-	haveHost := false
-	for _, subject := range subjects {
-		if subject.Kind == relay.KindHost && subject.RevokedAt == 0 {
-			haveHost = true
-			break
-		}
-	}
-	if !haveHost {
-		invite, token, err := store.CreateInvite(relay.KindHost, *name, time.Time{})
-		if err != nil {
-			return err
-		}
-		outputs = append(outputs, inviteOutput{Kind: relay.KindHost, Name: invite.Name, Link: server.InviteLink(relay.KindHost, token)})
-	}
-
-	if *jsonOut {
-		raw, _ := json.MarshalIndent(map[string]any{
-			"relayId":   store.RelayID(),
-			"publicUrl": *publicURL,
-			"invites":   outputs,
-			"tls": map[string]any{
-				"enabled":   !*noTLS,
-				"generated": tlsFiles.Generated,
-				"cert":      tlsFiles.CertFile,
-				"ca":        tlsFiles.CAFile,
-			},
-		}, "", "  ")
-		fmt.Println(string(raw))
-		return nil
-	}
-
-	fmt.Printf("relay id   %s\n", store.RelayID())
-	fmt.Printf("public url %s\n", *publicURL)
-	if tlsFiles.CAFile != "" {
-		fmt.Printf("relay ca   %s\n", tlsFiles.CAFile)
-		if tlsFiles.Generated {
-			fmt.Println("Generated a local CA and server certificate in <data-dir>/tls.")
-		}
-	}
-	if len(outputs) == 0 {
-		fmt.Println("nothing to do: a host invite already exists (use admin add-host to issue another one)")
-		return nil
-	}
-	fmt.Println()
-	fmt.Println("One-time host enrollment link (save it now; the relay stores only its hash):")
-	for _, output := range outputs {
-		fmt.Printf("\n%s invite:\n  %s\n", output.Kind, output.Link)
-	}
-	fmt.Println("\nEnroll the host: ./ocremote start --relay-link '<host link>'")
-	fmt.Println("The host receives the phone relay link from the relay and puts it in the pairing code.")
-	return nil
-}
-
 func runAdmin(args []string) error {
 	flags := flag.NewFlagSet("admin", flag.ContinueOnError)
 	dataDir := flags.String("data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
 	socket := flags.String("admin-socket", env("RELAY_ADMIN_SOCKET", ""), "admin Unix socket")
+	publicURL := flags.String("public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
 	jsonOut := flags.Bool("json", false, "print JSON")
-	kind := flags.String("kind", "", "subject/invite kind (host|client)")
-	name := flags.String("name", "", "label for a new invite")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	rest := flags.Args()
 	if len(rest) == 0 {
-		return errors.New("missing admin command (status|subjects|invites|rooms|add-host|add-client|rotate|revoke|delete-invite)")
+		return errors.New("missing admin command (status|hosts|clients|rooms|link|revoke)")
 	}
 	command := rest[0]
 	if *socket == "" {
@@ -377,7 +274,10 @@ func runAdmin(args []string) error {
 		if keyErr != nil {
 			return fmt.Errorf("relay identity: %w", keyErr)
 		}
-		client = &directAdmin{store: store, publicURL: env("RELAY_PUBLIC_URL", ""), relayKey: relayKey}
+		if *publicURL == "" {
+			*publicURL = derivePublicURL(":8443", false)
+		}
+		client = &directAdmin{store: store, publicURL: *publicURL, relayKey: relayKey}
 	}
 
 	switch command {
@@ -386,83 +286,32 @@ func runAdmin(args []string) error {
 		if err != nil {
 			return err
 		}
-		return printValue(status, *jsonOut)
-	case "subjects":
+		if *jsonOut {
+			return printValue(status, true)
+		}
+		return printStatus(status)
+	case "hosts":
 		data, err := client.subjects()
 		if err != nil {
 			return err
 		}
-		filtered := data[:0]
-		for _, subject := range data {
-			if *kind == "" || subject.Kind == *kind {
-				filtered = append(filtered, subject)
-			}
-		}
-		if *jsonOut {
-			return printValue(filtered, true)
-		}
-		if len(filtered) == 0 {
-			fmt.Println("no subjects")
-			return nil
-		}
-		for _, subject := range filtered {
-			state := "active"
-			if subject.RevokedAt > 0 {
-				state = "revoked"
-			}
-			fmt.Printf("%-8s %-10s %-24s room=%s seen=%s %s\n", subject.Kind, subject.ID, subject.Name, subject.Room, formatTime(subject.LastSeenAt), state)
-		}
-		return nil
-	case "invites":
-		data, err := client.invites()
+		return printSubjects(data, relay.KindHost, *jsonOut)
+	case "clients":
+		data, err := client.subjects()
 		if err != nil {
 			return err
 		}
-		if *jsonOut {
-			return printValue(data, true)
-		}
-		if len(data) == 0 {
-			fmt.Println("no invites")
-			return nil
-		}
-		for _, invite := range data {
-			state := "unused"
-			if invite.ConsumedAt > 0 {
-				state = "used by " + invite.ConsumedBy
-			}
-			fmt.Printf("%-8s %s %-16s hash=%s %s\n", invite.Kind, formatTime(invite.CreatedAt), invite.Name, invite.Hash[:16], state)
-		}
-		return nil
+		return printSubjects(data, relay.KindClient, *jsonOut)
 	case "rooms":
 		data, err := client.rooms()
 		if err != nil {
 			return err
 		}
-		return printValue(data, *jsonOut)
-	case "add-host", "add-client":
-		inviteKind := relay.KindClient
-		if command == "add-host" {
-			inviteKind = relay.KindHost
-		}
-		link, err := client.addInvite(inviteKind, *name)
+		return printValue(data, true)
+	case "link":
+		link, err := client.hostLink()
 		if err != nil {
 			return err
-		}
-		if *jsonOut {
-			return printValue(map[string]any{"kind": inviteKind, "link": link}, true)
-		}
-		fmt.Println(link)
-		return nil
-	case "rotate":
-		if *kind != relay.KindHost && *kind != relay.KindClient {
-			return errors.New("rotate needs --kind host|client")
-		}
-		link, err := client.rotateInvite(*kind, *name)
-		if err != nil {
-			return err
-		}
-		if *jsonOut {
-			return printValue(map[string]any{"kind": *kind, "link": link}, true)
 		}
 		fmt.Println(link)
 		return nil
@@ -475,31 +324,67 @@ func runAdmin(args []string) error {
 			return err
 		}
 		return printValue(subject, *jsonOut)
-	case "delete-invite":
-		if len(rest) < 2 {
-			return errors.New("delete-invite needs an invite hash")
-		}
-		if err := client.deleteInvite(rest[1]); err != nil {
-			return err
-		}
-		if !*jsonOut {
-			fmt.Println("deleted")
-		}
-		return nil
 	default:
 		return fmt.Errorf("unknown admin command %q", command)
 	}
 }
 
+func printSubjects(data []relay.Subject, kind string, asJSON bool) error {
+	filtered := make([]relay.Subject, 0, len(data))
+	for _, subject := range data {
+		if subject.Kind == kind {
+			filtered = append(filtered, subject)
+		}
+	}
+	if asJSON {
+		return printValue(filtered, true)
+	}
+	if len(filtered) == 0 {
+		fmt.Printf("no %s subjects\n", kind)
+		return nil
+	}
+	if kind == relay.KindHost {
+		fmt.Printf("%-24s %-20s %-24s %-18s %-10s %s\n", "ID", "NAME", "HOST ID", "ROOM", "SEEN", "STATE")
+		for _, subject := range filtered {
+			fmt.Printf("%-24s %-20s %-24s %-18s %-10s %s\n", subject.ID, subject.Name, subject.HostID, subject.Room, formatTime(subject.LastSeenAt), subjectState(subject))
+		}
+		return nil
+	}
+	fmt.Printf("%-24s %-20s %-18s %-10s %s\n", "ID", "NAME", "ROOM", "SEEN", "STATE")
+	for _, subject := range filtered {
+		fmt.Printf("%-24s %-20s %-18s %-10s %s\n", subject.ID, subject.Name, subject.Room, formatTime(subject.LastSeenAt), subjectState(subject))
+	}
+	return nil
+}
+
+func subjectState(subject relay.Subject) string {
+	if subject.RevokedAt > 0 {
+		return "revoked"
+	}
+	return "active"
+}
+
+func printStatus(value map[string]any) error {
+	fmt.Printf("relay id   %v\n", value["relayId"])
+	fmt.Printf("version    %v\n", value["v"])
+	fmt.Printf("ws url     %v\n", value["wsUrl"])
+	fmt.Printf("hosts      %v/%v active\n", value["hosts"], value["maxHosts"])
+	fmt.Printf("phones     %v per host\n", value["maxClients"])
+	if link, ok := value["hostLink"].(string); ok {
+		fmt.Printf("host link  %s\n", link)
+	}
+	if rooms, ok := value["rooms"].([]any); ok {
+		fmt.Printf("rooms      %d\n", len(rooms))
+	}
+	return nil
+}
+
 type adminAPI interface {
-	status() (any, error)
+	status() (map[string]any, error)
 	subjects() ([]relay.Subject, error)
-	invites() ([]relay.Invite, error)
 	rooms() (any, error)
-	addInvite(kind, name string) (string, error)
-	rotateInvite(kind, name string) (string, error)
+	hostLink() (string, error)
 	revoke(subjectID string) (any, error)
-	deleteInvite(hash string) error
 }
 
 type httpAdmin struct {
@@ -559,8 +444,8 @@ func (a *httpAdmin) call(method, path string, body any, target any) error {
 	return json.Unmarshal(raw, target)
 }
 
-func (a *httpAdmin) status() (any, error) {
-	var value any
+func (a *httpAdmin) status() (map[string]any, error) {
+	var value map[string]any
 	return value, a.call(http.MethodGet, "/v1/admin/status", nil, &value)
 }
 
@@ -571,41 +456,26 @@ func (a *httpAdmin) subjects() ([]relay.Subject, error) {
 	return response.Data, a.call(http.MethodGet, "/v1/admin/subjects", nil, &response)
 }
 
-func (a *httpAdmin) invites() ([]relay.Invite, error) {
-	var response struct {
-		Data []relay.Invite `json:"data"`
-	}
-	return response.Data, a.call(http.MethodGet, "/v1/admin/invites", nil, &response)
-}
-
 func (a *httpAdmin) rooms() (any, error) {
 	var value any
 	return value, a.call(http.MethodGet, "/v1/admin/rooms", nil, &value)
 }
 
-func (a *httpAdmin) addInvite(kind, name string) (string, error) {
-	var response struct {
-		Link string `json:"link"`
+func (a *httpAdmin) hostLink() (string, error) {
+	status, err := a.status()
+	if err != nil {
+		return "", err
 	}
-	err := a.call(http.MethodPost, "/v1/admin/invites", map[string]any{"kind": kind, "name": name}, &response)
-	return response.Link, err
-}
-
-func (a *httpAdmin) rotateInvite(kind, name string) (string, error) {
-	var response struct {
-		Link string `json:"link"`
+	link, _ := status["hostLink"].(string)
+	if link == "" {
+		return "", errors.New("relay did not return a host link")
 	}
-	err := a.call(http.MethodPost, "/v1/admin/rotate", map[string]any{"kind": kind, "name": name}, &response)
-	return response.Link, err
+	return link, nil
 }
 
 func (a *httpAdmin) revoke(subjectID string) (any, error) {
 	var value any
 	return value, a.call(http.MethodPost, "/v1/admin/revoke", map[string]any{"subjectId": subjectID}, &value)
-}
-
-func (a *httpAdmin) deleteInvite(hash string) error {
-	return a.call(http.MethodPost, "/v1/admin/delete-invite", map[string]any{"hash": hash}, nil)
 }
 
 type directAdmin struct {
@@ -614,7 +484,7 @@ type directAdmin struct {
 	relayKey  noise.DHKey
 }
 
-func (a *directAdmin) status() (any, error) {
+func (a *directAdmin) status() (map[string]any, error) {
 	subjects, err := a.store.ListSubjects()
 	if err != nil {
 		return nil, err
@@ -623,27 +493,41 @@ func (a *directAdmin) status() (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"relayId": a.store.RelayID(), "hosts": len(subjects), "rooms": rooms, "offline": true}, nil
+	hosts, clients := 0, 0
+	for _, subject := range subjects {
+		if subject.RevokedAt > 0 {
+			continue
+		}
+		if subject.Kind == relay.KindHost {
+			hosts++
+		} else {
+			clients++
+		}
+	}
+	return map[string]any{
+		"relayId":      a.store.RelayID(),
+		"v":            3,
+		"wsUrl":        a.publicURL,
+		"hosts":        hosts,
+		"maxHosts":     envInt("RELAY_MAX_HOSTS", 3),
+		"clients":      clients,
+		"maxClients":   envInt("RELAY_MAX_CLIENTS", 3),
+		"rooms":        rooms,
+		"hostLink":     a.hostLinkValue(),
+		"offline":      true,
+		"protocolNote": "relay is not running; limits are shown from the saved configuration",
+	}, nil
 }
 
 func (a *directAdmin) subjects() ([]relay.Subject, error) { return a.store.ListSubjects() }
-func (a *directAdmin) invites() ([]relay.Invite, error)   { return a.store.ListInvites() }
 func (a *directAdmin) rooms() (any, error)                { return a.store.ListRooms() }
 
-func (a *directAdmin) addInvite(kind, name string) (string, error) {
-	_, token, err := a.store.CreateInvite(kind, name, time.Time{})
-	if err != nil {
-		return "", err
-	}
-	return relay.EncodeInviteLink(a.store.RelayID(), a.publicURL, kind, token, relay.PublicKeyText(a.relayKey)), nil
+func (a *directAdmin) hostLink() (string, error) {
+	return a.hostLinkValue(), nil
 }
 
-func (a *directAdmin) rotateInvite(kind, name string) (string, error) {
-	_, token, err := a.store.RotateInvite(kind, name)
-	if err != nil {
-		return "", err
-	}
-	return relay.EncodeInviteLink(a.store.RelayID(), a.publicURL, kind, token, relay.PublicKeyText(a.relayKey)), nil
+func (a *directAdmin) hostLinkValue() string {
+	return relay.EncodeHostLink(a.store.RelayID(), a.publicURL, relay.PublicKeyText(a.relayKey))
 }
 
 func (a *directAdmin) revoke(subjectID string) (any, error) {
@@ -654,34 +538,10 @@ func (a *directAdmin) revoke(subjectID string) (any, error) {
 	return map[string]any{"id": subject.ID, "kind": subject.Kind, "revokedAt": subject.RevokedAt, "note": "relay is not running; live connections are already gone"}, nil
 }
 
-func (a *directAdmin) deleteInvite(hash string) error { return a.store.DeleteInvite(hash) }
-
-// printFirstHostInvite makes a parameterless relay usable immediately: if no
-// host has enrolled and no host invite is pending, print one for the first host.
-func printFirstHostInvite(store *relay.Store, server *relay.Server) {
-	subjects, err := store.ListSubjects()
-	if err != nil {
-		return
-	}
-	for _, subject := range subjects {
-		if subject.Kind == relay.KindHost && subject.RevokedAt == 0 {
-			return
-		}
-	}
-	if _, ok := store.Invite(relay.KindHost); ok {
-		return
-	}
-	_, token, err := store.CreateInvite(relay.KindHost, "", time.Time{})
-	if err != nil {
-		return
-	}
-	fmt.Printf("\nFirst host invite (one-time):\n  %s\n\n", server.InviteLink(relay.KindHost, token))
-}
-
 func derivePublicURL(listen string, tls bool) string {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		host, port = "127.0.0.1", "8080"
+		host, port = "127.0.0.1", "8443"
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
@@ -696,15 +556,7 @@ func derivePublicURL(listen string, tls bool) string {
 	return fmt.Sprintf("%s://%s:%s/ws", scheme, host, port)
 }
 
-func printValue(value any, asJSON bool) error {
-	if asJSON {
-		raw, err := json.MarshalIndent(value, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(raw))
-		return nil
-	}
+func printValue(value any, _ bool) error {
 	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
@@ -747,18 +599,6 @@ func envInt(key string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
-		return fallback
-	}
-	return parsed
-}
-
-func envBool(key string, fallback bool) bool {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
 		return fallback
 	}
 	return parsed

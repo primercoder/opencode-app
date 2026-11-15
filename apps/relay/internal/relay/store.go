@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -65,6 +66,7 @@ type Subject struct {
 	ID         string `json:"id"`
 	Kind       string `json:"kind"`
 	Name       string `json:"name"`
+	HostID     string `json:"hostId,omitempty"`
 	SecretHash string `json:"secretHash"`
 	Room       string `json:"room,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
@@ -209,8 +211,94 @@ func (s *Store) DeleteInvite(hash string) error {
 	})
 }
 
+// EnrollHost registers any OC Remote host that presents a valid host hello.
+// Hosts do not need a pre-issued invite. The number of active host identities
+// is bounded by maxHosts, and a hostId may only own one active identity.
+func (s *Store) EnrollHost(hostID, name string, maxHosts int) (Subject, string, error) {
+	hostID = strings.TrimSpace(hostID)
+	if hostID == "" {
+		return Subject{}, "", relayError("RELAY_BAD_REQUEST", "hostId is required")
+	}
+	if maxHosts <= 0 {
+		maxHosts = 3
+	}
+	secret := randomToken()
+	subject := Subject{
+		ID:         randomID("sub_"),
+		Kind:       KindHost,
+		Name:       name,
+		HostID:     hostID,
+		SecretHash: hashToken(secret),
+		Room:       randomID("room_"),
+		CreatedAt:  time.Now().Unix(),
+	}
+	if subject.Name == "" {
+		subject.Name = hostID
+	}
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		subjects := tx.Bucket(bucketSubjects)
+		active := 0
+		var duplicate error
+		if err := subjects.ForEach(func(_, value []byte) error {
+			var existing Subject
+			if err := json.Unmarshal(value, &existing); err != nil {
+				return nil
+			}
+			if existing.Kind != KindHost || existing.RevokedAt > 0 {
+				return nil
+			}
+			active++
+			if existing.HostID != "" && existing.HostID == hostID {
+				duplicate = relayError("RELAY_HOST_EXISTS", "this host is already registered; revoke the old subject or restore its saved credentials")
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		if duplicate != nil {
+			return duplicate
+		}
+		if active >= maxHosts {
+			return relayError("RELAY_HOST_LIMIT", "relay host limit reached")
+		}
+		rooms := tx.Bucket(bucketRooms)
+		if rooms.Get([]byte(subject.Room)) != nil {
+			subject.Room = randomID("room_")
+		}
+		room := Room{ID: subject.Room, HostSubjectID: subject.ID, Name: subject.Name, CreatedAt: time.Now().Unix()}
+		roomRaw, _ := json.Marshal(room)
+		if err := rooms.Put([]byte(subject.Room), roomRaw); err != nil {
+			return err
+		}
+		subjectRaw, _ := json.Marshal(subject)
+		return subjects.Put([]byte(subject.ID), subjectRaw)
+	})
+	if err != nil {
+		return Subject{}, "", err
+	}
+	return subject, secret, nil
+}
+
+// ActiveHostCount returns non-revoked host identities.
+func (s *Store) ActiveHostCount() (int, error) {
+	count := 0
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketSubjects).ForEach(func(_, value []byte) error {
+			var subject Subject
+			if err := json.Unmarshal(value, &subject); err != nil {
+				return nil
+			}
+			if subject.Kind == KindHost && subject.RevokedAt == 0 {
+				count++
+			}
+			return nil
+		})
+	})
+	return count, err
+}
+
 // Enroll consumes a one-time invite and creates a long-lived subject.
-func (s *Store) Enroll(inviteToken, kind, name, roomID string) (Subject, string, error) {
+func (s *Store) Enroll(inviteToken, kind, name, roomID string, maxHosts int) (Subject, string, error) {
 	if kind != KindHost && kind != KindClient {
 		return Subject{}, "", relayError("RELAY_BAD_REQUEST", "subject kind must be host or client")
 	}
@@ -258,6 +346,25 @@ func (s *Store) Enroll(inviteToken, kind, name, roomID string) (Subject, string,
 
 		rooms := tx.Bucket(bucketRooms)
 		if kind == KindHost {
+			if maxHosts <= 0 {
+				maxHosts = 3
+			}
+			active := 0
+			if err := tx.Bucket(bucketSubjects).ForEach(func(_, value []byte) error {
+				var existing Subject
+				if err := json.Unmarshal(value, &existing); err != nil {
+					return nil
+				}
+				if existing.Kind == KindHost && existing.RevokedAt == 0 {
+					active++
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+			if active >= maxHosts {
+				return relayError("RELAY_HOST_LIMIT", "relay host limit reached")
+			}
 			if roomID == "" {
 				roomID = randomID("room_")
 			}

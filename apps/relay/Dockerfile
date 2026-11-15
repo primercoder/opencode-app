@@ -9,6 +9,6 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ocremote-relay ./c
 
 FROM scratch
 COPY --from=build /out/ocremote-relay /ocremote-relay
-RUN mkdir -p /data
-EXPOSE 8080
-ENTRYPOINT ["/ocremote-relay", "serve"]
+WORKDIR /data
+EXPOSE 8443
+ENTRYPOINT ["/ocremote-relay"]

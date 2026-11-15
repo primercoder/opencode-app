@@ -49,7 +49,7 @@
           <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub 仓库" rel="noreferrer">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" /></svg>
           </a>
-          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.3 <span class="arrow">↓</span></a>
+          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.4 <span class="arrow">↓</span></a>
           <button class="nav-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="site-menu">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
           </button>
@@ -125,15 +125,15 @@
                 <tr><td><strong>主机 Noise 私钥</strong></td><td><code>~/.config/ocremote/identity.json</code></td><td>文件权限 0600，不离开主机</td></tr>
                 <tr><td><strong>设备令牌</strong></td><td>手机 SecureStore；主机保存哈希</td><td>可单独撤销设备</td></tr>
                 <tr><td><strong>中继 subject secret</strong></td><td>手机 SecureStore；中继保存哈希</td><td>长期有效，可 revoke</td></tr>
-                <tr><td><strong>中继邀请</strong></td><td>一次性 host / phone invite</td><td>使用后失效，默认短时有效</td></tr>
-                <tr><td><strong>中继 Noise 静态私钥</strong></td><td><code>data/relay-identity.json</code></td><td>0600；公钥随邀请下发，用于固定中继身份</td></tr>
-                <tr><td><strong>可选 TLS 私钥</strong></td><td><code>data/tls/relay.key</code></td><td>仅启用 wss 时生成，0600</td></tr>
+                <tr><td><strong>中继手机邀请</strong></td><td>一次性 phone invite</td><td>绑定 room，使用后失效，默认短时有效</td></tr>
+                <tr><td><strong>中继 Noise 静态私钥</strong></td><td><code>data/relay-identity.json</code></td><td>0600；公钥随 host link 下发，用于固定中继身份</td></tr>
+                <tr><td><strong>可选 TLS 私钥</strong></td><td>运维提供的证书路径</td><td>仅启用 wss 时使用，中继不自动生成 CA</td></tr>
               </tbody>
             </table>
           </div>
           <div class="callout" style="margin-top: 24px">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16v.1" /></svg>
-            中继仍能看到谁在什么时候连接、房间大小和流量模式。Noise 保护的是应用负载，不是元数据匿名性。
+            中继仍能看到谁在什么时候连接、房间大小和流量模式。Noise 保护的是应用负载，不是元数据匿名性。开放主机登记受默认 3 台主机、每房间 3 台手机的上限约束，可用 <code>admin revoke</code> 释放名额。
           </div>
         </div>
       </section>

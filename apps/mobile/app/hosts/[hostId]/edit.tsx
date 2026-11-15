@@ -15,10 +15,10 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import type { Transport } from "@ocremote/protocol"
 import { Icon } from "@/components/Icon"
-import { RelayAccessCard } from "@/components/RelayAccessCard"
 import { TransportAddSheet } from "@/components/TransportAddSheet"
 import { Button, Card, Divider, IconButton, SectionLabel } from "@/components/ui"
 import { useT } from "@/i18n"
+import { replaceTransport } from "@/lib/transports"
 import { useHosts } from "@/stores/hosts"
 import { closeRuntime, testTransport } from "@/transport/runtimes"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
@@ -50,9 +50,6 @@ export default function EditHostScreen() {
   const [busy, setBusy] = useState(false)
   const [routeTests, setRouteTests] = useState<Record<string, RouteTest>>({})
   const routeTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
-  const relayRoute = routes.find((route) => route.kind === "relay")
-  const relayRoom = relayRoute?.kind === "relay" ? relayRoute.room : ""
-  const relayUrl = relayRoute?.kind === "relay" ? relayRoute.url : ""
   const trimmedName = name.trim()
   const dirty = Boolean(
     host &&
@@ -263,10 +260,6 @@ export default function EditHostScreen() {
           <Button label={t("addConnection")} size="sm" variant="outline" onPress={() => setAddOpen(true)} />
         </View>
 
-        {relayRoom ? (
-          <RelayAccessCard key={relayRoom} room={relayRoom} url={relayUrl} compact />
-        ) : null}
-
         {formError ? <Text style={styles.error}>{formError}</Text> : null}
 
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16 }}>
@@ -298,14 +291,7 @@ export default function EditHostScreen() {
         existing={routes}
         onClose={() => setAddOpen(false)}
         onAdd={(transport) => {
-          if (routes.some((route) => route.kind === transport.kind && route.url === transport.url && (transport.kind !== "relay" || route.kind !== "relay" || route.room === transport.room))) {
-            return false
-          }
-          setRoutes((current) =>
-            [...current, transport]
-              .sort((left, right) => (left.kind === "relay" ? 1 : 0) - (right.kind === "relay" ? 1 : 0))
-              .map((route, index) => ({ ...route, priority: index })),
-          )
+          setRoutes((current) => replaceTransport(current, transport))
           setFormError(null)
           return true
         }}

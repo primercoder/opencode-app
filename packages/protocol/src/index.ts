@@ -23,8 +23,10 @@ export {
   type Transport,
 } from "./pairing.ts"
 export {
+  encodeRelayHostLink,
   encodeRelayInviteLink,
   parseRelayInviteLink,
+  RELAY_HOST_PREFIX,
   RELAY_INVITE_PREFIX,
   RelayInviteSchema,
   type RelayInvite,

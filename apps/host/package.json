@@ -1,15 +1,15 @@
 {
   "name": "@ocremote/host",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "bin": {
     "ocremote": "./src/index.ts"
   },
   "scripts": {
-    "dev": "bun run src/index.ts start --lan",
+    "dev": "bun run src/index.ts start",
     "start": "bun run src/index.ts start",
-    "pair": "bun run src/index.ts pair --lan",
+    "pair": "bun run src/index.ts pair",
     "test": "bun test"
   },
   "dependencies": {

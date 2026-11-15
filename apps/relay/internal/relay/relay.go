@@ -23,6 +23,7 @@ type Config struct {
 	Store        *Store
 	PublicURL    string
 	RelayKey     noise.DHKey
+	MaxHosts     int
 	MaxClients   int
 	MaxFrame     int64
 	PingInterval time.Duration
@@ -32,8 +33,11 @@ type Config struct {
 }
 
 func (c *Config) normalize() {
+	if c.MaxHosts <= 0 {
+		c.MaxHosts = 3
+	}
 	if c.MaxClients <= 0 {
-		c.MaxClients = 8
+		c.MaxClients = 3
 	}
 	if c.MaxFrame <= 0 {
 		c.MaxFrame = 1024 * 1024
@@ -94,6 +98,8 @@ type helloFrame struct {
 	Kind      string `json:"kind"`
 	Invite    string `json:"invite"`
 	SubjectID string `json:"subjectId"`
+	HostID    string `json:"hostId"`
+	HostName  string `json:"hostName"`
 	Secret    string `json:"secret"`
 	Name      string `json:"name"`
 	Room      string `json:"room"`
@@ -220,10 +226,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	var subject Subject
 	var secret string
 	var enrolled bool
-	if hello.Invite != "" {
-		subject, secret, err = s.cfg.Store.Enroll(hello.Invite, hello.Kind, hello.Name, hello.Room)
+	switch {
+	case hello.Invite != "":
+		subject, secret, err = s.cfg.Store.Enroll(hello.Invite, hello.Kind, hello.Name, hello.Room, s.cfg.MaxHosts)
 		enrolled = true
-	} else {
+	case hello.Kind == KindHost && hello.SubjectID == "":
+		name := strings.TrimSpace(hello.HostName)
+		if name == "" {
+			name = strings.TrimSpace(hello.Name)
+		}
+		if name == "" {
+			name = hello.HostID
+		}
+		subject, secret, err = s.cfg.Store.EnrollHost(hello.HostID, name, s.cfg.MaxHosts)
+		enrolled = true
+	default:
 		subject, err = s.cfg.Store.AuthenticateSubject(hello.SubjectID, hello.Secret, hello.Kind)
 	}
 	if err != nil {

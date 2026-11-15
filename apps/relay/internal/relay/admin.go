@@ -18,6 +18,7 @@ type publicSubject struct {
 	ID         string `json:"id"`
 	Kind       string `json:"kind"`
 	Name       string `json:"name"`
+	HostID     string `json:"hostId,omitempty"`
 	Room       string `json:"room,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	LastSeenAt int64  `json:"lastSeenAt,omitempty"`
@@ -37,6 +38,7 @@ func toPublicSubject(subject Subject) publicSubject {
 		ID:         subject.ID,
 		Kind:       subject.Kind,
 		Name:       subject.Name,
+		HostID:     subject.HostID,
 		Room:       subject.Room,
 		CreatedAt:  subject.CreatedAt,
 		LastSeenAt: subject.LastSeenAt,
@@ -90,11 +92,14 @@ func (s *Server) ServerStatus() map[string]any {
 		"v":            ProtocolVersion,
 		"wsUrl":        s.cfg.PublicURL,
 		"hosts":        hosts,
+		"maxHosts":     s.cfg.MaxHosts,
 		"clients":      clients,
+		"maxClients":   s.cfg.MaxClients,
 		"rooms":        rooms,
 		"adminSocket":  "",
 		"generatedAt":  time.Now().Unix(),
-		"protocolNote": "relay v3: one-time invites, Noise NK authentication, long-lived subjects",
+		"hostLink":     s.HostLink(),
+		"protocolNote": "relay v3: open host registration, Noise NK authentication, bounded rooms",
 	}
 }
 
@@ -243,6 +248,25 @@ func (s *Server) ClientInvite(roomID, name string) (string, error) {
 		return "", err
 	}
 	return s.InviteLink(KindClient, token), nil
+}
+
+// HostLink is a reusable connection profile for any OC Remote host. It pins
+// the relay Noise key and carries no one-time secret.
+func (s *Server) HostLink() string {
+	return EncodeHostLink(s.cfg.Store.RelayID(), s.cfg.PublicURL, PublicKeyText(s.cfg.RelayKey))
+}
+
+// EncodeHostLink builds the reusable host connection link.
+func EncodeHostLink(relayID, publicURL, relayPublicKey string) string {
+	payload := map[string]any{
+		"v":       3,
+		"kind":    KindHost,
+		"url":     publicURL,
+		"relayId": relayID,
+		"rk":      relayPublicKey,
+	}
+	raw, _ := json.Marshal(payload)
+	return "ocremote-relay://host#" + base64.RawURLEncoding.EncodeToString(raw)
 }
 
 // InviteLink encodes a self-contained one-time enrollment link.

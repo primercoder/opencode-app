@@ -13,8 +13,8 @@ afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.()
 })
 
-describe("relay v2 end to end", () => {
-  test("enrolls host and phone with one-time invites and survives a relay restart", async () => {
+describe("relay v4 end to end", () => {
+  test("self-registers a host, enrolls a phone and survives a relay restart", async () => {
     const relayPort = await freePort()
     const relayDir = join(import.meta.dir, "../../relay")
     const relayBinary = join(tmpdir(), `ocremote-relay-test-${process.pid}-${Date.now()}`)
@@ -29,7 +29,6 @@ describe("relay v2 end to end", () => {
     const dataDir = await mkdtemp(join(tmpdir(), "ocremote-relay-data-"))
     cleanups.push(() => rm(dataDir, { recursive: true, force: true }))
     const publicUrl = `ws://127.0.0.1:${relayPort}/ws`
-    const invites = initRelay(relayBinary, dataDir, publicUrl)
 
     let relay = spawnRelay(relayBinary, dataDir, relayPort, publicUrl)
     cleanups.push(async () => {
@@ -37,9 +36,11 @@ describe("relay v2 end to end", () => {
       await rm(relayBinary, { force: true })
     })
     await waitFor(`http://127.0.0.1:${relayPort}/healthz`)
+    const hostLink = adminHostLink(relayBinary, dataDir, publicUrl)
 
     const relayConfig = await enrollRelaySubject({
-      link: invites.host,
+      link: hostLink,
+      hostId: "host_relay_test",
       name: "relay-test-host",
     })
     expect(relayConfig.subjectId.startsWith("sub_")).toBe(true)
@@ -70,11 +71,9 @@ describe("relay v2 end to end", () => {
     })
     cleanups.push(() => host.close())
 
-    const code = await host.issuePairCode()
-    const pairingUrl = await host.pairingOffer(code, "ws://127.0.0.1:1/ws")
-    const offer = parsePairingOffer(pairingUrl)
-    expect(offer.transports.map((transport) => transport.kind)).toEqual(["lan", "relay"])
-    expect("clientToken" in (offer.transports[1] ?? {})).toBe(false)
+    const routes = await host.pairingRoutes()
+    expect(routes.map((route) => route.kind)).toEqual(["relay"])
+    const offer = parsePairingOffer(routes[0]!.offer)
     const relayTransport = offer.transports.find((transport) => transport.kind === "relay")
     if (!relayTransport || relayTransport.kind !== "relay" || !relayTransport.invite) {
       throw new Error("pairing offer did not include a relay phone invite")
@@ -114,16 +113,16 @@ describe("relay v2 end to end", () => {
   }, 90_000)
 })
 
-function initRelay(binary: string, dataDir: string, publicUrl: string): { host: string } {
-  const result = Bun.spawnSync([binary, "init", "--data-dir", dataDir, "--public-url", publicUrl, "--json"], {
+function adminHostLink(binary: string, dataDir: string, publicUrl: string): string {
+  const result = Bun.spawnSync([binary, "admin", "--data-dir", dataDir, "--public-url", publicUrl, "link"], {
     stdout: "pipe",
     stderr: "pipe",
   })
-  if (result.exitCode !== 0) throw new Error(`relay init failed: ${result.stderr.toString()}`)
-  const parsed = JSON.parse(result.stdout.toString()) as { invites?: Array<{ kind: string; link: string }> }
-  const host = parsed.invites?.find((invite) => invite.kind === "host")?.link
-  if (!host) throw new Error(`relay init did not return a host invite: ${result.stdout.toString()}`)
-  return { host }
+  const link = result.stdout.toString().trim()
+  if (result.exitCode !== 0 || !link.startsWith("ocremote-relay://host#")) {
+    throw new Error(`relay host link failed: ${result.stderr.toString()}`)
+  }
+  return link
 }
 
 async function enrollClient(link: string, room: string): Promise<{ subjectId: string; secret: string; relayKey: string }> {
@@ -160,7 +159,7 @@ async function enrollClient(link: string, room: string): Promise<{ subjectId: st
 }
 
 function spawnRelay(binary: string, dataDir: string, port: number, publicUrl: string) {
-  return Bun.spawn([binary, "serve", "--data-dir", dataDir, "--listen", `127.0.0.1:${port}`, "--public-url", publicUrl, "--no-tls"], {
+  return Bun.spawn([binary, "--data-dir", dataDir, "--listen", `127.0.0.1:${port}`, "--public-url", publicUrl], {
     stdout: "ignore",
     stderr: "inherit",
   })

@@ -26,11 +26,13 @@ export type PendingPair = {
 export type RelayConfig = {
   url: string
   room: string
-  /** Long-lived relay subject returned by a one-time host invite. */
+  /** Long-lived relay subject returned by the relay. */
   subjectId: string
   secret: string
-  /** Relay X25519 public key pinned by the host invite. */
+  /** Relay X25519 public key pinned by the host link. */
   relayKey: string
+  /** Kept so "relay off"/"relay on" can reuse the same relay identity. */
+  enabled?: boolean
   /**
    * One-time phone invite last issued by the relay. Pairing offers prefer a
    * fresh invite requested while connected, but this cached copy keeps
@@ -39,14 +41,17 @@ export type RelayConfig = {
   clientInvite?: string
 }
 
+export type DirectConfig = {
+  hostname: string
+  port: number
+}
+
 export type HostConfig = {
-  v: 1
+  v: 2
   hostId: string
   name: string
-  lan: {
-    hostname: string
-    port: number
-  }
+  /** Present only when direct/LAN access is enabled. */
+  direct?: DirectConfig
   relay?: RelayConfig
   opencode?: {
     url: string
@@ -115,16 +120,21 @@ export async function loadOrCreateIdentity(home: string, hostName = defaultHostN
 
 export async function loadConfig(
   home: string,
-  defaults: { hostId: string; name: string; lan: { hostname: string; port: number } },
+  defaults: { hostId: string; name: string; direct?: DirectConfig },
 ): Promise<HostConfig> {
   const path = join(home, "config.json")
   try {
-    const raw = JSON.parse(await readFile(path, "utf8")) as Partial<HostConfig>
+    const raw = JSON.parse(await readFile(path, "utf8")) as Partial<HostConfig> & {
+      lan?: DirectConfig
+    }
+    const migrated =
+      raw.direct ??
+      (raw.lan && !isLoopbackHostname(raw.lan.hostname) ? raw.lan : undefined)
     return {
-      v: 1,
+      v: 2,
       hostId: raw.hostId || defaults.hostId,
       name: raw.name || defaults.name,
-      lan: raw.lan || defaults.lan,
+      ...(migrated ? { direct: migrated } : defaults.direct ? { direct: defaults.direct } : {}),
       ...(raw.opencode ? { opencode: raw.opencode } : {}),
       ...(raw.relay ? { relay: raw.relay } : {}),
       devices: Array.isArray(raw.devices) ? raw.devices : [],
@@ -132,16 +142,20 @@ export async function loadConfig(
     }
   } catch {
     const config: HostConfig = {
-      v: 1,
+      v: 2,
       hostId: defaults.hostId,
       name: defaults.name,
-      lan: defaults.lan,
+      ...(defaults.direct ? { direct: defaults.direct } : {}),
       devices: [],
       pendingPairs: [],
     }
     await saveConfig(home, config)
     return config
   }
+}
+
+export function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "::1" || hostname === "localhost"
 }
 
 export async function saveConfig(home: string, config: HostConfig): Promise<void> {

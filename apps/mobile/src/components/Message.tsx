@@ -1,11 +1,10 @@
 import { memo, useEffect, useRef, useState } from "react"
-import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from "react-native"
+import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, Text, View } from "react-native"
 import { useT } from "@/i18n"
 import { useTheme } from "@/theme"
 import type { AssistantContent, SessionMessage } from "@/opencode/client"
 import { Icon } from "./Icon"
 import { Markdown } from "./Markdown"
-import { useSelectionGuard } from "./selectionGuard"
 
 export const MessageView = memo(function MessageView({
   message,
@@ -14,11 +13,10 @@ export const MessageView = memo(function MessageView({
 }: {
   message: SessionMessage
   onBeforeExpand?: (opening: boolean, y: number) => void
-  onAfterExpand?: (y: number) => void
+  onAfterExpand?: (delta: number) => void
 }) {
   const { colors } = useTheme()
   const t = useT()
-  const guard = useSelectionGuard()
 
   if (message.type === "user") {
     return (
@@ -34,12 +32,7 @@ export const MessageView = memo(function MessageView({
             paddingVertical: 10,
           }}
         >
-          <Text
-            style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}
-            selectable
-            onPressIn={guard?.onPressIn}
-            onLongPress={guard?.onLongPress}
-          >
+          <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}>
             {message.text ?? ""}
           </Text>
         </View>
@@ -95,9 +88,6 @@ export const MessageView = memo(function MessageView({
               color: colors.text,
               fontFamily: "monospace",
             }}
-            selectable
-            onPressIn={guard?.onPressIn}
-            onLongPress={guard?.onLongPress}
           >
             {output.length > 4_000 ? `${output.slice(0, 4_000)}\n…` : output}
           </Text>
@@ -208,45 +198,38 @@ function StreamingCursor() {
 }
 
 /**
- * Measures the collapsible header in window coordinates before and after the
- * toggle. The transcript uses that delta to preserve the user's reading anchor
- * instead of jumping by the height of the expanded content.
+ * Keeps the bottom edge of a collapsible card fixed. The card reports its new
+ * height from onLayout, and the list offset is adjusted by the same delta. This
+ * happens in the layout pass instead of a deferred frame, and unlike anchoring
+ * the header it keeps the expanded content on screen.
  */
 function useAnchoredToggle(
   open: boolean,
   setOpen: (update: (value: boolean) => boolean) => void,
   onBeforeExpand?: (opening: boolean, y: number) => void,
-  onAfterExpand?: (y: number) => void,
+  onAfterExpand?: (delta: number) => void,
 ) {
   const ref = useRef<View>(null)
+  const height = useRef(0)
   const pending = useRef(false)
 
   const toggle = () => {
     const next = !open
-    const apply = () => {
-      pending.current = true
-      setOpen(() => next)
-    }
-    if (ref.current?.measureInWindow) {
-      ref.current.measureInWindow((_x, y) => {
-        onBeforeExpand?.(next, y)
-        apply()
-      })
-    } else {
-      onBeforeExpand?.(next, 0)
-      apply()
-    }
+    onBeforeExpand?.(next, 0)
+    pending.current = true
+    setOpen(() => next)
   }
 
-  useEffect(() => {
+  const onLayout = (event: { nativeEvent: { layout: { height: number } } }) => {
+    const nextHeight = event.nativeEvent.layout.height
+    const delta = nextHeight - height.current
+    height.current = nextHeight
     if (!pending.current) return
     pending.current = false
-    requestAnimationFrame(() => {
-      ref.current?.measureInWindow?.((_x, y) => onAfterExpand?.(y))
-    })
-  }, [onAfterExpand, open])
+    onAfterExpand?.(delta)
+  }
 
-  return { ref, toggle }
+  return { ref, toggle, onLayout }
 }
 
 function CompactionView({
@@ -256,12 +239,12 @@ function CompactionView({
 }: {
   message: SessionMessage
   onBeforeExpand?: (opening: boolean, y: number) => void
-  onAfterExpand?: (y: number) => void
+  onAfterExpand?: (delta: number) => void
 }) {
   const { colors } = useTheme()
   const t = useT()
   const [open, setOpen] = useState(false)
-  const { ref: toggleRef, toggle } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
+  const { ref: toggleRef, toggle, onLayout } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
   const running = message.status === "running"
   const failed = message.status === "failed"
   const summary = message.summary?.trim() ?? ""
@@ -274,6 +257,7 @@ function CompactionView({
 
   return (
     <View
+      onLayout={onLayout}
       style={{
         borderRadius: 12,
         borderWidth: StyleSheet.hairlineWidth,
@@ -319,17 +303,13 @@ function CompactionView({
         </Text>
       ) : null}
       {open && summary ? (
-        <View
-          style={{
-            paddingHorizontal: 11,
-            paddingBottom: 11,
-            borderTopWidth: StyleSheet.hairlineWidth,
-            borderTopColor: colors.border,
-            paddingTop: 8,
-          }}
+        <ScrollView
+          nestedScrollEnabled
+          style={{ maxHeight: 340, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}
+          contentContainerStyle={{ paddingHorizontal: 11, paddingBottom: 11, paddingTop: 8 }}
         >
           <Markdown text={summary} />
-        </View>
+        </ScrollView>
       ) : null}
     </View>
   )
@@ -366,18 +346,19 @@ function ActivityGroup({
   blocks: AssistantContent[]
   live?: boolean
   onBeforeExpand?: (opening: boolean, y: number) => void
-  onAfterExpand?: (y: number) => void
+  onAfterExpand?: (delta: number) => void
 }) {
   const { colors } = useTheme()
   const t = useT()
   const [open, setOpen] = useState(false)
-  const { ref: toggleRef, toggle } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
+  const { ref: toggleRef, toggle, onLayout } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
   const running =
     live || blocks.some((block) => block.type === "tool" && (block.state?.status ?? "running") === "running")
 
   if (blocks.length === 0) return null
   return (
     <View
+      onLayout={onLayout}
       style={{
         borderRadius: 12,
         borderWidth: StyleSheet.hairlineWidth,
@@ -404,15 +385,10 @@ function ActivityGroup({
         <Icon name={open ? "chevronDown" : "chevronRight"} size={14} color={colors.faint} />
       </Pressable>
       {open ? (
-        <View
-          style={{
-            paddingHorizontal: 10,
-            paddingTop: 8,
-            paddingBottom: 10,
-            gap: 8,
-            borderTopWidth: StyleSheet.hairlineWidth,
-            borderTopColor: colors.border,
-          }}
+        <ScrollView
+          nestedScrollEnabled
+          style={{ maxHeight: 380, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}
+          contentContainerStyle={{ paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, gap: 8 }}
         >
           {blocks.map((block, index) =>
             block.type === "reasoning" ? (
@@ -431,7 +407,7 @@ function ActivityGroup({
               />
             ) : null,
           )}
-        </View>
+        </ScrollView>
       ) : null}
     </View>
   )
@@ -444,16 +420,15 @@ function ReasoningBlock({
 }: {
   text: string
   onBeforeExpand?: (opening: boolean, y: number) => void
-  onAfterExpand?: (y: number) => void
+  onAfterExpand?: (delta: number) => void
 }) {
   const { colors } = useTheme()
   const t = useT()
-  const guard = useSelectionGuard()
   const [open, setOpen] = useState(false)
-  const { ref: toggleRef, toggle } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
+  const { ref: toggleRef, toggle, onLayout } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
   if (!text.trim()) return null
   return (
-    <View>
+    <View onLayout={onLayout}>
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
@@ -465,21 +440,20 @@ function ReasoningBlock({
         <Text style={{ fontSize: 11.5, fontWeight: "500", color: colors.faint }}>{t("thinkingChars", { n: text.length })}</Text>
       </Pressable>
       {open ? (
-        <Text
-          style={{
-            marginTop: 4,
-            paddingLeft: 19,
-            fontSize: 12.5,
-            lineHeight: 19,
-            color: colors.muted,
-            fontStyle: "italic",
-          }}
-          selectable
-          onPressIn={guard?.onPressIn}
-          onLongPress={guard?.onLongPress}
-        >
-          {text}
-        </Text>
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 260 }}>
+          <Text
+            style={{
+              marginTop: 4,
+              paddingLeft: 19,
+              fontSize: 12.5,
+              lineHeight: 19,
+              color: colors.muted,
+              fontStyle: "italic",
+            }}
+          >
+            {text}
+          </Text>
+        </ScrollView>
       ) : null}
     </View>
   )
@@ -492,13 +466,12 @@ function ToolBlockView({
 }: {
   block: Extract<AssistantContent, { type: "tool" }>
   onBeforeExpand?: (opening: boolean, y: number) => void
-  onAfterExpand?: (y: number) => void
+  onAfterExpand?: (delta: number) => void
 }) {
   const t = useT()
   const { colors } = useTheme()
-  const guard = useSelectionGuard()
   const [open, setOpen] = useState(false)
-  const { ref: toggleRef, toggle } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
+  const { ref: toggleRef, toggle, onLayout } = useAnchoredToggle(open, setOpen, onBeforeExpand, onAfterExpand)
   const status = block.state?.status ?? "running"
   const tone = status === "error" ? colors.danger : status === "completed" ? colors.success : colors.warning
   const content = (block.state as { content?: Array<{ type: string; text?: string }> } | undefined)?.content ?? []
@@ -510,6 +483,7 @@ function ToolBlockView({
 
   return (
     <View
+      onLayout={onLayout}
       style={{
         borderRadius: 10,
         borderWidth: StyleSheet.hairlineWidth,
@@ -539,15 +513,16 @@ function ToolBlockView({
         <Icon name={open ? "chevronDown" : "chevronRight"} size={13} color={colors.faint} />
       </Pressable>
       {open ? (
-        <View style={{ paddingHorizontal: 10, paddingBottom: 10, gap: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+        <ScrollView
+          nestedScrollEnabled
+          style={{ maxHeight: 340, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}
+          contentContainerStyle={{ paddingHorizontal: 10, paddingBottom: 10, gap: 6 }}
+        >
           {input !== undefined ? (
             <>
               <Text style={{ fontSize: 10.5, fontWeight: "600", color: colors.faint, marginTop: 6 }}>{t("toolInput")}</Text>
               <Text
                 style={{ fontFamily: "monospace", fontSize: 11.5, lineHeight: 17, color: colors.text }}
-                selectable
-                onPressIn={guard?.onPressIn}
-                onLongPress={guard?.onLongPress}
               >
                 {pretty(input)}
               </Text>
@@ -556,13 +531,10 @@ function ToolBlockView({
           <Text style={{ fontSize: 10.5, fontWeight: "600", color: colors.faint, marginTop: 4 }}>{t("toolOutput")}</Text>
           <Text
             style={{ fontFamily: "monospace", fontSize: 11.5, lineHeight: 17, color: colors.text }}
-            selectable
-            onPressIn={guard?.onPressIn}
-            onLongPress={guard?.onLongPress}
           >
             {block.state?.error?.message ?? output ?? t("toolNoOutput")}
           </Text>
-        </View>
+        </ScrollView>
       ) : null}
     </View>
   )

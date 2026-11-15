@@ -54,14 +54,14 @@ Release assets name the operating system and CPU architecture in the filename.
 
 | Asset | OS | CPU / target | Use |
 |---|---|---|---|
-| `ocremote-0.1.3-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
-| `ocremote-0.1.3-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
-| `ocremote-host-0.1.3-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
-| `ocremote-host-0.1.3-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
-| `ocremote-relay-0.3.0-linux-amd64` | Linux | x86_64 | Relay binary |
-| `ocremote-relay-0.3.0-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
-| `ocremote-relay-0.3.0-linux-arm64` | Linux | arm64 | Relay binary |
-| `ocremote-relay-0.3.0-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
+| `ocremote-0.1.4-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
+| `ocremote-0.1.4-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
+| `ocremote-host-0.1.4-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
+| `ocremote-host-0.1.4-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
+| `ocremote-relay-0.4.0-linux-amd64` | Linux | x86_64 | Relay binary |
+| `ocremote-relay-0.4.0-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
+| `ocremote-relay-0.4.0-linux-arm64` | Linux | arm64 | Relay binary |
+| `ocremote-relay-0.4.0-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
 
 `SHA256SUMS` verifies every asset. The release APKs are currently signed with
 the Expo debug keystore; replace it with a production keystore before
@@ -69,24 +69,40 @@ distributing them to end users.
 
 ## Quick start
 
-1. **Start the host** next to a running opencode server:
+### Same LAN: direct only
 
-   ```bash
-   tar xzf ocremote-host-0.1.3-linux-x64.tar.gz   # use linux-arm64 on arm64
-   cd ocremote
-   ./ocremote start --listen 0.0.0.0:8787 --pair
-   ```
+```bash
+tar xzf ocremote-host-0.1.4-linux-x64.tar.gz   # use linux-arm64 on arm64
+cd ocremote
+./ocremote start
+./ocremote direct 0.0.0.0:8787
+./ocremote pair
+```
 
-2. **Install the Android APK** matching the phone/emulator architecture, open
-   OC Remote, and scan the host's QR code or paste the pairing link.
+### Across networks: relay only
 
-3. **Optional relay**: start the relay, enroll the host with its one-time host
-   invite, then use the host's next pairing code. The phone enrolls with the
-   relay automatically.
+```bash
+# Relay host (public server)
+./ocremote-relay --listen 0.0.0.0:8443 \
+  --public-url ws://<PUBLIC_IP>:8443/ws
 
-Direct and relay routing are independent. A saved relay is only used when the
-host is started with `--relay-link`/`--relay`; direct mode never waits for a
-relay.
+# Host: copy the reusable "host link" printed by the relay
+./ocremote start
+./ocremote relay 'ocremote-relay://host#...'
+./ocremote pair
+```
+
+`pair` prints a separate QR for every route that is actually enabled: direct
+only, relay only, or both. A loopback-only direct listener is never offered to
+phones. Routes are independent and can be changed while the host runs:
+
+```bash
+./ocremote direct 192.168.1.20:8787
+./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay off                 # stop the client, keep the identity
+./ocremote relay on                  # re-enable the saved identity
+./ocremote direct off
+```
 
 ## Android app
 
@@ -94,11 +110,11 @@ relay.
 
 Use the APK matching the device:
 
-- `ocremote-0.1.3-android-arm64-v8a.apk` for real Android devices.
-- `ocremote-0.1.3-android-x86_64.apk` for an x86_64 emulator.
+- `ocremote-0.1.4-android-arm64-v8a.apk` for real Android devices.
+- `ocremote-0.1.4-android-x86_64.apk` for an x86_64 emulator.
 
 ```bash
-adb install ocremote-0.1.3-android-arm64-v8a.apk
+adb install ocremote-0.1.4-android-arm64-v8a.apk
 ```
 
 ### Add a host
@@ -168,12 +184,12 @@ box and is never sent automatically.
 The Linux x64/arm64 archives are self-contained (Bun and sherpa-onnx included):
 
 ```bash
-tar xzf ocremote-host-0.1.3-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-0.1.4-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
-./ocremote start --listen 0.0.0.0:8787 --pair
+./ocremote start
 ```
 
-`start` detaches by default. Manage it with:
+`start` detaches by default and reads the saved direct/relay routes:
 
 ```bash
 ./ocremote status
@@ -184,92 +200,162 @@ cd ocremote
 Use `--foreground` for tmux/systemd:
 
 ```bash
-./ocremote start --foreground --listen 0.0.0.0:8787
+./ocremote start --foreground
 ```
 
-The default listen address is `127.0.0.1:8787` (local only). Use
-`0.0.0.0:8787` for phones on the LAN, or bind one card:
+### Routes
+
+| Command | Effect |
+|---|---|
+| `./ocremote direct` | Show the current direct route |
+| `./ocremote direct 0.0.0.0:8787` | Enable or update direct, live |
+| `./ocremote direct 192.168.1.20:8787` | Bind one interface |
+| `./ocremote direct 127.0.0.1:8787` | Local only; never offered to phones |
+| `./ocremote direct off` | Disable direct |
+| `./ocremote relay` | Show the current relay |
+| `./ocremote relay 'ocremote-relay://host#...'` | Enroll and enable relay, live |
+| `./ocremote relay on` | Re-enable the saved relay identity |
+| `./ocremote relay off` | Stop the relay client but keep its identity |
+| `./ocremote relay --ca ca.pem '...'` | Optional self-signed TLS relay |
+
+Direct and relay are independent. Changing one never stops the other, and only
+enabled routes appear in `status` and `pair`.
+
+### Pairing and devices
+
+| Command | Effect |
+|---|---|
+| `./ocremote pair` | One one-time code per enabled route |
+| `./ocremote pair --read-only` | Read-only device code |
+| `./ocremote pair --ttl 10` | Code lifetime in minutes |
+| `./ocremote pair --json` | Machine-readable QR/link data |
+| `./ocremote devices list` | List paired devices |
+| `./ocremote devices revoke <id>` | Revoke a device |
+
+Codes are one-time and expire after 5 minutes by default. Relay codes carry a
+one-time phone invite and enroll the phone automatically.
+
+### Relay enrollment
+
+The relay prints a reusable host link at startup. Copy it once:
 
 ```bash
-./ocremote start --listen 192.168.1.23:8787 --pair
+./ocremote relay 'ocremote-relay://host#...'
 ```
 
-### Pairing
+The link only pins the relay X25519 key; it contains no one-time secret. The
+host receives a long-lived subject secret and reconnects with Noise NK. `relay
+off` keeps that identity, so `relay on` or the same host link does not consume
+another relay host slot.
 
-`--pair` prints a QR plus a full pairing link. A running host can issue another
-code with:
+### Speech models
 
 ```bash
-./ocremote pair
-./ocremote pair --read-only
-./ocremote pair --relay
+./ocremote asr list
+./ocremote asr install host-sense-voice-int8
+./ocremote asr import host-sense-voice-int8 /path/to/model
+./ocremote asr test --file path/to/16k-mono.wav
 ```
 
-Pair codes are one-time and expire after 5 minutes by default (`--ttl` changes
-this).
+### Files
 
-### Relay
+| Path | Purpose |
+|---|---|
+| `~/.config/ocremote/identity.json` | Host Noise static key (0600) |
+| `~/.config/ocremote/config.json` | Devices, pending pairs, direct/relay settings (0600) |
+| `~/.local/state/ocremote/host.log` | Host log |
+| `OCREMOTE_HOME` | Override the config/identity directory |
 
-The relay is a single Go binary. It forwards encrypted frames only; it does not
-run opencode, ASR or model logic.
+## Relay
 
-### Simple start: built-in Noise NK
+The relay is a single Go binary. It forwards encrypted frames only and does not
+run opencode, ASR or model logic. The default is `ws://` + Noise NK; no
+certificate is needed for a public IP. TLS remains optional.
+
+### Start
 
 ```bash
-./ocremote-relay serve \
-  --data-dir /opt/ocremote/relay/data \
+./ocremote-relay --data-dir /opt/ocremote/relay/data \
   --listen 0.0.0.0:8443 \
-  --public-url ws://<PUBLIC_IP>:8443/ws \
-  --no-tls
+  --public-url ws://<PUBLIC_IP>:8443/ws
 ```
 
-The first run prints a one-time host invite. No extra certificate is required
-to start; the invite contains `rk` (the relay X25519 public key), which pins the
-relay identity for Noise NK. TLS remains available as an optional layer.
+There is no `init` step. The first start creates the relay identity and database
+and prints the reusable host link.
+
+| Option | Default | Effect |
+|---|---|---|
+| `--data-dir` | `./data` | Database, identity and admin socket |
+| `--listen` | `:8443` | Listen address |
+| `--public-url` | derived | Public ws/wss URL embedded in host links |
+| `--max-hosts` | `3` | Simultaneously registered hosts |
+| `--max-clients` | `3` | Phones per host room |
+| `--tls-cert` / `--tls-key` | none | Optional TLS certificate |
+| `--log-level` | `info` | Log level |
 
 | File | Purpose |
 |---|---|
 | `data/relay.db` | BoltDB: rooms, subjects and invite hashes |
 | `data/relay-identity.json` | Relay Noise static key (0600) |
 | `data/admin.sock` | Local admin socket (0600) |
-| `data/tls/*` | Only created when wss is enabled |
+
+### Open host registration
+
+Any host implementing the OC Remote relay protocol can register without a
+pre-issued host invite:
+
+- the host sends a stable `hostId`
+- the relay creates a host subject and a dedicated room
+- the relay returns a long-lived secret used for later Noise NK authentication
+- the same active `hostId` cannot register twice
+- `--max-hosts` and `--max-clients` bound capacity
+- `RELAY_HOST_LIMIT` / `RELAY_ROOM_FULL` reject excess peers
+
+This is an availability boundary, not cryptographic proof that a host is
+"official": anyone with the relay URL and a compatible client can try to use a
+host slot. Use the host limit, `admin revoke` and room isolation to manage abuse.
 
 ### Authentication model
 
 | Item | Mechanism |
 |---|---|
-| Relay identity | X25519 key pinned in the invite; no prompt and no CA |
-| Host/phone auth | Noise NK; tokens only travel inside encrypted payloads |
+| Relay identity | X25519 key pinned in the host link; no prompt and no CA |
+| Host/phone auth | Noise NK; subject secrets only inside encrypted payloads |
 | Host control | Encrypted with the Noise transport (`relay.invite`, `peer`, …) |
+| Phone invites | One-time and bound to the host room |
 | App data | Phone↔host Noise end-to-end; the relay sees ciphertext only |
-| Replay | Fresh Noise ephemerals + one-time invite + server state |
+| Replay | Fresh Noise ephemerals + one-time phone invites + server state |
 | Persistence | `relay.db` survives restarts |
 
 ### Admin
 
 ```bash
-./ocremote-relay init --data-dir ./data \
-  --public-url ws://<PUBLIC_IP>:8443/ws --no-tls
-
 ./ocremote-relay admin --data-dir ./data status
-./ocremote-relay admin --data-dir ./data subjects
-./ocremote-relay admin --data-dir ./data invites
+./ocremote-relay admin --data-dir ./data hosts
+./ocremote-relay admin --data-dir ./data clients
 ./ocremote-relay admin --data-dir ./data rooms
-./ocremote-relay admin --data-dir ./data add-host --name office
+./ocremote-relay admin --data-dir ./data link
 ./ocremote-relay admin --data-dir ./data revoke <subject-id>
 ```
 
+`status` shows host count/limit, phones per room and the reusable host link.
+`revoke` disconnects the subject and frees a host slot.
+
 ### Optional TLS
 
-TLS is still available, but it is no longer part of relay authentication. When
-using a self-signed `wss://` relay, the host still needs `--relay-ca`; the
-Android release trusts only system CAs.
+TLS is an optional transport layer; Noise NK authentication and encrypted
+control frames do not depend on it. The relay does not generate a self-signed
+CA. Pass a certificate directly or terminate TLS in Caddy/nginx:
 
 ```bash
-./ocremote-relay serve --data-dir ./data --listen :8443 \
+./ocremote-relay --data-dir ./data --listen 0.0.0.0:8443 \
   --public-url wss://relay.example/ws \
-  --tls-cert relay.crt --tls-key relay.key --tls-ca ca.crt
+  --tls-cert /etc/ocremote/fullchain.pem \
+  --tls-key /etc/ocremote/privkey.pem
 ```
+
+A public CA needs no host-side option. Only a self-signed certificate requires
+`--ca` on the host and the CA in the Android system trust store.
 
 ## Security model
 
@@ -313,7 +399,9 @@ cd apps/relay && go test ./...
 ### Run in development
 
 ```bash
-bun run host start --listen 0.0.0.0:8787 --pair
+bun run --cwd apps/host src/index.ts start
+bun run --cwd apps/host src/index.ts direct 0.0.0.0:8787
+bun run --cwd apps/host src/index.ts pair
 
 cd apps/relay
 go run ./cmd/relay
@@ -330,9 +418,9 @@ bunx expo run:android
 
 cd apps/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-0.3.0-linux-amd64 ./cmd/relay
+  -o ../../dist/ocremote-relay-0.4.0-linux-amd64 ./cmd/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-0.3.0-linux-arm64 ./cmd/relay
+  -o ../../dist/ocremote-relay-0.4.0-linux-arm64 ./cmd/relay
 
 cd apps/mobile
 bunx expo prebuild --platform android --clean
@@ -349,7 +437,7 @@ Rename the generated APKs to include the OS and CPU architecture, then update
 ```text
 packages/protocol/   OCRP frames, Noise NK, pairing and relay link schemas
 apps/host/           Bun host companion and local opencode proxy
-apps/relay/          Go relay with Noise NK auth, optional TLS, BoltDB, invites and subjects
+apps/relay/          Go relay with Noise NK auth, optional TLS, BoltDB, hosts and rooms
 apps/mobile/         Expo / React Native Android app
 scripts/             build, TLS and development helpers
 dist/                release artifacts (generated)
@@ -363,7 +451,6 @@ dist/                release artifacts (generated)
 |---|---|
 | `OCREMOTE_HOME` | Config/identity directory |
 | `OCREMOTE_STATE_DIR` | Runtime state/log directory |
-| `OCREMOTE_RELAY_CA` | CA used to verify the relay |
 | `OCREMOTE_HOST_NAME` | Host display name |
 
 ### Relay environment
@@ -374,10 +461,8 @@ dist/                release artifacts (generated)
 | `RELAY_LISTEN` | Listen address (default `:8443`) |
 | `RELAY_PUBLIC_URL` | Public `ws://` or `wss://` URL |
 | `RELAY_TLS_CERT`, `RELAY_TLS_KEY` | User TLS certificate/key |
-| `RELAY_TLS_CA` | User CA certificate |
-| `RELAY_TLS_OFF` | Run plain WebSocket; Noise NK still authenticates and encrypts auth/control |
 | `RELAY_ADMIN_SOCKET` | Admin Unix socket |
-| `RELAY_MAX_CLIENTS`, `RELAY_MAX_FRAME` | Relay limits |
+| `RELAY_MAX_HOSTS`, `RELAY_MAX_CLIENTS` | Host and per-room phone limits |
 | `RELAY_LOG_LEVEL` | `debug`, `info`, `warn`, `error` |
 
 ### Phone storage
@@ -391,26 +476,26 @@ Credentials are stored in Android SecureStore, not in the repository:
 
 **Phone cannot reach the host directly**
 
-- Use `--listen 0.0.0.0:8787`, not only `127.0.0.1`.
-- Check that the phone is on the same network and the computer firewall allows
-  TCP 8787.
-- The pairing link shows the exact `ws://` address the phone will use.
+- Run `ocremote direct 0.0.0.0:8787`, not `127.0.0.1`, when the phone is remote.
+- Check that the phone is on the same network and the firewall allows TCP 8787.
+- `ocremote pair` should print a "Direct · same LAN" block. If it prints only a
+  relay block, direct is off or bound to loopback.
 
 **Relay identity or optional TLS error**
 
-- Noise NK failures usually mean the host invite was already consumed or the
-  phone was paired with an older relay key. Re-enroll the host and scan a new
-  pairing code.
+- Noise NK failures usually mean the saved subject was revoked or the phone was
+  paired with an older relay key. Re-enroll the host and scan a fresh relay QR.
 - Only when `wss://` is enabled with a self-signed certificate: install that CA
-  into the Android system store, or use a public CA. The host uses `--relay-ca`
-  for a self-signed TLS relay.
+  into the Android system store, or use a public CA. The host uses `--ca`.
 - Check the certificate SAN covers the host/IP in `--public-url`.
 
 **Relay starts but host cannot enroll**
 
-- Confirm the host invite was not already consumed.
-- Generate a new host invite with `admin add-host`.
-- Confirm the host and relay clocks are correct. `--relay-ca` is only needed for an optional self-signed TLS relay.
+- Check that `--public-url` is reachable from the host.
+- Check `--max-hosts`; a full relay rejects new hosts with `RELAY_HOST_LIMIT`.
+- The same active `hostId` cannot register twice. Revoke the old subject if the
+  host lost its config.
+- `--ca` is only needed for an optional self-signed TLS relay.
 
 **APK install fails with architecture mismatch**
 
@@ -420,7 +505,8 @@ Credentials are stored in Android SecureStore, not in the repository:
 **Android app cannot use relay after upgrading**
 
 - Generate a new pairing code after the host reconnects; the phone enrolls with
-  the new one-time phone invite automatically.
+  the new one-time phone invite automatically. Re-adding the same route kind
+  replaces the old one, so there are never duplicate direct/relay entries.
 
 ## License
 

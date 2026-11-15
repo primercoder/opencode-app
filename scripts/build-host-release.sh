@@ -73,8 +73,9 @@ Encrypted remote access for a local opencode 2.x server.
 No Bun installation is required; the runtime is bundled.
 
 ```bash
-./ocremote start --listen 0.0.0.0:8787 --pair   # phones on the same LAN
-./ocremote start -d --listen 0.0.0.0:8787        # background
+./ocremote start
+./ocremote direct 0.0.0.0:8787
+./ocremote pair
 ./ocremote status
 ./ocremote clients
 ./ocremote stop
@@ -83,8 +84,18 @@ No Bun installation is required; the runtime is bundled.
 Relay mode:
 
 ```bash
-./ocremote start -d --listen 0.0.0.0:8787 \
-  --relay-link 'ocremote-relay://enroll#...' --relay-ca ca.crt
+./ocremote start
+./ocremote relay 'ocremote-relay://host#...'
+./ocremote pair
+```
+
+Routes can be changed while the host runs:
+
+```bash
+./ocremote direct 192.168.1.20:8787
+./ocremote relay off
+./ocremote relay on
+./ocremote direct off
 ```
 
 Speech models are not bundled:
