@@ -114,6 +114,7 @@ const zh = {
   stopTaskBody: "正在执行的 Agent 和后台任务会被中断，已生成的内容会保留。",
   reasoningDepth: "思考深度",
   reasoningDefault: "默认",
+  reasoningStandard: "标准",
   reasoningUnsupported: "该模型不支持思考深度设置。",
   context: "上下文",
   modelProvider: "提供商",
@@ -257,6 +258,9 @@ const zh = {
   showMoreFiles: "显示更多文件（还有 {n} 个）",
   showMoreLines: "显示更多（还有 {n} 行）",
   copy: "复制",
+  copied: "已复制",
+  viewSource: "查看 Markdown 源码",
+  viewRendered: "查看渲染结果",
 
   // add host
   addHostTitle: "添加主机",
@@ -505,6 +509,7 @@ const en: Record<Key, string> = {
   stopTaskBody: "The running agent and background tasks will be interrupted. Generated content is kept.",
   reasoningDepth: "Reasoning",
   reasoningDefault: "Default",
+  reasoningStandard: "Standard",
   reasoningUnsupported: "This model does not expose reasoning levels.",
   context: "Context",
   modelProvider: "Provider",
@@ -646,6 +651,9 @@ const en: Record<Key, string> = {
   showMoreFiles: "Show more files ({n} left)",
   showMoreLines: "Show more ({n} lines left)",
   copy: "Copy",
+  copied: "Copied",
+  viewSource: "View Markdown source",
+  viewRendered: "View rendered Markdown",
 
   addHostTitle: "Add host",
   scanQr: "Scan",

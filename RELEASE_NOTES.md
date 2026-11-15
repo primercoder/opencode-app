@@ -1,78 +1,53 @@
-# OC Remote 0.1.6
+# OC Remote 0.1.7
 
-主机端与中继端的连接方式简化：中继只提供地址，不再生成 host link；手机邀请严格改为 `pair` 时按需申请。
+手机端体验修复版。主机端继续使用 `0.1.6`，中继继续使用 `0.4.1`。
 
 ## 版本
 
 | 组件 | 版本 |
 |---|---|
-| 手机 / 主机 | `0.1.6` |
-| Android versionCode | `8` |
+| 手机 | `0.1.7` |
+| Android versionCode | `9` |
+| 主机 | `0.1.6` |
 | 中继 | `0.4.1` |
 
-## 中继端
+## 新建会话状态
 
-- 启动时不再打印 `ocremote-relay://host#...` 长链接。
-- 移除 `admin link` 和 `HostLink` 生成逻辑。
-- 启动输出只保留：relay id、监听地址、ws URL、TLS 状态、主机/手机限额、数据目录和管理 socket。
-- 主机连接时 welcome 只返回 room、subject secret 和 `clientInvite` 能力，不再下发手机邀请。
-- 只有主机发送 `relay.invite` 控制帧时才创建手机邀请：
-  - 一次性
-  - 绑定当前 host room
-  - 每次请求不同
-  - 请求带 `id`，回复回传 `id`
-- 同一主机重复连接不会产生未使用的手机邀请。
+- 底部状态栏不再显示“默认 Agent / 默认模型 / 默认思考深度”。
+- 通过 `/api/model/default` 获取实际默认模型，按当前项目目录刷新。
+- 默认 Agent 使用 `build`（或 agent 列表中的主要 Agent）。
+- 新会话显示实际值，例如：
+  - `Build · Iceman Free · 标准`
+- Agent、模型和思考深度面板的选中状态也使用相同默认值。
 
-## 主机端
+## 折叠区域
 
-- 中继连接只需要地址：
+- 思考/工具和压缩摘要改为从底部弹出面板展示：
+  - 点击条目后，条目在会话中的位置完全不动。
+  - 内容在底部面板中展开，可滚动查看。
+  - 关闭面板后会话位置同样不动。
+- 不再通过调整滚动偏移实现展开，避免跳动和内容被输入框遮挡。
+- 内部思考和工具条目仍可继续展开/折叠。
 
-```bash
-ocremote relay                       # 默认 118.31.124.193:8443
-ocremote relay 1.2.3.4:8443          # 自定义
-ocremote relay status
-ocremote relay off
-ocremote relay on
-```
+## 正文复制
 
-- 首次连接通过 `GET /v1/info` 获取：
-  - `relayId`
-  - `wsUrl`
-  - `relayPublicKey`
-- 中继 key 首次获取后固定保存；key 变化会拒绝连接，只有 `--refresh-key` 才接受新 key。
-- 删除 `clientInvite` 缓存。
-- `ocremote pair` 时才调用 `requestClientInvite()`；申请失败不再回退旧邀请。
-- 连续两次 `pair` 会得到两个不同的手机 invite。
-- 主机仍可识别旧 host link 做迁移，但帮助和文档只推荐 IP:端口。
-
-## 手机端
-
-- 手机端逻辑不变。
-- 配对码仍包含 relay URL、room、relayKey 和本次专属手机 invite，扫码后自动登记。
-
-## 部署
-
-- 中继 `0.4.1` 已部署到 `alisvr`：
-  - URL：`ws://118.31.124.193:8443/ws`
-  - 保留原 `relay-identity.json` 和 `relay.db`
-  - 更新 systemd 参数，移除 `serve`/`--no-tls`
-- 主机 `0.1.6` 已部署到 `~/Desktop/usage-test/ocremote`：
-  - 旧版进程已停止
-  - 仅启用中继，不开启直连
-  - 主机已登记到默认云中继
-  - 手机通过中继完成配对和连接
+- 每一段正文（包括两段思考/工具之间的正文）独立放入一个正文框。
+- 默认显示渲染后的 Markdown，此时不提供复制按钮。
+- 正文框右下角只有一个紧凑的“源码”图标，减少视觉干扰。
+- 切换后显示原始 Markdown 文本：
+  - 文本可直接选择、长按复制
+  - 提供复制全部按钮
+  - 再点眼睛图标切回渲染视图
+- 思考过程和工具调用内容不会进入正文框。
 
 ## 验证
 
 - 协议测试 30 通过
 - 主机测试 17 通过
 - 手机测试 74 通过
-- 中继 Go 测试通过
-- 本机地址解析、`/v1/info` key 固定、key 变化拒绝测试通过
-- 云中继验证：
-  - 启动无 host link
-  - 主机只用 IP:端口登记
-  - pair 前无手机邀请
-  - `pair` 两次得到两个不同 invite
-  - 手机通过专属 invite 自动登记并连接
-- 主机 `status` 只显示 relay，不显示直连
+- TypeScript 检查通过
+- Android 模拟器验证：
+  - 新会话显示 `Build · Iceman Free · 标准`
+  - 两段思考之间的正文独立成框
+  - 源码视图可复制，渲染视图不可复制
+  - 点击思考/工具不移动会话条目，底部面板正常展开

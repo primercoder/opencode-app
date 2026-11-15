@@ -158,6 +158,7 @@ export default function WorkspaceScreen() {
   const [creating, setCreating] = useState(false)
   const [agents, setAgents] = useState<AgentInfo[] | null>(null)
   const [models, setModels] = useState<ModelInfo[] | null>(null)
+  const [defaultModel, setDefaultModel] = useState<ModelInfo | null>(null)
   const [mcp, setMcp] = useState<McpServer[] | null>(null)
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [selectedSkills, setSelectedSkills] = useState<StagedSkill[]>([])
@@ -276,6 +277,23 @@ export default function WorkspaceScreen() {
       cancelled = true
     }
   }, [catalogRevision, hostId, ready])
+
+  useEffect(() => {
+    if (!ready) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const runtime = await ensureConnection(hostId)
+        const model = await new OpencodeClient(runtime).getDefaultModel(session?.location?.directory)
+        if (!cancelled) setDefaultModel(model)
+      } catch {
+        if (!cancelled) setDefaultModel(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [catalogRevision, hostId, ready, session?.location?.directory])
 
   useEffect(() => {
     const next = typeof params.session === "string" ? params.session : undefined
@@ -738,20 +756,6 @@ export default function WorkspaceScreen() {
     const distanceToOldest = contentSize.height - (contentOffset.y + layoutMeasurement.height)
     if (distanceToOldest < 420) void loadOlder()
   }
-
-  const layoutAnchorRef = useRef<{ offset: number } | null>(null)
-
-  const beginMessageLayoutChange = useCallback(() => {
-    layoutAnchorRef.current = { offset: messageOffsetRef.current }
-  }, [])
-
-  const finishMessageLayoutChange = useCallback((delta: number) => {
-    const anchor = layoutAnchorRef.current
-    layoutAnchorRef.current = null
-    if (!anchor || delta === 0) return
-    const target = Math.max(0, anchor.offset + delta)
-    listRef.current?.scrollToOffset({ offset: target, animated: false })
-  }, [])
 
   const selectSession = (id: string) => {
     cacheCurrentSession()
@@ -1313,15 +1317,16 @@ export default function WorkspaceScreen() {
     return mergeAssistantRuns([...combined, ...liveById.values()]).reverse()
   }, [liveMessages, messages, sessionId])
   oldestMessageIdRef.current = displayMessages[displayMessages.length - 1]?.id
-  const currentModel = useMemo(
-    () =>
-      models?.find(
-        (model) => model.modelID === session?.model?.id && model.providerID === session?.model?.providerID,
-      ),
-    [models, session?.model?.id, session?.model?.providerID],
-  )
+  const currentModel = useMemo(() => {
+    const modelId = session?.model?.id ?? defaultModel?.modelID
+    const providerId = session?.model?.providerID ?? defaultModel?.providerID
+    return (
+      models?.find((model) => model.modelID === modelId && model.providerID === providerId) ??
+      (defaultModel?.modelID === modelId && defaultModel?.providerID === providerId ? defaultModel : undefined)
+    )
+  }, [defaultModel, models, session?.model?.id, session?.model?.providerID])
   const usage = useMemo(
-    () => contextUsage(messagesForSession ?? [], currentModel),
+    () => contextUsage(messagesForSession ?? [], currentModel ?? undefined),
     [currentModel, messagesForSession],
   )
   const displayAgents = useMemo(() => {
@@ -1381,9 +1386,12 @@ export default function WorkspaceScreen() {
 
   const statusLabel = statusText(connection?.status, t)
   const title = session?.title?.trim() || t("sessions")
-  const agentName = session?.agent ?? t("defaultAgent")
-  const modelName = currentModel?.name ?? session?.model?.id ?? t("defaultModel")
-  const variantName = session?.model?.variant ?? t("reasoningDefault")
+  const defaultAgent = displayAgents.find((agent) => agent.id === "build") ?? displayAgents[0]
+  const activeAgentId = session?.agent ?? defaultAgent?.id
+  const agentName =
+    displayAgents.find((agent) => agent.id === activeAgentId)?.name ?? activeAgentId ?? "build"
+  const modelName = currentModel?.name ?? defaultModel?.name ?? session?.model?.id ?? models?.[0]?.name ?? "—"
+  const variantName = session?.model?.variant ?? t("reasoningStandard")
   const contextTokens = usage ? formatTokens(usage.tokens) : t("noContext")
   const statusParts = [
     { text: agentName },
@@ -1527,13 +1535,7 @@ export default function WorkspaceScreen() {
                 inverted
                 data={displayMessages}
                 keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                  <MessageView
-                    message={item}
-                    onBeforeExpand={beginMessageLayoutChange}
-                    onAfterExpand={finishMessageLayoutChange}
-                  />
-                )}
+                renderItem={({ item }) => <MessageView message={item} />}
                 contentContainerStyle={styles.messages}
                 keyboardShouldPersistTaps="handled"
                 onEndReached={() => void loadOlder()}
@@ -1550,9 +1552,6 @@ export default function WorkspaceScreen() {
                     listRef.current?.scrollToOffset({ offset, animated: false })
                   })
                 }}
-                // Native content-position maintenance handles expansion without a
-                // post-layout scroll correction, so the card never jumps a frame.
-                maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
                 removeClippedSubviews={false}
                 ListFooterComponent={
                   olderCursor ? (
@@ -2065,7 +2064,7 @@ export default function WorkspaceScreen() {
                     </Text>
                   ) : null}
                 </View>
-                {agent.id === session?.agent ? <Icon name="check" size={18} color={colors.accent} /> : null}
+                {agent.id === activeAgentId ? <Icon name="check" size={18} color={colors.accent} /> : null}
               </Pressable>
             ))
           : null}
@@ -2089,7 +2088,8 @@ export default function WorkspaceScreen() {
                 <Text style={styles.providerLabel}>{provider}</Text>
                 {list.map((model) => {
                   const selected =
-                    model.modelID === session?.model?.id && model.providerID === session?.model?.providerID
+                    model.modelID === (session?.model?.id ?? defaultModel?.modelID) &&
+                    model.providerID === (session?.model?.providerID ?? defaultModel?.providerID)
                   return (
                     <Pressable
                       key={`${model.providerID}/${model.modelID}`}

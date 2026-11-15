@@ -36,6 +36,8 @@ export type IconName =
   | "arrowUp"
   | "activity"
   | "bolt"
+  | "copy"
+  | "code"
 
 export function Icon(props: {
   name: IconName
@@ -121,6 +123,19 @@ export function Icon(props: {
       ) : null}
       {props.name === "bolt" ? (
         <Path d="M13.5 2.5 4.5 13.5h5l-1 8 9-11.5h-5l1-7.5z" {...common} />
+      ) : null}
+      {props.name === "copy" ? (
+        <>
+          <Rect x="9" y="9" width="11" height="11" rx="2" {...common} />
+          <Path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" {...common} />
+        </>
+      ) : null}
+      {props.name === "code" ? (
+        <>
+          <Polyline points="8 7 4 12 8 17" {...common} />
+          <Polyline points="16 7 20 12 16 17" {...common} />
+          <Line x1="13" y1="5" x2="11" y2="19" {...common} />
+        </>
       ) : null}
       {props.name === "send" ? (
         <>

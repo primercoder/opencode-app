@@ -11,7 +11,7 @@
     },
     "apps/host": {
       "name": "@ocremote/host",
-      "version": "0.0.1",
+      "version": "0.1.6",
       "bin": {
         "ocremote": "./src/index.ts",
       },
@@ -26,7 +26,7 @@
     },
     "apps/mobile": {
       "name": "@ocremote/mobile",
-      "version": "0.0.1",
+      "version": "0.1.6",
       "dependencies": {
         "@fugood/react-native-audio-pcm-stream": "1.1.4",
         "@ocremote/models": "workspace:*",
@@ -36,6 +36,7 @@
         "expo": "~57.0.30",
         "expo-build-properties": "~57.0.22",
         "expo-camera": "~57.0.6",
+        "expo-clipboard": "~57.0.2",
         "expo-constants": "~57.0.22",
         "expo-crypto": "~57.0.4",
         "expo-document-picker": "~57.0.3",
@@ -612,6 +613,8 @@
     "expo-build-properties": ["expo-build-properties@57.0.23", "", { "dependencies": { "@expo/schema-utils": "^57.0.3", "resolve-from": "^5.0.0", "semver": "^7.6.0" }, "peerDependencies": { "expo": "*" } }, "sha512-O4N2m2ce4G1p4AvCZHhqpAIfHsQjbKxbvMOEMjuFh+MuAfgoxKyHa6tgsI2BFQxiPIBDL4aVWk8UEqeHXMmDfA=="],
 
     "expo-camera": ["expo-camera@57.0.6", "", { "dependencies": { "barcode-detector": "^3.0.0" }, "peerDependencies": { "expo": "*", "react": "*", "react-native": "*", "react-native-web": "*" }, "optionalPeers": ["react-native-web"] }, "sha512-eswB77bOzQ2OEvll/hV5VnzywaICFnYF21HIwcyokebFcSTSMfGQk8+VW06DRec9JnWuRExs0QXlfxyMPjS6KQ=="],
+
+    "expo-clipboard": ["expo-clipboard@57.0.2", "", { "peerDependencies": { "expo": "*", "react": "*", "react-native": "*" } }, "sha512-VB4Au8X/RbvJKUtJk+87vdtveWSNEa5RzY3ooeO6VNF7Rd49RbQXZOu3/TfEW9p7mU8TCfyTvjyCiAUwSoSJ4w=="],
 
     "expo-constants": ["expo-constants@57.0.23", "", { "dependencies": { "@expo/env": "~2.4.4" }, "peerDependencies": { "expo": "*", "react-native": "*" } }, "sha512-U+VHchrt7/VcQCgJH5TUTQMon19e5GkB2fkyYJax8miNxoW1wtTIdhYHlF6zCljyWw995Hbcq8IIF9ktC9qxHA=="],
 

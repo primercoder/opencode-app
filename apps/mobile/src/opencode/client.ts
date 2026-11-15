@@ -216,6 +216,11 @@ export class OpencodeClient {
     return result.data.filter((model) => model.enabled !== false && (model.status === undefined || model.status !== "deprecated"))
   }
 
+  async getDefaultModel(directory?: string): Promise<ModelInfo> {
+    const result = await this.raw<{ data: ModelInfo }>("GET", withDirectory("/api/model/default", directory))
+    return result.data
+  }
+
   async switchAgent(sessionId: string, agent: string): Promise<void> {
     await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/agent`, { agent })
   }
