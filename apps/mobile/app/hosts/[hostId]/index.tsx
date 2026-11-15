@@ -55,6 +55,13 @@ import {
   UNAVAILABLE_COMMANDS,
   type CoreCommandAction,
 } from "@/features/session/commands"
+import {
+  deleteSessionCache,
+  readSessionCache,
+  updateSessionOffset,
+  writeSessionCache,
+  type SessionSnapshot,
+} from "@/features/session/sessionCache"
 import { SessionStreamController, STREAM_FRAME_MS } from "@/features/session/streamController"
 import { invalidateSessionIndex } from "@/features/sessions/useSessionIndex"
 import { appendVoiceText } from "@/features/voice/dictationText"
@@ -92,6 +99,8 @@ type StagedSkill = {
   name: string
 }
 
+const EMPTY_MESSAGES: SessionMessage[] = []
+
 const NO_REVIEW_COMMENTS: ReviewComment[] = []
 
 export default function WorkspaceScreen() {
@@ -119,7 +128,8 @@ export default function WorkspaceScreen() {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null)
   const [children, setChildren] = useState<SessionInfo[]>([])
   const [inbox, setInbox] = useState<InboxItem[]>([])
-  const [liveMessages, setLiveMessages] = useState<SessionMessage[]>([])
+  const [liveState, setLiveState] = useState<{ sessionId?: string; messages: SessionMessage[] }>({ messages: [] })
+  const liveMessages = liveState.sessionId === sessionId ? liveState.messages : EMPTY_MESSAGES
   const [commands, setCommands] = useState<CommandInfo[]>([])
   const [loadingSession, setLoadingSession] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -163,6 +173,7 @@ export default function WorkspaceScreen() {
   const inputRef = useRef<TextInput>(null)
   const loadingOlderRef = useRef(false)
   const messageOffsetRef = useRef(0)
+  const restoreOffsetRef = useRef<number | undefined>(undefined)
   const oldestMessageIdRef = useRef<string | undefined>(undefined)
   const olderCursorRef = useRef<string | undefined>(undefined)
   const loadOlderRef = useRef<() => void>(() => undefined)
@@ -236,7 +247,9 @@ export default function WorkspaceScreen() {
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const sessionIdRef = useRef(sessionId)
+  const messagesSessionIdRef = useRef<string | undefined>(undefined)
   sessionIdRef.current = sessionId
+  const messagesForSession = messagesSessionIdRef.current === sessionId ? messages : null
 
   useEffect(() => {
     if (!hydrated) void hydrate()
@@ -365,18 +378,18 @@ export default function WorkspaceScreen() {
   const streamRef = useRef(new SessionStreamController())
 
   useEffect(() => {
-    if (!ready || !sessionId) {
-      streamRef.current.setSession(undefined)
-      setLiveMessages([])
-      return
-    }
+    streamRef.current.setSession(undefined)
+    setLiveState(sessionId ? { sessionId, messages: [] } : { messages: [] })
+    if (!ready || !sessionId) return
     streamRef.current.setSession(sessionId)
     const timer = setInterval(() => {
-      if (streamRef.current.pump()) setLiveMessages(streamRef.current.snapshot())
+      if (streamRef.current.pump()) {
+        setLiveState({ sessionId, messages: streamRef.current.snapshot() })
+      }
     }, STREAM_FRAME_MS)
     return () => {
       clearInterval(timer)
-      streamRef.current.reset()
+      streamRef.current.setSession(undefined)
     }
   }, [ready, sessionId])
 
@@ -411,6 +424,7 @@ export default function WorkspaceScreen() {
           client.listSessions({ parentID: id, limit: 50, order: "desc" }).catch(() => ({ data: [] as SessionInfo[] })),
         ])
         if (sessionIdRef.current !== id) return
+        messagesSessionIdRef.current = id
         setSession(detail)
         setPermissions(pendingPermissions)
         setForms(pendingForms)
@@ -433,18 +447,70 @@ export default function WorkspaceScreen() {
     [hostId, t],
   )
 
+  const applyCachedSession = useCallback((cached: SessionSnapshot) => {
+    setSession(cached.session)
+    setMessages(cached.messages)
+    setOlderCursor(cached.olderCursor)
+    setInbox(cached.inbox)
+    setChildren(cached.children)
+    setPermissions(cached.permissions)
+    setForms(cached.forms)
+    setLoadingSession(false)
+    setError(null)
+    restoreOffsetRef.current = cached.offset > 0 ? cached.offset : undefined
+  }, [])
+
+  const cacheCurrentSession = useCallback(() => {
+    if (!sessionId || !session || !messages) return
+    writeSessionCache(hostId, sessionId, {
+      session,
+      messages,
+      ...(olderCursor ? { olderCursor } : {}),
+      inbox,
+      children,
+      permissions,
+      forms,
+      offset: messageOffsetRef.current,
+    })
+  }, [children, forms, hostId, inbox, messages, olderCursor, permissions, session, sessionId])
+
+  useEffect(() => {
+    cacheCurrentSession()
+  }, [cacheCurrentSession])
+
   useEffect(() => {
     if (!sessionId) {
+      messagesSessionIdRef.current = undefined
       setSession(null)
       setMessages(null)
       setChildren([])
       setInbox([])
       setPermissions([])
       setForms([])
+      setOlderCursor(undefined)
+      setLoadingSession(false)
+      restoreOffsetRef.current = undefined
       return
     }
+    const cached = readSessionCache(hostId, sessionId)
+    if (cached) {
+      messagesSessionIdRef.current = sessionId
+      applyCachedSession(cached)
+      void loadSession(sessionId)
+      return
+    }
+    messagesSessionIdRef.current = sessionId
+    setSession(null)
+    setMessages(null)
+    setOlderCursor(undefined)
+    setInbox([])
+    setChildren([])
+    setPermissions([])
+    setForms([])
+    setLoadingSession(true)
+    restoreOffsetRef.current = undefined
     void loadSession(sessionId, { initial: true })
-  }, [sessionId, loadSession])
+  }, [applyCachedSession, hostId, loadSession, sessionId])
 
   const refreshFromEvents = useCallback(
     async (id: string, kinds: Set<string>) => {
@@ -475,6 +541,7 @@ export default function WorkspaceScreen() {
           tasks.push(
             client.listMessages(id, { limit: 40, order: "desc" }).then((page) => {
               if (sessionIdRef.current !== id) return
+              messagesSessionIdRef.current = id
               setMessages((current) => mergeMessages([...page.data].reverse(), current ?? []))
             }),
           )
@@ -549,6 +616,8 @@ export default function WorkspaceScreen() {
         const deletedId = eventSessionID(event)
         invalidateSessionIndex(hostId)
         if (deletedId && deletedId === sessionIdRef.current) {
+          deleteSessionCache(hostId, deletedId)
+          setLiveState({ messages: [] })
           setSessionId(undefined)
           setSession(null)
           setMessages(null)
@@ -615,23 +684,26 @@ export default function WorkspaceScreen() {
   useForeground(
     useCallback(() => {
       void ensureConnection(hostId, { force: true })
-        .then(() => (sessionIdRef.current ? loadSession(sessionIdRef.current, { initial: true }) : undefined))
+        .then(() => (sessionIdRef.current ? loadSession(sessionIdRef.current) : undefined))
         .catch(() => undefined)
     }, [hostId, loadSession]),
   )
 
   const loadOlder = async () => {
     if (!sessionId || !olderCursor || loadingOlderRef.current) return
+    const id = sessionId
     loadingOlderRef.current = true
     setLoadingOlder(true)
     try {
       const runtime = await ensureConnection(hostId)
-      const page = await new OpencodeClient(runtime).listMessages(sessionId, { limit: 60, cursor: olderCursor })
+      const page = await new OpencodeClient(runtime).listMessages(id, { limit: 60, cursor: olderCursor })
+      if (sessionIdRef.current !== id) return
+      messagesSessionIdRef.current = id
       const older = [...page.data].reverse()
       setMessages((current) => mergeMessages(older, current ?? []))
       setOlderCursor(page.data.length >= 60 ? page.cursor?.next : undefined)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("error"))
+      if (sessionIdRef.current === id) setError(cause instanceof Error ? cause.message : t("error"))
     } finally {
       loadingOlderRef.current = false
       setLoadingOlder(false)
@@ -659,6 +731,7 @@ export default function WorkspaceScreen() {
   }) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
     messageOffsetRef.current = contentOffset.y
+    if (sessionId) updateSessionOffset(hostId, sessionId, contentOffset.y)
     setShowJump(contentOffset.y > 240)
     // Inverted list: scrolling towards older messages increases contentOffset.y.
     // Start fetching before the user actually hits the very top.
@@ -681,6 +754,25 @@ export default function WorkspaceScreen() {
   }, [])
 
   const selectSession = (id: string) => {
+    cacheCurrentSession()
+    streamRef.current.setSession(undefined)
+    setLiveState({ sessionId: id, messages: [] })
+    const cached = readSessionCache(hostId, id)
+    messagesSessionIdRef.current = id
+    if (cached) {
+      applyCachedSession(cached)
+    } else {
+      setSession(null)
+      setMessages(null)
+      setOlderCursor(undefined)
+      setInbox([])
+      setChildren([])
+      setPermissions([])
+      setForms([])
+      setError(null)
+      setLoadingSession(true)
+      restoreOffsetRef.current = undefined
+    }
     setSessionId(id)
     router.setParams({ session: id })
     void saveLastSession(hostId, id)
@@ -907,8 +999,8 @@ export default function WorkspaceScreen() {
   }
 
   const activities = useMemo(
-    () => (session ? runningActivities(messages ?? [], children) : []),
-    [children, messages, session],
+    () => (session ? runningActivities(messagesForSession ?? [], children) : []),
+    [children, messagesForSession, session],
   )
   const agentWorking =
     (session ? sessionBusy(session) : false) ||
@@ -1208,7 +1300,7 @@ export default function WorkspaceScreen() {
   }
 
   const displayMessages = useMemo(() => {
-    const server = messages ?? []
+    const server = messagesSessionIdRef.current === sessionId ? (messages ?? []) : []
     const liveById = new Map(liveMessages.map((message) => [message.id, message]))
     const combined = server.map((message) => {
       const live = liveById.get(message.id)
@@ -1219,7 +1311,7 @@ export default function WorkspaceScreen() {
       return messageWeight(live) > 0 ? live : message
     })
     return mergeAssistantRuns([...combined, ...liveById.values()]).reverse()
-  }, [liveMessages, messages])
+  }, [liveMessages, messages, sessionId])
   oldestMessageIdRef.current = displayMessages[displayMessages.length - 1]?.id
   const currentModel = useMemo(
     () =>
@@ -1228,7 +1320,10 @@ export default function WorkspaceScreen() {
       ),
     [models, session?.model?.id, session?.model?.providerID],
   )
-  const usage = useMemo(() => contextUsage(messages ?? [], currentModel), [messages, currentModel])
+  const usage = useMemo(
+    () => contextUsage(messagesForSession ?? [], currentModel),
+    [currentModel, messagesForSession],
+  )
   const displayAgents = useMemo(() => {
     const order = new Map([
       ["build", 0],
@@ -1447,6 +1542,14 @@ export default function WorkspaceScreen() {
                 viewabilityConfig={viewabilityConfig}
                 onScroll={handleMessageScroll}
                 scrollEventThrottle={80}
+                onContentSizeChange={() => {
+                  const offset = restoreOffsetRef.current
+                  if (offset === undefined) return
+                  restoreOffsetRef.current = undefined
+                  requestAnimationFrame(() => {
+                    listRef.current?.scrollToOffset({ offset, animated: false })
+                  })
+                }}
                 // Native content-position maintenance handles expansion without a
                 // post-layout scroll correction, so the card never jumps a frame.
                 maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
@@ -1505,7 +1608,7 @@ export default function WorkspaceScreen() {
                   onPress={confirmStop}
                   style={({ pressed }) => [styles.stopTaskButton, pressed && { opacity: 0.72 }]}
                 >
-                  <Icon name="stop" size={13} color="#FFFFFF" />
+                  <Icon name="stop" size={17} color="#FFFFFF" />
                 </Pressable>
               ) : null}
             </View>
@@ -2648,9 +2751,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function eventSessionID(event: OpencodeEvent): string | undefined {
   const data = asRecord(event.data)
-  for (const key of ["sessionID", "sessionId"]) {
-    const value = data[key]
-    if (typeof value === "string" && value) return value
+  const info = asRecord(data.info)
+  const message = asRecord(data.message)
+  for (const source of [event, data, info, message]) {
+    for (const key of ["sessionID", "sessionId"]) {
+      const value = source[key]
+      if (typeof value === "string" && value) return value
+    }
   }
   return undefined
 }
@@ -2730,18 +2837,20 @@ const workspaceStyles = (colors: Palette) =>
     stopTaskButton: {
       position: "absolute",
       right: 14,
-      top: 6,
-      width: 32,
-      height: 32,
-      borderRadius: 16,
+      top: 3,
+      width: 38,
+      height: 38,
+      borderRadius: 19,
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: colors.danger,
+      borderWidth: 1,
+      borderColor: "rgba(255,255,255,0.24)",
       shadowColor: "#000000",
-      shadowOpacity: 0.16,
-      shadowRadius: 4,
-      shadowOffset: { width: 0, height: 2 },
-      elevation: 4,
+      shadowOpacity: 0.22,
+      shadowRadius: 6,
+      shadowOffset: { width: 0, height: 3 },
+      elevation: 6,
       zIndex: 8,
     },
     error: { marginHorizontal: 16, marginBottom: 4, fontSize: 12.5, color: colors.danger },

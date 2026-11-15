@@ -54,10 +54,10 @@ Release assets name the operating system and CPU architecture in the filename.
 
 | Asset | OS | CPU / target | Use |
 |---|---|---|---|
-| `ocremote-0.1.4-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
-| `ocremote-0.1.4-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
-| `ocremote-host-0.1.4-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
-| `ocremote-host-0.1.4-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
+| `ocremote-0.1.5-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
+| `ocremote-0.1.5-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
+| `ocremote-host-0.1.5-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
+| `ocremote-host-0.1.5-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
 | `ocremote-relay-0.4.0-linux-amd64` | Linux | x86_64 | Relay binary |
 | `ocremote-relay-0.4.0-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
 | `ocremote-relay-0.4.0-linux-arm64` | Linux | arm64 | Relay binary |
@@ -72,7 +72,7 @@ distributing them to end users.
 ### Same LAN: direct only
 
 ```bash
-tar xzf ocremote-host-0.1.4-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-0.1.5-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -110,11 +110,11 @@ phones. Routes are independent and can be changed while the host runs:
 
 Use the APK matching the device:
 
-- `ocremote-0.1.4-android-arm64-v8a.apk` for real Android devices.
-- `ocremote-0.1.4-android-x86_64.apk` for an x86_64 emulator.
+- `ocremote-0.1.5-android-arm64-v8a.apk` for real Android devices.
+- `ocremote-0.1.5-android-x86_64.apk` for an x86_64 emulator.
 
 ```bash
-adb install ocremote-0.1.4-android-arm64-v8a.apk
+adb install ocremote-0.1.5-android-arm64-v8a.apk
 ```
 
 ### Add a host
@@ -184,7 +184,7 @@ box and is never sent automatically.
 The Linux x64/arm64 archives are self-contained (Bun and sherpa-onnx included):
 
 ```bash
-tar xzf ocremote-host-0.1.4-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-0.1.5-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ```

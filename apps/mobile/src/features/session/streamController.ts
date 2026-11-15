@@ -68,7 +68,7 @@ export class SessionStreamController {
     const type = event.type ?? ""
     if (!type.startsWith("session.") && !type.startsWith("message.")) return
     const data = record(event.data)
-    const eventSession = stringValue(data.sessionID)
+    const eventSession = sessionIdOf(event, data)
     if (this.sessionId && eventSession && eventSession !== this.sessionId) return
 
     if (
@@ -354,6 +354,18 @@ function rateFor(segment: QueueSegment): number {
     return 18 + Math.min(150, pending * 0.55)
   }
   return 26 + Math.min(220, pending * 0.75)
+}
+
+function sessionIdOf(event: OpencodeEvent, data: Record<string, unknown>): string | undefined {
+  const info = record(data.info)
+  const message = record(data.message)
+  for (const source of [event, data, info, message]) {
+    for (const key of ["sessionID", "sessionId"]) {
+      const value = source[key]
+      if (typeof value === "string" && value) return value
+    }
+  }
+  return undefined
 }
 
 function record(value: unknown): Record<string, unknown> {

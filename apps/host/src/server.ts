@@ -168,7 +168,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
       port: direct.port,
       fetch(request, current) {
         const url = new URL(request.url)
-        if (url.pathname === "/health") return Response.json({ ok: true, v: 2, version: "0.1.4" })
+        if (url.pathname === "/health") return Response.json({ ok: true, v: 2, version: "0.1.5" })
         if (url.pathname.startsWith("/p/")) {
           const id = url.pathname.slice("/p/".length)
           const page = pairPages.get(id)

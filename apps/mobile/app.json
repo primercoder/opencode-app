@@ -2,7 +2,7 @@
   "expo": {
     "name": "OC Remote",
     "slug": "ocremote",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "orientation": "portrait",
     "scheme": "ocremote",
     "userInterfaceStyle": "automatic",
@@ -21,7 +21,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#EAF3FF"
       },
-      "versionCode": 6,
+      "versionCode": 7,
       "softwareKeyboardLayoutMode": "resize"
     },
     "plugins": [

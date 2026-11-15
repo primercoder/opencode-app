@@ -136,7 +136,7 @@ export function Icon(props: {
           <Line x1="9" y1="21" x2="15" y2="21" {...common} />
         </>
       ) : null}
-      {props.name === "stop" ? <Rect x="7" y="7" width="10" height="10" rx="2" fill={color} stroke="none" /> : null}
+      {props.name === "stop" ? <Rect x="6" y="6" width="12" height="12" rx="3" fill={color} stroke="none" /> : null}
       {props.name === "search" ? (
         <>
           <Circle cx="11" cy="11" r="6.5" {...common} />
