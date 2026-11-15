@@ -85,7 +85,7 @@ Relay mode:
 
 ```bash
 ./ocremote start
-./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay
 ./ocremote pair
 ```
 

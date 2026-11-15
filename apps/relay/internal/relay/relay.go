@@ -288,15 +288,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		welcome["secret"] = secret
 	}
 	if p.role == KindHost {
-		// A host never asks an administrator for a phone invite: the relay hands
-		// it a fresh one-time phone link when it connects. The pairing offer
-		// carries that link, so the phone enrolls automatically.
+		// Phone invites are created only when the host explicitly requests one
+		// for a pairing code. Connecting/reconnecting must not mint unused links.
 		welcome["caps"] = []string{"clientInvite"}
-		if link, err := s.ClientInvite(p.room.id, subject.Name); err != nil {
-			slog.Warn("relay could not issue a phone invite", "room", p.room.id, "error", err)
-		} else {
-			welcome["clientInvite"] = link
-		}
 	} else {
 		welcome["clientId"] = p.id
 		welcome["hostOnline"] = true
@@ -419,14 +413,19 @@ func mustJSON(value any) []byte {
 func (s *Server) handleHostControl(p *peer, data []byte) {
 	var message struct {
 		T    string `json:"t"`
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(data, &message); err != nil || message.T != "relay.invite" {
-		p.sendJSON(map[string]any{
+		response := map[string]any{
 			"t":       "relay.error",
 			"code":    "RELAY_BAD_REQUEST",
 			"message": "unsupported host control frame",
-		})
+		}
+		if message.ID != "" {
+			response["id"] = message.ID
+		}
+		p.sendJSON(response)
 		return
 	}
 	name := strings.TrimSpace(message.Name)
@@ -442,16 +441,28 @@ func (s *Server) handleHostControl(p *peer, data []byte) {
 			code = protocol.Code
 			text = protocol.Message
 		}
-		p.sendJSON(map[string]any{"t": "relay.error", "code": code, "message": text})
+		response := map[string]any{
+			"t":       "relay.error",
+			"code":    code,
+			"message": text,
+		}
+		if message.ID != "" {
+			response["id"] = message.ID
+		}
+		p.sendJSON(response)
 		return
 	}
-	p.sendJSON(map[string]any{
+	response := map[string]any{
 		"t":      "relay.invite",
 		"v":      ProtocolVersion,
 		"kind":   KindClient,
 		"invite": link,
 		"room":   p.room.id,
-	})
+	}
+	if message.ID != "" {
+		response["id"] = message.ID
+	}
+	p.sendJSON(response)
 }
 
 func readHello(ctx context.Context, conn *websocket.Conn, timeout time.Duration) (helloFrame, error) {

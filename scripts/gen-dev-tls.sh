@@ -82,12 +82,12 @@ TLS files written to $OUT
   SAN            : relay.ocremote.test, localhost, 127.0.0.1, 10.0.2.2, $LAN_IP
 
 Run the relay with:
-  ./ocremote-relay serve --listen :8443 \\
+  ./ocremote-relay --listen :8443 \\
     --public-url wss://relay.ocremote.test:8443/ws \\
     --tls-cert $OUT/relay.crt --tls-key $OUT/relay.key
 
 Enroll the host with:
-  ./ocremote start --relay-link '...' --relay-ca $OUT/ca.crt
+  ./ocremote relay relay.ocremote.test:8443 --ca $OUT/ca.crt
 
 Verify manually:
   openssl s_client -connect 127.0.0.1:8443 -CAfile $OUT/ca.crt \\

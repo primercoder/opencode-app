@@ -168,7 +168,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
       port: direct.port,
       fetch(request, current) {
         const url = new URL(request.url)
-        if (url.pathname === "/health") return Response.json({ ok: true, v: 2, version: "0.1.5" })
+        if (url.pathname === "/health") return Response.json({ ok: true, v: 2, version: "0.1.6" })
         if (url.pathname.startsWith("/p/")) {
           const id = url.pathname.slice("/p/".length)
           const page = pairPages.get(id)
@@ -253,10 +253,6 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
           console.warn(`[relay] ${state}${detail ? `: ${detail}` : ""}`)
         }
       },
-      onClientInvite: (link) => {
-        next.clientInvite = link
-        void persist().catch(() => undefined)
-      },
     })
     relayClient = client
     try {
@@ -278,10 +274,6 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
             createSession: (socket) => new ConnectionSession(socket, ctx, { transport: "relay" }),
             onState: (state) => {
               relayState = state
-            },
-            onClientInvite: (link) => {
-              previousConfig.clientInvite = link
-              void persist().catch(() => undefined)
             },
           })
           relayClient = restored
@@ -310,17 +302,10 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     return isLoopbackUrl(candidate) ? undefined : candidate
   }
 
-  const relayInvite = async (): Promise<string | undefined> => {
-    if (!relayConfig) return undefined
-    let invite = relayConfig.clientInvite
-    if (relayClient) {
-      try {
-        invite = await relayClient.requestClientInvite()
-      } catch {
-        // Keep the cached invite; the phone can still use a stored subject.
-      }
-    }
-    return invite
+  const relayInvite = async (): Promise<string> => {
+    if (!relayConfig) throw new Error("relay is not enabled")
+    if (!relayClient) throw new Error("relay is enabled but not connected; cannot create a phone invite")
+    return relayClient.requestClientInvite()
   }
 
   const buildOffer = (
@@ -378,8 +363,10 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
         })
       }
       if (relayConfig) {
-        const { code, pending } = addPendingPair(config, scope, ttlMs)
+        // The phone invite is pair-specific: request it only now, never at
+        // connect time, and never fall back to a stale cached invite.
         const invite = await relayInvite()
+        const { code, pending } = addPendingPair(config, scope, ttlMs)
         routes.push({
           kind: "relay",
           offer: buildOffer(code, pending.expiresAt, [
@@ -389,12 +376,12 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
               room: relayConfig.room,
               relayKey: relayConfig.relayKey,
               priority: 0,
-              ...(invite ? { invite } : {}),
+              invite,
             },
           ]),
           url: relayConfig.url,
           room: relayConfig.room,
-          hasInvite: Boolean(invite),
+          hasInvite: true,
           expiresAt: pending.expiresAt,
         })
       }

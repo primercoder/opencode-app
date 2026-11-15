@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rm } from "node:fs/promises"
 import { isIP } from "node:net"
 import { Command } from "commander"
 import qrcode from "qrcode-terminal"
-import { base64UrlEncode, fingerprintOfPublicKey, parseRelayInviteLink } from "@ocremote/protocol"
+import { base64UrlEncode, fingerprintOfPublicKey } from "@ocremote/protocol"
 import { formatModelSize } from "@ocremote/models"
 import {
   loadConfig,
@@ -19,7 +19,12 @@ import {
 import { HostModelManager } from "./asr/modelManager.ts"
 import { HostAsr } from "./asr/service.ts"
 import { revokeDevice } from "./pairing.ts"
-import { enrollRelaySubject } from "./relay.ts"
+import {
+  DEFAULT_RELAY_ADDRESS,
+  enrollRelaySubject,
+  resolveRelayProfile,
+  sameRelayUrl,
+} from "./relay.ts"
 import { resolveOpencodeTarget } from "./opencode.ts"
 import { httpOrigin, lanUrls, startHost, type DirectStatus, type Host, type PairRoute } from "./server.ts"
 import {
@@ -54,13 +59,13 @@ Common workflows:
 
   Relay only (phone and computer on different networks)
     ocremote start
-    ocremote relay 'ocremote-relay://host#...'
+    ocremote relay
     ocremote pair
 
   Direct and relay together
     ocremote start
     ocremote direct 192.168.1.20:8787
-    ocremote relay 'ocremote-relay://host#...'
+    ocremote relay
     ocremote pair
 
   Change routes while the host is running
@@ -107,7 +112,7 @@ First run:
   ocremote direct 0.0.0.0:8787
   ocremote pair
   # or
-  ocremote relay 'ocremote-relay://host#...'
+  ocremote relay
   ocremote pair`,
   )
   .action(async (options: StartOptions) => {
@@ -174,42 +179,42 @@ start. Loopback-only direct is never placed in a phone pairing offer.`,
   })
 
 program
-  .command("relay [link]")
-  .description("Show, enroll or disable relay access")
+  .command("relay [address]")
+  .description("Connect, inspect or disable relay access")
   .option("--ca <pem>", "CA certificate for an optional self-signed TLS relay")
+  .option("--refresh-key", "accept a changed relay public key", false)
   .addHelpText(
     "after",
     `
 Examples:
-  ocremote relay
-  ocremote relay 'ocremote-relay://host#...'
-  ocremote relay on
-  ocremote relay off
+  ocremote relay                         connect the default relay
+  ocremote relay 118.31.124.193:8443    connect a custom relay
+  ocremote relay status                  show the saved relay and room
+  ocremote relay off                     stop the client, keep the identity
+  ocremote relay on                      re-enable the saved relay
+  ocremote relay --refresh-key 1.2.3.4:8443
+                                        accept a changed relay key
 
-The relay prints a reusable host link at startup. Copy it once; the host keeps
-the returned subject secret. "off" keeps the saved identity so "on" (or the
-same host link) can re-enable it without consuming another relay host slot.
-Changes apply immediately while the host is running and persist for the next
-start.`,
+The default relay is ${DEFAULT_RELAY_ADDRESS}. Only an IP/port or ws(s) URL
+is needed; no long host link is generated. "off" keeps the saved identity so
+"on" can re-enable it without consuming another relay host slot.`,
   )
-  .action(async (link: string | undefined, options: { ca?: string }) => {
+  .action(async (address: string | undefined, options: { ca?: string; refreshKey: boolean }) => {
     const running = await currentStatus()
     const local = await loadLocal()
     const saved = local.config.relay
-    if (!link) {
+    const action = address?.trim().toLowerCase()
+    if (action === "status") {
       const current = running?.relay
       if (current) {
         console.log(`relay ${current.url} · room ${current.room}`)
-        return
-      }
-      if (saved) {
-        console.log(`relay off (saved ${saved.url} · room ${saved.room})`)
+      } else if (saved) {
+        console.log(`relay ${saved.enabled === false ? "off" : "not running"} (saved ${saved.url} · room ${saved.room})`)
       } else {
         console.log("relay is off")
       }
       return
     }
-    const action = link.trim().toLowerCase()
     if (action === "off") {
       if (running) await requireControl({ cmd: "relay.off" })
       else if (saved) {
@@ -220,7 +225,7 @@ start.`,
       return
     }
     if (action === "on") {
-      if (!saved) throw new Error("no saved relay identity. Use: ocremote relay '<host-link>'")
+      if (!saved) throw new Error(`no saved relay identity. Use: ocremote relay ${DEFAULT_RELAY_ADDRESS}`)
       saved.enabled = true
       if (running) await requireControl({ cmd: "relay.set", relay: saved })
       else await saveConfig(local.home, local.config)
@@ -228,20 +233,29 @@ start.`,
       return
     }
 
-    const parsed = parseRelayInviteLink(link)
-    const sameRelay = saved && sameRelayUrl(saved.url, parsed.url) && saved.relayKey === parsed.rk
-    let relay = saved
-    if (!sameRelay) {
-      const identity = await loadOrCreateIdentity(local.home, local.config.name)
-      relay = await enrollRelaySubject({
-        link,
-        hostId: identity.hostId,
-        name: local.config.name,
-        hostPublicKey: base64UrlEncode(identity.publicKey),
-        ...(options.ca ? { caPath: options.ca } : {}),
-      })
-    }
-    if (!relay) throw new Error("relay enrollment failed")
+    const target = address?.trim() || saved?.url || DEFAULT_RELAY_ADDRESS
+    const profile = await resolveRelayProfile({
+      address: target,
+      ...(saved ? { saved } : {}),
+      ...(options.ca ? { caPath: options.ca } : {}),
+      refreshKey: options.refreshKey,
+      probe: true,
+    })
+    const reuseSaved = Boolean(saved && sameRelayUrl(saved.url, profile.url))
+    const relay = reuseSaved
+      ? {
+          ...(saved as RelayConfig),
+          relayKey: profile.relayKey,
+          ...(profile.relayId ? { relayId: profile.relayId } : {}),
+          enabled: true,
+        }
+      : await enrollRelaySubject({
+          profile,
+          hostId: (await loadOrCreateIdentity(local.home, local.config.name)).hostId,
+          name: local.config.name,
+          hostPublicKey: base64UrlEncode((await loadOrCreateIdentity(local.home, local.config.name)).publicKey),
+          ...(options.ca ? { caPath: options.ca } : {}),
+        })
     relay.enabled = true
     if (running) {
       await requireControl({ cmd: "relay.set", relay, ...(options.ca ? { caPath: options.ca } : {}) })
@@ -761,14 +775,6 @@ async function loadLocal(): Promise<{ home: string; config: HostConfig }> {
   return { home, config }
 }
 
-function sameRelayUrl(left: string, right: string): boolean {
-  try {
-    return new URL(left).toString() === new URL(right).toString()
-  } catch {
-    return left === right
-  }
-}
-
 function parseListen(value: string): DirectConfig {
   const trimmed = value.trim()
   if (!trimmed) throw new Error("direct address cannot be empty")
@@ -845,7 +851,7 @@ function printTransports(host: Host): void {
 function printRouteHint(): void {
   console.log("No phone-reachable route is enabled. Choose one:")
   console.log("  ocremote direct 0.0.0.0:8787")
-  console.log("  ocremote relay 'ocremote-relay://host#...'")
+  console.log("  ocremote relay")
   console.log("")
 }
 

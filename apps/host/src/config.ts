@@ -29,16 +29,11 @@ export type RelayConfig = {
   /** Long-lived relay subject returned by the relay. */
   subjectId: string
   secret: string
-  /** Relay X25519 public key pinned by the host link. */
+  /** Relay X25519 public key pinned from /v1/info. */
   relayKey: string
+  relayId?: string
   /** Kept so "relay off"/"relay on" can reuse the same relay identity. */
   enabled?: boolean
-  /**
-   * One-time phone invite last issued by the relay. Pairing offers prefer a
-   * fresh invite requested while connected, but this cached copy keeps
-   * "ocremote pair --relay" usable while the host is stopped.
-   */
-  clientInvite?: string
 }
 
 export type DirectConfig = {
@@ -130,13 +125,25 @@ export async function loadConfig(
     const migrated =
       raw.direct ??
       (raw.lan && !isLoopbackHostname(raw.lan.hostname) ? raw.lan : undefined)
+    const rawRelay = raw.relay as (RelayConfig & { clientInvite?: string }) | undefined
+    const relay: RelayConfig | undefined = rawRelay
+      ? {
+          url: rawRelay.url,
+          room: rawRelay.room,
+          subjectId: rawRelay.subjectId,
+          secret: rawRelay.secret,
+          relayKey: rawRelay.relayKey,
+          ...(rawRelay.relayId ? { relayId: rawRelay.relayId } : {}),
+          ...(rawRelay.enabled === false ? { enabled: false } : {}),
+        }
+      : undefined
     return {
       v: 2,
       hostId: raw.hostId || defaults.hostId,
       name: raw.name || defaults.name,
       ...(migrated ? { direct: migrated } : defaults.direct ? { direct: defaults.direct } : {}),
       ...(raw.opencode ? { opencode: raw.opencode } : {}),
-      ...(raw.relay ? { relay: raw.relay } : {}),
+      ...(relay ? { relay } : {}),
       devices: Array.isArray(raw.devices) ? raw.devices : [],
       pendingPairs: Array.isArray(raw.pendingPairs) ? raw.pendingPairs : [],
     }

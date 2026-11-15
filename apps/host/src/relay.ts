@@ -39,8 +39,167 @@ export function parseRelayInviteLink(input: string): RelayInvite {
   }
 }
 
+export const DEFAULT_RELAY_HOST = "118.31.124.193"
+export const DEFAULT_RELAY_PORT = 8443
+export const DEFAULT_RELAY_ADDRESS = `${DEFAULT_RELAY_HOST}:${DEFAULT_RELAY_PORT}`
+export const DEFAULT_RELAY_URL = `ws://${DEFAULT_RELAY_HOST}:${DEFAULT_RELAY_PORT}/ws`
+
+export type RelayAddress = {
+  url: string
+  host: string
+  port: number
+  tls: boolean
+  /** Present only for a legacy ocremote-relay://host# link. */
+  legacyKey?: string
+  legacyInvite?: string
+}
+
+export type RelayProfile = {
+  url: string
+  relayKey: string
+  relayId?: string
+}
+
+type RelayInfoResponse = {
+  relayId?: string
+  wsUrl?: string
+  relayPublicKey?: string
+}
+
+/**
+ * Accepts an IP:port, a bare host, a ws(s) URL, or a legacy host link.
+ * The normal case is now just `118.31.124.193:8443`.
+ */
+export function parseRelayAddress(input: string): RelayAddress {
+  const value = input.trim() || DEFAULT_RELAY_ADDRESS
+  if (value.startsWith("ocremote-relay://")) {
+    const invite = parseRelayInviteLink(value)
+    if (invite.kind !== "host") {
+      throw new RelayError("RELAY_INVITE_INVALID", "this relay link is for a phone, not a host")
+    }
+    const url = new URL(invite.url)
+    return {
+      url: invite.url,
+      host: url.hostname,
+      port: Number(url.port || (url.protocol === "wss:" ? 443 : 80)),
+      tls: url.protocol === "wss:",
+      legacyKey: invite.rk,
+      ...(invite.invite ? { legacyInvite: invite.invite } : {}),
+    }
+  }
+
+  let candidate = value
+  if (candidate.startsWith("http://")) candidate = `ws://${candidate.slice("http://".length)}`
+  else if (candidate.startsWith("https://")) candidate = `wss://${candidate.slice("https://".length)}`
+  else if (!/^wss?:\/\//u.test(candidate)) {
+    const host = candidate.includes(":") || candidate.includes("]") ? candidate : `${candidate}:${DEFAULT_RELAY_PORT}`
+    candidate = `ws://${host}`
+  }
+
+  let url: URL
+  try {
+    url = new URL(candidate)
+  } catch {
+    throw new RelayError("RELAY_BAD_REQUEST", `invalid relay address: ${input}`)
+  }
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+    throw new RelayError("RELAY_BAD_REQUEST", "relay address must use ws:// or wss://")
+  }
+  if (url.pathname === "/" || url.pathname === "") url.pathname = "/ws"
+  const port = Number(url.port || (url.protocol === "wss:" ? 443 : 80))
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new RelayError("RELAY_BAD_REQUEST", `invalid relay port: ${url.port}`)
+  }
+  return { url: url.toString(), host: url.hostname, port, tls: url.protocol === "wss:" }
+}
+
+export function sameRelayUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).toString() === new URL(right).toString()
+  } catch {
+    return left === right
+  }
+}
+
+async function fetchRelayInfo(address: RelayAddress, caPath?: string): Promise<RelayInfoResponse> {
+  const infoUrl = new URL(address.url)
+  infoUrl.protocol = address.tls ? "https:" : "http:"
+  infoUrl.pathname = "/v1/info"
+  infoUrl.search = ""
+  infoUrl.hash = ""
+  const options = {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(5_000),
+    ...(caPath ? { tls: { ca: Bun.file(caPath) } } : {}),
+  } as RequestInit & { tls?: { ca: unknown } }
+  let response: Response
+  try {
+    response = await fetch(infoUrl, options)
+  } catch (error) {
+    throw new RelayError(
+      "RELAY_NETWORK",
+      `cannot reach relay ${address.host}:${address.port}: ${error instanceof Error ? error.message : "network error"}`,
+    )
+  }
+  if (!response.ok) {
+    throw new RelayError("RELAY_INFO_INVALID", `relay /v1/info returned HTTP ${response.status}`)
+  }
+  const payload = (await response.json().catch(() => undefined)) as RelayInfoResponse | undefined
+  if (!payload || typeof payload.relayPublicKey !== "string" || payload.relayPublicKey.length < 32) {
+    throw new RelayError("RELAY_INFO_INVALID", "relay /v1/info did not return a relay public key")
+  }
+  return payload
+}
+
+export async function resolveRelayProfile(input: {
+  address: string
+  saved?: RelayConfig
+  caPath?: string
+  refreshKey?: boolean
+  /** Fetch /v1/info even when a saved key exists, to detect identity changes. */
+  probe?: boolean
+}): Promise<RelayProfile & { legacyInvite?: string }> {
+  const address = parseRelayAddress(input.address)
+  if (address.legacyKey) {
+    return {
+      url: address.url,
+      relayKey: address.legacyKey,
+      ...(address.legacyInvite ? { legacyInvite: address.legacyInvite } : {}),
+    }
+  }
+  if (
+    input.saved &&
+    sameRelayUrl(input.saved.url, address.url) &&
+    input.saved.relayKey &&
+    !input.refreshKey &&
+    !input.probe
+  ) {
+    return {
+      url: input.saved.url,
+      relayKey: input.saved.relayKey,
+      ...(input.saved.relayId ? { relayId: input.saved.relayId } : {}),
+    }
+  }
+
+  const info = await fetchRelayInfo(address, input.caPath)
+  const key = info.relayPublicKey
+  if (!key) throw new RelayError("RELAY_INFO_INVALID", "relay public key is missing")
+  const infoUrl = typeof info.wsUrl === "string" && /^wss?:\/\//u.test(info.wsUrl) ? info.wsUrl : address.url
+  if (input.saved && input.saved.relayKey && !input.refreshKey && input.saved.relayKey !== key) {
+    throw new RelayError(
+      "RELAY_KEY_CHANGED",
+      `relay identity changed for ${address.host}:${address.port}; confirm the server and retry with --refresh-key`,
+    )
+  }
+  return {
+    url: infoUrl,
+    relayKey: key,
+    ...(info.relayId ? { relayId: info.relayId } : {}),
+  }
+}
+
 export type EnrollRelayInput = {
-  link: string
+  profile: RelayProfile & { legacyInvite?: string }
   hostId: string
   name?: string
   hostPublicKey?: string
@@ -48,25 +207,23 @@ export type EnrollRelayInput = {
 }
 
 /**
- * Registers this host with a relay. New relays use a reusable host link and
- * self-registration; one-time host invites from 0.3.x remain accepted.
- * The invite token is never placed in a URL.
+ * Registers this host with a relay. The relay address and pinned key come from
+ * /v1/info; no long host link is required.
  */
 export async function enrollRelaySubject(input: EnrollRelayInput): Promise<RelayConfig> {
-  const invite = parseRelayInviteLink(input.link)
-  if (invite.kind !== "host") {
-    throw new RelayError("RELAY_INVITE_INVALID", "this relay link is for a phone, not a host")
-  }
   if (!input.hostId) {
     throw new RelayError("RELAY_BAD_REQUEST", "host identity is missing")
   }
-  const socket = createSocket(invite.url, input.caPath)
+  if (!input.profile.relayKey) {
+    throw new RelayError("RELAY_INFO_INVALID", "relay public key is missing")
+  }
+  const socket = createSocket(input.profile.url, input.caPath)
   socket.binaryType = "arraybuffer"
   try {
     await waitForOpen(socket, 10_000)
     const result = await relayNoiseHandshake(
       socket,
-      invite.rk,
+      input.profile.relayKey,
       {
         t: "relay.hello",
         v: 3,
@@ -74,7 +231,7 @@ export async function enrollRelaySubject(input: EnrollRelayInput): Promise<Relay
         hostId: input.hostId,
         ...(input.name ? { hostName: input.name } : {}),
         ...(input.hostPublicKey ? { hostPublicKey: input.hostPublicKey } : {}),
-        ...(invite.invite ? { invite: invite.invite } : {}),
+        ...(input.profile.legacyInvite ? { invite: input.profile.legacyInvite } : {}),
       },
       10_000,
     )
@@ -88,18 +245,17 @@ export async function enrollRelaySubject(input: EnrollRelayInput): Promise<Relay
     const subjectId = stringValue(welcome.subjectId)
     const secret = stringValue(welcome.secret)
     const room = stringValue(welcome.room)
-    const clientInvite = stringValue(welcome.clientInvite)
     if (!subjectId || !secret || !room) {
       throw new RelayError("RELAY_BAD_REQUEST", "relay enrollment response is incomplete")
     }
     return {
-      url: invite.url,
+      url: input.profile.url,
       room,
       subjectId,
       secret,
-      relayKey: invite.rk,
+      relayKey: input.profile.relayKey,
+      ...(input.profile.relayId ? { relayId: input.profile.relayId } : {}),
       enabled: true,
-      ...(clientInvite ? { clientInvite } : {}),
     }
   } finally {
     try {
@@ -117,8 +273,6 @@ export type RelayHostOptions = {
   caPath?: string
   createSession(socket: SessionSocket): ConnectionSession
   onState?: (state: RelayState, detail?: string) => void
-  /** Called whenever the relay issues a fresh one-time phone invite. */
-  onClientInvite?: (link: string) => void
 }
 
 type Entry = {
@@ -127,9 +281,11 @@ type Entry = {
 }
 
 type InviteWaiter = {
+  id: string
   promise: Promise<string>
   resolve(link: string): void
   reject(error: Error): void
+  timer: ReturnType<typeof setTimeout>
 }
 
 export class RelayHostClient {
@@ -141,7 +297,8 @@ export class RelayHostClient {
   private authenticated = false
   private sendCipher: CipherState | undefined
   private receiveCipher: CipherState | undefined
-  private inviteWaiter: InviteWaiter | undefined
+  private readonly inviteRequests = new Map<string, InviteWaiter>()
+  private inviteSeq = 0
   private readonly caps = new Set<string>()
 
   constructor(private readonly options: RelayHostOptions) {}
@@ -155,15 +312,16 @@ export class RelayHostClient {
     this.closed = true
     if (this.retryTimer) clearTimeout(this.retryTimer)
     this.retryTimer = undefined
-    this.rejectInvite(new RelayError("RELAY_OFFLINE", "relay client is closed"))
+    this.rejectAllInvites(new RelayError("RELAY_OFFLINE", "relay client is closed"))
     this.closeSessions()
     this.closeSocket()
     this.options.onState?.("closed")
   }
 
   /**
-   * Ask the relay for a fresh one-time phone invite. The pairing offer embeds
-   * this link so the phone enrolls without a manually copied admin invite.
+   * Ask the relay for one fresh, pair-specific phone invite. Each call sends a
+   * distinct request id so concurrent or repeated pair commands never share a
+   * link. No invite is requested at startup or reconnect time.
    */
   requestClientInvite(timeoutMs = 4_000): Promise<string> {
     const socket = this.socket
@@ -173,38 +331,41 @@ export class RelayHostClient {
     if (!this.caps.has("clientInvite")) {
       return Promise.reject(new RelayError("RELAY_UNSUPPORTED", "relay does not issue phone invites"))
     }
-    if (this.inviteWaiter) return this.inviteWaiter.promise
+    if (!this.sendCipher) {
+      return Promise.reject(new RelayError("RELAY_OFFLINE", "relay is not authenticated"))
+    }
 
+    const id = `pair-${Date.now()}-${++this.inviteSeq}`
     let resolveLink!: (link: string) => void
     let rejectLink!: (error: Error) => void
     const promise = new Promise<string>((resolve, reject) => {
       resolveLink = resolve
       rejectLink = reject
     })
-    const timer = setTimeout(() => {
-      waiter.reject(new RelayError("RELAY_TIMEOUT", "relay did not return a phone invite in time"))
-    }, timeoutMs)
     const waiter: InviteWaiter = {
+      id,
       promise,
+      timer: setTimeout(() => {
+        this.rejectInvite(id, new RelayError("RELAY_TIMEOUT", "relay did not return a phone invite in time"))
+      }, timeoutMs),
       resolve: (link) => {
-        clearTimeout(timer)
-        if (this.inviteWaiter === waiter) this.inviteWaiter = undefined
-        this.options.config.clientInvite = link
-        this.options.onClientInvite?.(link)
+        clearTimeout(waiter.timer)
+        this.inviteRequests.delete(id)
         resolveLink(link)
       },
       reject: (error) => {
-        clearTimeout(timer)
-        if (this.inviteWaiter === waiter) this.inviteWaiter = undefined
+        clearTimeout(waiter.timer)
+        this.inviteRequests.delete(id)
         rejectLink(error)
       },
     }
-    this.inviteWaiter = waiter
-    if (!this.sendCipher) {
-      waiter.reject(new RelayError("RELAY_OFFLINE", "relay is not authenticated"))
-      return promise
-    }
-    socket.send(encodeRelayControl(this.sendCipher, JSON.stringify({ t: "relay.invite", v: 3, kind: "client" })))
+    this.inviteRequests.set(id, waiter)
+    socket.send(
+      encodeRelayControl(
+        this.sendCipher,
+        JSON.stringify({ t: "relay.invite", v: 3, kind: "client", id }),
+      ),
+    )
     return promise
   }
 
@@ -286,11 +447,6 @@ export class RelayHostClient {
       this.options.onState?.("authenticating", `relay room changed to ${room}`)
       this.options.config.room = room
     }
-    const clientInvite = stringValue(value.clientInvite)
-    if (clientInvite) {
-      this.options.config.clientInvite = clientInvite
-      this.options.onClientInvite?.(clientInvite)
-    }
     if (Array.isArray(value.caps)) {
       this.caps.clear()
       for (const cap of value.caps) {
@@ -330,12 +486,14 @@ export class RelayHostClient {
     if (!value) return
     if (value.t === "relay.invite") {
       const link = stringValue(value.invite)
-      if (link) this.inviteWaiter?.resolve(link)
-      else this.inviteWaiter?.reject(new RelayError("RELAY_BAD_REQUEST", "relay returned an empty phone invite"))
+      const id = stringValue(value.id)
+      if (link) this.resolveInvite(id, link)
+      else this.rejectInvite(id, new RelayError("RELAY_BAD_REQUEST", "relay returned an empty phone invite"))
       return
     }
-    if (value.t === "relay.error" && this.inviteWaiter) {
-      this.inviteWaiter.reject(
+    if (value.t === "relay.error" && this.inviteRequests.size > 0) {
+      this.rejectInvite(
+        stringValue(value.id),
         new RelayError(
           stringValue(value.code) || "RELAY_BAD_REQUEST",
           stringValue(value.message) || "relay could not issue a phone invite",
@@ -357,8 +515,23 @@ export class RelayHostClient {
     }
   }
 
-  private rejectInvite(error: Error): void {
-    this.inviteWaiter?.reject(error)
+  private resolveInvite(id: string | undefined, link: string): void {
+    const waiter = id ? this.inviteRequests.get(id) : this.inviteRequests.values().next().value
+    waiter?.resolve(link)
+  }
+
+  private rejectInvite(id: string | undefined, error: Error): void {
+    if (id) {
+      this.inviteRequests.get(id)?.reject(error)
+      return
+    }
+    const waiter = this.inviteRequests.values().next().value
+    waiter?.reject(error)
+  }
+
+  private rejectAllInvites(error: Error): void {
+    for (const waiter of [...this.inviteRequests.values()]) waiter.reject(error)
+    this.inviteRequests.clear()
   }
 
   private attach(clientId: number): void {
@@ -369,7 +542,7 @@ export class RelayHostClient {
   }
 
   private handleDisconnect(reason: string): void {
-    this.rejectInvite(new RelayError("RELAY_OFFLINE", reason))
+    this.rejectAllInvites(new RelayError("RELAY_OFFLINE", reason))
     this.authenticated = false
     this.sendCipher = undefined
     this.receiveCipher = undefined

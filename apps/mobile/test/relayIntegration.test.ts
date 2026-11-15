@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parsePairingOffer, parseRelayInviteLink, relayNoiseHandshake } from "@ocremote/protocol"
-import { enrollRelaySubject } from "../../host/src/relay.ts"
+import { enrollRelaySubject, resolveRelayProfile } from "../../host/src/relay.ts"
 import { startHost } from "../../host/src/server.ts"
 import { HostRuntime } from "../src/transport/hostRuntime.ts"
 
@@ -36,16 +36,15 @@ describe("relay v4 end to end", () => {
       await rm(relayBinary, { force: true })
     })
     await waitFor(`http://127.0.0.1:${relayPort}/healthz`)
-    const hostLink = adminHostLink(relayBinary, dataDir, publicUrl)
+    const profile = await resolveRelayProfile({ address: `127.0.0.1:${relayPort}` })
 
     const relayConfig = await enrollRelaySubject({
-      link: hostLink,
+      profile,
       hostId: "host_relay_test",
       name: "relay-test-host",
     })
     expect(relayConfig.subjectId.startsWith("sub_")).toBe(true)
     expect(relayConfig.room.startsWith("room_")).toBe(true)
-    expect(relayConfig.clientInvite?.startsWith("ocremote-relay://enroll#")).toBe(true)
 
     const home = await mkdtemp(join(tmpdir(), "ocremote-relay-host-"))
     cleanups.push(() => rm(home, { recursive: true, force: true }))
@@ -71,13 +70,21 @@ describe("relay v4 end to end", () => {
     })
     cleanups.push(() => host.close())
 
-    const routes = await host.pairingRoutes()
-    expect(routes.map((route) => route.kind)).toEqual(["relay"])
-    const offer = parsePairingOffer(routes[0]!.offer)
+    const firstRoutes = await host.pairingRoutes()
+    const secondRoutes = await host.pairingRoutes()
+    expect(firstRoutes.map((route) => route.kind)).toEqual(["relay"])
+    expect(secondRoutes.map((route) => route.kind)).toEqual(["relay"])
+    const offer = parsePairingOffer(firstRoutes[0]!.offer)
+    const secondOffer = parsePairingOffer(secondRoutes[0]!.offer)
     const relayTransport = offer.transports.find((transport) => transport.kind === "relay")
+    const secondTransport = secondOffer.transports.find((transport) => transport.kind === "relay")
     if (!relayTransport || relayTransport.kind !== "relay" || !relayTransport.invite) {
       throw new Error("pairing offer did not include a relay phone invite")
     }
+    if (!secondTransport || secondTransport.kind !== "relay" || !secondTransport.invite) {
+      throw new Error("second pairing offer did not include a relay phone invite")
+    }
+    expect(secondTransport.invite).not.toBe(relayTransport.invite)
     const clientAccess = await enrollClient(relayTransport.invite, relayConfig.room)
 
     const runtime = HostRuntime.fromPairingOffer(offer, {
@@ -112,18 +119,6 @@ describe("relay v4 end to end", () => {
     expect(JSON.parse(recovered.body).version).toBe("relay-2.2.7")
   }, 90_000)
 })
-
-function adminHostLink(binary: string, dataDir: string, publicUrl: string): string {
-  const result = Bun.spawnSync([binary, "admin", "--data-dir", dataDir, "--public-url", publicUrl, "link"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const link = result.stdout.toString().trim()
-  if (result.exitCode !== 0 || !link.startsWith("ocremote-relay://host#")) {
-    throw new Error(`relay host link failed: ${result.stderr.toString()}`)
-  }
-  return link
-}
 
 async function enrollClient(link: string, room: string): Promise<{ subjectId: string; secret: string; relayKey: string }> {
   const invite = parseRelayInviteLink(link)

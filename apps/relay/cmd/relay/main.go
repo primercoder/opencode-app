@@ -19,11 +19,9 @@ import (
 	"time"
 
 	"ocremote/relay/internal/relay"
-
-	"github.com/flynn/noise"
 )
 
-const version = "0.4.0"
+const version = "0.4.1"
 
 func main() {
 	var err error
@@ -72,7 +70,7 @@ Usage:
 Start options:
   --data-dir <dir>        data directory (default ./data, env RELAY_DATA_DIR)
   --listen <addr>         listen address (default :8443, env RELAY_LISTEN)
-  --public-url <url>      public ws:// or wss:// URL for host links
+  --public-url <url>      public ws:// or wss:// URL placed in phone invites
   --tls-cert <pem>        optional TLS certificate
   --tls-key <pem>         optional TLS private key
   --max-hosts <n>         active hosts (default 3, env RELAY_MAX_HOSTS)
@@ -81,11 +79,10 @@ Start options:
   --log-level <level>     debug|info|warn|error (default info)
 
 Admin commands:
-  status                  relay state, limits and reusable host link
+  status                  relay state and limits
   hosts                   registered host identities
   clients                 registered phone identities
   rooms                   rooms and current occupancy
-  link                    print the reusable host link
   revoke <subjectId>      revoke a host or phone identity
 
 Examples:
@@ -106,11 +103,11 @@ Examples:
   ocremote-relay admin rooms
   ocremote-relay admin revoke sub_1234
 
-Host link:
-  Copy the "host link" printed at startup into:
-    ocremote relay 'ocremote-relay://host#...'
-  The link is reusable and only pins the relay public key. Any OC Remote host
-  that implements the relay protocol may register until --max-hosts is reached.
+Host connection:
+  Hosts connect with only the relay IP and port, for example:
+    ocremote relay 203.0.113.10:8443
+  Any OC Remote host that implements the relay protocol may register until
+  --max-hosts is reached. Phone invites are created only when a host pairs.
 
 Environment:
   RELAY_DATA_DIR, RELAY_LISTEN, RELAY_PUBLIC_URL, RELAY_ADMIN_SOCKET,
@@ -149,7 +146,7 @@ func runServe(args []string) error {
 	if *publicURL == "" {
 		*publicURL = derivePublicURL(*listen, *certFile != "")
 		if strings.Contains(*publicURL, "://127.0.0.1") || strings.Contains(*publicURL, "://localhost") {
-			fmt.Fprintf(os.Stderr, "warning: --public-url is not set; host links will use %s. Pass the public IP or domain for remote hosts.\n", *publicURL)
+			fmt.Fprintf(os.Stderr, "warning: --public-url is not set; phone invites will use %s. Pass the public IP or domain for remote hosts.\n", *publicURL)
 		}
 	}
 	if *certFile != "" {
@@ -222,7 +219,6 @@ func runServe(args []string) error {
 	}
 	fmt.Printf("hosts      %d/%d active\n", hosts, *maxHosts)
 	fmt.Printf("phones     %d per host\n", *maxClients)
-	fmt.Printf("host link  %s\n", server.HostLink())
 	fmt.Printf("data       %s\n", *dataDir)
 	fmt.Printf("admin      %s\n", socket)
 	fmt.Println()
@@ -253,7 +249,7 @@ func runAdmin(args []string) error {
 	}
 	rest := flags.Args()
 	if len(rest) == 0 {
-		return errors.New("missing admin command (status|hosts|clients|rooms|link|revoke)")
+		return errors.New("missing admin command (status|hosts|clients|rooms|revoke)")
 	}
 	command := rest[0]
 	if *socket == "" {
@@ -270,14 +266,10 @@ func runAdmin(args []string) error {
 			return fmt.Errorf("relay is not running and data store could not be opened: %w", err)
 		}
 		defer store.Close()
-		relayKey, keyErr := relay.LoadOrCreateRelayKey(*dataDir)
-		if keyErr != nil {
-			return fmt.Errorf("relay identity: %w", keyErr)
-		}
 		if *publicURL == "" {
 			*publicURL = derivePublicURL(":8443", false)
 		}
-		client = &directAdmin{store: store, publicURL: *publicURL, relayKey: relayKey}
+		client = &directAdmin{store: store, publicURL: *publicURL}
 	}
 
 	switch command {
@@ -308,13 +300,6 @@ func runAdmin(args []string) error {
 			return err
 		}
 		return printValue(data, true)
-	case "link":
-		link, err := client.hostLink()
-		if err != nil {
-			return err
-		}
-		fmt.Println(link)
-		return nil
 	case "revoke":
 		if len(rest) < 2 {
 			return errors.New("revoke needs a subject id")
@@ -370,9 +355,6 @@ func printStatus(value map[string]any) error {
 	fmt.Printf("ws url     %v\n", value["wsUrl"])
 	fmt.Printf("hosts      %v/%v active\n", value["hosts"], value["maxHosts"])
 	fmt.Printf("phones     %v per host\n", value["maxClients"])
-	if link, ok := value["hostLink"].(string); ok {
-		fmt.Printf("host link  %s\n", link)
-	}
 	if rooms, ok := value["rooms"].([]any); ok {
 		fmt.Printf("rooms      %d\n", len(rooms))
 	}
@@ -383,7 +365,6 @@ type adminAPI interface {
 	status() (map[string]any, error)
 	subjects() ([]relay.Subject, error)
 	rooms() (any, error)
-	hostLink() (string, error)
 	revoke(subjectID string) (any, error)
 }
 
@@ -461,18 +442,6 @@ func (a *httpAdmin) rooms() (any, error) {
 	return value, a.call(http.MethodGet, "/v1/admin/rooms", nil, &value)
 }
 
-func (a *httpAdmin) hostLink() (string, error) {
-	status, err := a.status()
-	if err != nil {
-		return "", err
-	}
-	link, _ := status["hostLink"].(string)
-	if link == "" {
-		return "", errors.New("relay did not return a host link")
-	}
-	return link, nil
-}
-
 func (a *httpAdmin) revoke(subjectID string) (any, error) {
 	var value any
 	return value, a.call(http.MethodPost, "/v1/admin/revoke", map[string]any{"subjectId": subjectID}, &value)
@@ -481,7 +450,6 @@ func (a *httpAdmin) revoke(subjectID string) (any, error) {
 type directAdmin struct {
 	store     *relay.Store
 	publicURL string
-	relayKey  noise.DHKey
 }
 
 func (a *directAdmin) status() (map[string]any, error) {
@@ -513,7 +481,6 @@ func (a *directAdmin) status() (map[string]any, error) {
 		"clients":      clients,
 		"maxClients":   envInt("RELAY_MAX_CLIENTS", 3),
 		"rooms":        rooms,
-		"hostLink":     a.hostLinkValue(),
 		"offline":      true,
 		"protocolNote": "relay is not running; limits are shown from the saved configuration",
 	}, nil
@@ -521,14 +488,6 @@ func (a *directAdmin) status() (map[string]any, error) {
 
 func (a *directAdmin) subjects() ([]relay.Subject, error) { return a.store.ListSubjects() }
 func (a *directAdmin) rooms() (any, error)                { return a.store.ListRooms() }
-
-func (a *directAdmin) hostLink() (string, error) {
-	return a.hostLinkValue(), nil
-}
-
-func (a *directAdmin) hostLinkValue() string {
-	return relay.EncodeHostLink(a.store.RelayID(), a.publicURL, relay.PublicKeyText(a.relayKey))
-}
 
 func (a *directAdmin) revoke(subjectID string) (any, error) {
 	subject, err := a.store.RevokeSubject(subjectID)

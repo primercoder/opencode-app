@@ -54,14 +54,14 @@ Release assets name the operating system and CPU architecture in the filename.
 
 | Asset | OS | CPU / target | Use |
 |---|---|---|---|
-| `ocremote-0.1.5-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
-| `ocremote-0.1.5-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
-| `ocremote-host-0.1.5-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
-| `ocremote-host-0.1.5-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
-| `ocremote-relay-0.4.0-linux-amd64` | Linux | x86_64 | Relay binary |
-| `ocremote-relay-0.4.0-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
-| `ocremote-relay-0.4.0-linux-arm64` | Linux | arm64 | Relay binary |
-| `ocremote-relay-0.4.0-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
+| `ocremote-0.1.6-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
+| `ocremote-0.1.6-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
+| `ocremote-host-0.1.6-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
+| `ocremote-host-0.1.6-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
+| `ocremote-relay-0.4.1-linux-amd64` | Linux | x86_64 | Relay binary |
+| `ocremote-relay-0.4.1-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
+| `ocremote-relay-0.4.1-linux-arm64` | Linux | arm64 | Relay binary |
+| `ocremote-relay-0.4.1-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
 
 `SHA256SUMS` verifies every asset. The release APKs are currently signed with
 the Expo debug keystore; replace it with a production keystore before
@@ -72,7 +72,7 @@ distributing them to end users.
 ### Same LAN: direct only
 
 ```bash
-tar xzf ocremote-host-0.1.5-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-0.1.6-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -86,9 +86,9 @@ cd ocremote
 ./ocremote-relay --listen 0.0.0.0:8443 \
   --public-url ws://<PUBLIC_IP>:8443/ws
 
-# Host: copy the reusable "host link" printed by the relay
+# Host: connect to the default relay at 118.31.124.193:8443
 ./ocremote start
-./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay
 ./ocremote pair
 ```
 
@@ -98,7 +98,7 @@ phones. Routes are independent and can be changed while the host runs:
 
 ```bash
 ./ocremote direct 192.168.1.20:8787
-./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay 1.2.3.4:8443        # change the relay address
 ./ocremote relay off                 # stop the client, keep the identity
 ./ocremote relay on                  # re-enable the saved identity
 ./ocremote direct off
@@ -110,11 +110,11 @@ phones. Routes are independent and can be changed while the host runs:
 
 Use the APK matching the device:
 
-- `ocremote-0.1.5-android-arm64-v8a.apk` for real Android devices.
-- `ocremote-0.1.5-android-x86_64.apk` for an x86_64 emulator.
+- `ocremote-0.1.6-android-arm64-v8a.apk` for real Android devices.
+- `ocremote-0.1.6-android-x86_64.apk` for an x86_64 emulator.
 
 ```bash
-adb install ocremote-0.1.5-android-arm64-v8a.apk
+adb install ocremote-0.1.6-android-arm64-v8a.apk
 ```
 
 ### Add a host
@@ -184,7 +184,7 @@ box and is never sent automatically.
 The Linux x64/arm64 archives are self-contained (Bun and sherpa-onnx included):
 
 ```bash
-tar xzf ocremote-host-0.1.5-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-0.1.6-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ```
@@ -212,11 +212,12 @@ Use `--foreground` for tmux/systemd:
 | `./ocremote direct 192.168.1.20:8787` | Bind one interface |
 | `./ocremote direct 127.0.0.1:8787` | Local only; never offered to phones |
 | `./ocremote direct off` | Disable direct |
-| `./ocremote relay` | Show the current relay |
-| `./ocremote relay 'ocremote-relay://host#...'` | Enroll and enable relay, live |
+| `./ocremote relay` | Connect the default relay `118.31.124.193:8443` |
+| `./ocremote relay 1.2.3.4:8443` | Connect a custom IP:port |
+| `./ocremote relay status` | Show the current relay and room |
 | `./ocremote relay on` | Re-enable the saved relay identity |
 | `./ocremote relay off` | Stop the relay client but keep its identity |
-| `./ocremote relay --ca ca.pem '...'` | Optional self-signed TLS relay |
+| `./ocremote relay --ca ca.pem 1.2.3.4:8443` | Optional self-signed TLS relay |
 
 Direct and relay are independent. Changing one never stops the other, and only
 enabled routes appear in `status` and `pair`.
@@ -237,16 +238,24 @@ one-time phone invite and enroll the phone automatically.
 
 ### Relay enrollment
 
-The relay prints a reusable host link at startup. Copy it once:
+The relay no longer prints a host link. A host only needs the IP and port:
 
 ```bash
-./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay                       # default 118.31.124.193:8443
+./ocremote relay 203.0.113.10:8443    # custom relay
 ```
 
-The link only pins the relay X25519 key; it contains no one-time secret. The
-host receives a long-lived subject secret and reconnects with Noise NK. `relay
-off` keeps that identity, so `relay on` or the same host link does not consume
-another relay host slot.
+On first contact the host fetches `/v1/info`, pins the relay X25519 key, then
+registers itself and stores a long-lived subject secret. Later reconnects use
+Noise NK with that pinned key. If the relay key changes, the host refuses the
+connection until you confirm it:
+
+```bash
+./ocremote relay --refresh-key 203.0.113.10:8443
+```
+
+A phone invite is requested only when `./ocremote pair` runs. Every pair gets a
+fresh one-time room-bound link.
 
 ### Speech models
 
@@ -280,14 +289,15 @@ certificate is needed for a public IP. TLS remains optional.
   --public-url ws://<PUBLIC_IP>:8443/ws
 ```
 
-There is no `init` step. The first start creates the relay identity and database
-and prints the reusable host link.
+There is no `init` step. The first start creates the relay identity and
+database. It prints the listen address, limits and data directory, but no host
+link.
 
 | Option | Default | Effect |
 |---|---|---|
 | `--data-dir` | `./data` | Database, identity and admin socket |
 | `--listen` | `:8443` | Listen address |
-| `--public-url` | derived | Public ws/wss URL embedded in host links |
+| `--public-url` | derived | Public ws/wss URL embedded in phone invites |
 | `--max-hosts` | `3` | Simultaneously registered hosts |
 | `--max-clients` | `3` | Phones per host room |
 | `--tls-cert` / `--tls-key` | none | Optional TLS certificate |
@@ -319,10 +329,10 @@ host slot. Use the host limit, `admin revoke` and room isolation to manage abuse
 
 | Item | Mechanism |
 |---|---|
-| Relay identity | X25519 key pinned in the host link; no prompt and no CA |
+| Relay identity | X25519 key fetched from `/v1/info` and pinned by the host; no CA |
 | Host/phone auth | Noise NK; subject secrets only inside encrypted payloads |
 | Host control | Encrypted with the Noise transport (`relay.invite`, `peer`, …) |
-| Phone invites | One-time and bound to the host room |
+| Phone invites | Created only by `pair`, one-time and bound to the host room |
 | App data | Phone↔host Noise end-to-end; the relay sees ciphertext only |
 | Replay | Fresh Noise ephemerals + one-time phone invites + server state |
 | Persistence | `relay.db` survives restarts |
@@ -334,12 +344,11 @@ host slot. Use the host limit, `admin revoke` and room isolation to manage abuse
 ./ocremote-relay admin --data-dir ./data hosts
 ./ocremote-relay admin --data-dir ./data clients
 ./ocremote-relay admin --data-dir ./data rooms
-./ocremote-relay admin --data-dir ./data link
 ./ocremote-relay admin --data-dir ./data revoke <subject-id>
 ```
 
-`status` shows host count/limit, phones per room and the reusable host link.
-`revoke` disconnects the subject and frees a host slot.
+`status` shows host count/limit and phones per room. `revoke` disconnects the
+subject and frees a host slot.
 
 ### Optional TLS
 
@@ -418,9 +427,9 @@ bunx expo run:android
 
 cd apps/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-0.4.0-linux-amd64 ./cmd/relay
+  -o ../../dist/ocremote-relay-0.4.1-linux-amd64 ./cmd/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-0.4.0-linux-arm64 ./cmd/relay
+  -o ../../dist/ocremote-relay-0.4.1-linux-arm64 ./cmd/relay
 
 cd apps/mobile
 bunx expo prebuild --platform android --clean

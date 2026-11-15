@@ -271,60 +271,81 @@ func TestHostClientEnrollmentAndForwarding(t *testing.T) {
 	}
 }
 
-func TestHostReceivesOneTimePhoneInvites(t *testing.T) {
-	server, store, httpServer := testServer(t)
+func TestHostReceivesPhoneInvitesOnlyOnPairRequest(t *testing.T) {
+	server, store, httpServer := testServerWithLimits(t, 3, 3)
 
-	host := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": "desktop"})
-	if host.welcome.ClientInvite == "" {
-		t.Fatalf("host welcome did not include a phone invite: %+v", host.welcome)
+	host := dialOpenHost(t, httpServer, server, "host_pair_time", "desktop")
+	if host.welcome.ClientInvite != "" {
+		t.Fatalf("host welcome must not mint a phone invite: %+v", host.welcome)
 	}
 	if len(host.welcome.Caps) == 0 || host.welcome.Caps[0] != "clientInvite" {
 		t.Fatalf("host welcome did not advertise phone invites: %+v", host.welcome)
 	}
-	token, kind := linkToken(t, host.welcome.ClientInvite)
-	if kind != KindClient {
-		t.Fatalf("host phone invite has kind %q", kind)
+	clientInvites := 0
+	invites, err := store.ListInvites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invite := range invites {
+		if invite.Kind == KindClient {
+			clientInvites++
+		}
+	}
+	if clientInvites != 0 {
+		t.Fatalf("relay created %d phone invites before pair", clientInvites)
 	}
 
-	// The host-issued link enrolls a phone for this room.
-	client := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": token, "room": host.welcome.Room})
+	request := func(id string) (string, string) {
+		sendControl(t, host, map[string]any{"t": "relay.invite", "id": id, "kind": "client"})
+		var frame struct {
+			T      string `json:"t"`
+			ID     string `json:"id"`
+			Invite string `json:"invite"`
+		}
+		readControl(t, host, &frame)
+		if frame.T != "relay.invite" || frame.Invite == "" || frame.ID != id {
+			t.Fatalf("unexpected invite control reply: %+v", frame)
+		}
+		token, kind := linkToken(t, frame.Invite)
+		if kind != KindClient {
+			t.Fatalf("host phone invite has kind %q", kind)
+		}
+		return frame.Invite, token
+	}
+
+	firstLink, firstToken := request("pair-1")
+	secondLink, secondToken := request("pair-2")
+	if firstLink == secondLink || firstToken == secondToken {
+		t.Fatalf("each pair request must receive a distinct invite")
+	}
+	if host.welcome.Room == "" {
+		t.Fatalf("host room is missing")
+	}
+
+	client := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": firstToken, "room": host.welcome.Room})
 	if !client.welcome.Enrolled || client.welcome.Room != host.welcome.Room {
-		t.Fatalf("phone enrollment with host invite failed: %+v", client.welcome)
+		t.Fatalf("phone enrollment with pair invite failed: %+v", client.welcome)
 	}
 	var peer struct {
 		T string `json:"t"`
 	}
 	readControl(t, host, &peer)
 
-	// The link is single-use.
-	again := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": token, "room": host.welcome.Room})
+	again := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": firstToken, "room": host.welcome.Room})
 	if again.welcome.T != "relay.error" || again.welcome.Code != "RELAY_INVITE_CONSUMED" {
 		t.Fatalf("expected consumed invite, got %+v", again.welcome)
 	}
 
-	// A room-bound invite cannot be replayed against another host room.
-	other := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": "other"})
-	otherToken, _ := linkToken(t, other.welcome.ClientInvite)
+	other := dialOpenHost(t, httpServer, server, "host_pair_other", "other")
+	sendControl(t, other, map[string]any{"t": "relay.invite", "id": "other-pair", "kind": "client"})
+	var otherFrame struct {
+		Invite string `json:"invite"`
+	}
+	readControl(t, other, &otherFrame)
+	otherToken, _ := linkToken(t, otherFrame.Invite)
 	wrongRoom := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": otherToken, "room": host.welcome.Room})
 	if wrongRoom.welcome.T != "relay.error" || wrongRoom.welcome.Code != "RELAY_INVITE_INVALID" {
 		t.Fatalf("expected room binding failure, got %+v", wrongRoom.welcome)
-	}
-
-	// A connected host can ask for another invite on demand. The pairing offer
-	// uses this fresh link.
-	sendControl(t, host, map[string]any{"t": "relay.invite", "kind": "client"})
-	var inviteFrame struct {
-		T      string `json:"t"`
-		Invite string `json:"invite"`
-	}
-	readControl(t, host, &inviteFrame)
-	if inviteFrame.T != "relay.invite" || inviteFrame.Invite == "" {
-		t.Fatalf("unexpected invite control reply: %+v", inviteFrame)
-	}
-	requested, _ := linkToken(t, inviteFrame.Invite)
-	phone := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": requested, "room": host.welcome.Room})
-	if !phone.welcome.Enrolled {
-		t.Fatalf("phone enrollment with requested invite failed: %+v", phone.welcome)
 	}
 }
 
@@ -646,8 +667,8 @@ func TestOpenHostRegistrationAndLimits(t *testing.T) {
 	if first.welcome.T != "relay.welcome" || !first.welcome.Enrolled || first.welcome.Secret == "" || first.welcome.Room == "" {
 		t.Fatalf("open host registration failed: %+v", first.welcome)
 	}
-	if first.welcome.ClientInvite == "" {
-		t.Fatalf("host did not receive a phone invite: %+v", first.welcome)
+	if first.welcome.ClientInvite != "" {
+		t.Fatalf("host welcome must not mint a phone invite: %+v", first.welcome)
 	}
 
 	duplicate := dialOpenHost(t, httpServer, server, "host_one", "desktop-1-again")
@@ -673,24 +694,5 @@ func TestOpenHostRegistrationAndLimits(t *testing.T) {
 	phoneThree := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": roomClientInvite(t, store, first.welcome.Room), "room": first.welcome.Room, "name": "phone-3"})
 	if phoneThree.welcome.T != "relay.error" || phoneThree.welcome.Code != "RELAY_ROOM_FULL" {
 		t.Fatalf("expected room full, got %+v", phoneThree.welcome)
-	}
-}
-
-func TestHostLinkShape(t *testing.T) {
-	server, _, _ := testServer(t)
-	link := server.HostLink()
-	const prefix = "ocremote-relay://host#"
-	if !strings.HasPrefix(link, prefix) {
-		t.Fatalf("unexpected host link: %s", link)
-	}
-	payload := decodeLink(t, strings.TrimPrefix(link, prefix))
-	if payload["kind"] != KindHost || payload["v"] != float64(3) {
-		t.Fatalf("unexpected host link payload: %#v", payload)
-	}
-	if payload["invite"] != nil {
-		t.Fatalf("host link must be reusable and carry no invite: %#v", payload)
-	}
-	if payload["rk"] != PublicKeyText(server.cfg.RelayKey) {
-		t.Fatalf("host link relay key mismatch: %#v", payload)
 	}
 }

@@ -26,14 +26,14 @@ Release 资源文件名包含操作系统和 CPU 架构。
 
 | 文件 | 平台 | 架构 | 用途 |
 |---|---|---|---|
-| `ocremote-0.1.5-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
-| `ocremote-0.1.5-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
-| `ocremote-host-0.1.5-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
-| `ocremote-host-0.1.5-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
-| `ocremote-relay-0.4.0-linux-amd64` | Linux | x86_64 | 中继二进制 |
-| `ocremote-relay-0.4.0-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
-| `ocremote-relay-0.4.0-linux-arm64` | Linux | arm64 | 中继二进制 |
-| `ocremote-relay-0.4.0-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
+| `ocremote-0.1.6-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
+| `ocremote-0.1.6-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
+| `ocremote-host-0.1.6-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
+| `ocremote-host-0.1.6-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
+| `ocremote-relay-0.4.1-linux-amd64` | Linux | x86_64 | 中继二进制 |
+| `ocremote-relay-0.4.1-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
+| `ocremote-relay-0.4.1-linux-arm64` | Linux | arm64 | 中继二进制 |
+| `ocremote-relay-0.4.1-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
 
 `SHA256SUMS` 可校验全部资源。当前 APK 仍使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。
 
@@ -42,7 +42,7 @@ Release 资源文件名包含操作系统和 CPU 架构。
 ### 同一局域网：只开直连
 
 ```bash
-tar xzf ocremote-host-0.1.5-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-0.1.6-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -56,9 +56,9 @@ cd ocremote
 ./ocremote-relay --listen 0.0.0.0:8443 \
   --public-url ws://<公网IP>:8443/ws
 
-# 主机端：复制中继启动时打印的 host link
+# 主机端：默认连接 118.31.124.193:8443
 ./ocremote start
-./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay
 ./ocremote pair
 ```
 
@@ -68,7 +68,7 @@ cd ocremote
 
 ```bash
 ./ocremote direct 192.168.1.20:8787   # 开启或更换直连
-./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay 1.2.3.4:8443        # 更换中继地址
 ./ocremote relay off                 # 关闭中继但保留身份
 ./ocremote relay on                  # 重新启用保存的中继
 ./ocremote direct off
@@ -79,7 +79,7 @@ cd ocremote
 ### 安装与配对
 
 ```bash
-adb install ocremote-0.1.5-android-arm64-v8a.apk
+adb install ocremote-0.1.6-android-arm64-v8a.apk
 ```
 
 1. 打开 OC Remote，点右上角 **+**。
@@ -127,7 +127,7 @@ adb install ocremote-0.1.5-android-arm64-v8a.apk
 ### 安装与运行
 
 ```bash
-tar xzf ocremote-host-0.1.5-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-0.1.6-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ```
@@ -155,11 +155,12 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 | `./ocremote direct 192.168.1.20:8787` | 绑定指定网卡 |
 | `./ocremote direct 127.0.0.1:8787` | 仅本机，不会放进手机配对码 |
 | `./ocremote direct off` | 关闭直连 |
-| `./ocremote relay` | 查看当前中继 |
-| `./ocremote relay 'ocremote-relay://host#...'` | 登记并启用中继，运行中立即生效 |
+| `./ocremote relay` | 连接默认中继 `118.31.124.193:8443` |
+| `./ocremote relay 1.2.3.4:8443` | 连接自定义 IP:端口 |
+| `./ocremote relay status` | 查看当前中继和房间 |
 | `./ocremote relay on` | 重新启用已保存的中继身份 |
 | `./ocremote relay off` | 关闭中继但保留身份，便于再次启用 |
-| `./ocremote relay --ca ca.pem '...'` | 可选 TLS 使用自签证书时校验中继 |
+| `./ocremote relay --ca ca.pem 1.2.3.4:8443` | 可选 TLS 使用自签证书时校验中继 |
 
 直连监听器和中继客户端彼此独立。修改一边不会影响另一边；只有实际启用的线路会出现在 `status` 和 `pair` 输出中。
 
@@ -178,19 +179,22 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 
 ### 中继登记
 
-中继启动时会打印一个**可重复使用**的 host link：
-
-```text
-host link  ocremote-relay://host#...
-```
-
-复制给主机即可：
+中继不再生成 host link。主机只需要 IP 和端口：
 
 ```bash
-./ocremote relay 'ocremote-relay://host#...'
+./ocremote relay                       # 默认 118.31.124.193:8443
+./ocremote relay 203.0.113.10:8443    # 自定义中继
 ```
 
-host link 只固定中继的 X25519 公钥，不包含一次性秘密。主机首次连接后获得长期 subject secret，后续用 Noise NK 重连。`relay off` 会保留该身份，`relay on` 或再次传入同一 host link 不会重复占用中继主机名额。
+主机首次连接时通过中继的 `/v1/info` 获取并固定中继 X25519 公钥，然后自行登记，保存长期 subject secret。之后用 Noise NK 重连。
+
+`relay off` 保留身份，`relay on` 重新启用。中继身份 key 变化时会拒绝连接，确认服务器后可用：
+
+```bash
+./ocremote relay --refresh-key 203.0.113.10:8443
+```
+
+手机邀请只在执行 `./ocremote pair` 时向中继申请，每次配对得到独立的一次性链接。
 
 ### 语音模型
 
@@ -222,13 +226,13 @@ host link 只固定中继的 X25519 公钥，不包含一次性秘密。主机�
   --public-url ws://<公网IP>:8443/ws
 ```
 
-不需要 `init`，首次启动会自动创建中继身份和数据库，并打印 host link。主要参数：
+不需要 `init`，首次启动会自动创建中继身份和数据库。启动输出只包含监听地址、限额和数据目录，不再打印 host link。主要参数：
 
 | 参数 | 默认 | 作用 |
 |---|---|---|
 | `--data-dir` | `./data` | 数据库、中继身份和管理 socket |
 | `--listen` | `:8443` | 监听地址 |
-| `--public-url` | 根据 listen 推导 | 写进 host link 的公网 ws/wss 地址 |
+| `--public-url` | 根据 listen 推导 | 写进手机邀请的公网 ws/wss 地址 |
 | `--max-hosts` | `3` | 同时登记的主机数量 |
 | `--max-clients` | `3` | 每个主机房间可连接的手机数量 |
 | `--tls-cert` / `--tls-key` | 无 | 可选 TLS 证书 |
@@ -257,10 +261,10 @@ host link 只固定中继的 X25519 公钥，不包含一次性秘密。主机�
 
 | 项目 | 机制 |
 |---|---|
-| 中继身份 | host link 里的 X25519 公钥；不会弹证书确认，也不需要 CA |
+| 中继身份 | 主机通过 `/v1/info` 获取并固定的 X25519 公钥；不需要 CA |
 | 主机/手机认证 | Noise NK 握手，subject secret 只在加密 payload 中传输 |
 | 主机控制帧 | 使用 Noise transport 加密（`relay.invite`、`peer` 等） |
-| 手机邀请 | 主机连上中继后获取一次性、绑定 room 的手机 invite |
+| 手机邀请 | 只在 `pair` 时申请，一次性、绑定 room，每次不同 |
 | 应用数据 | 手机↔主机 Noise 端到端加密，中继只看到密文 |
 | 重放 | Noise 临时密钥 + 一次性手机 invite + 服务端状态 |
 | 持久化 | `relay.db` 重启不丢失 |
@@ -272,11 +276,10 @@ host link 只固定中继的 X25519 公钥，不包含一次性秘密。主机�
 ./ocremote-relay admin --data-dir ./data hosts
 ./ocremote-relay admin --data-dir ./data clients
 ./ocremote-relay admin --data-dir ./data rooms
-./ocremote-relay admin --data-dir ./data link
 ./ocremote-relay admin --data-dir ./data revoke <subject-id>
 ```
 
-`status` 输出当前主机数/上限、每房间手机上限和可复用 host link。`revoke` 会断开该主体并释放主机名额。
+`status` 输出当前主机数/上限和每房间手机上限。`revoke` 会断开该主体并释放主机名额。
 
 ### 可选 TLS
 
@@ -339,7 +342,7 @@ cd apps/mobile && bunx expo run:android
 | 现象 | 处理 |
 |---|---|
 | 手机连不上主机 | 运行 `ocremote direct 0.0.0.0:8787`；确认同一网络、防火墙允许 TCP 8787，并且 `pair` 输出的是直连二维码 |
-| 中继身份校验失败 | 确认中继 host link 的 `rk` 没有变化；必要时删除主机上的中继配置后重新登记，并让手机重新扫描配对码 |
+| 中继身份校验失败 | 中继 key 可能已变化；确认服务器后用 `ocremote relay --refresh-key <ip:port>` 重新固定，必要时重新登记并让手机重新扫描配对码 |
 | 可选 TLS 证书错误 | 只有启用 `wss://` 时涉及；使用公共 CA，或把自签 CA 安装到系统信任库 |
 | 主机无法登记中继 | 确认中继地址可达、`--max-hosts` 未满、同一 `hostId` 没有被旧主体占用；只有自签 `wss://` 才需要 `--ca` |
 | APK 架构不匹配 | 真机用 `android-arm64-v8a`，x86_64 模拟器用 `android-x86_64` |
