@@ -64,6 +64,7 @@ import {
 } from "@/features/session/sessionCache"
 import { SessionStreamController, STREAM_FRAME_MS } from "@/features/session/streamController"
 import { invalidateSessionIndex } from "@/features/sessions/useSessionIndex"
+import { visiblePrimaryAgents } from "@/lib/agents"
 import { appendVoiceText } from "@/features/voice/dictationText"
 import { listMobileModels } from "@/features/voice/models"
 import { useVoiceInput, type VoiceEngine } from "@/features/voice/useVoiceInput"
@@ -1329,19 +1330,7 @@ export default function WorkspaceScreen() {
     () => contextUsage(messagesForSession ?? [], currentModel ?? undefined),
     [currentModel, messagesForSession],
   )
-  const displayAgents = useMemo(() => {
-    const order = new Map([
-      ["build", 0],
-      ["plan", 1],
-    ])
-    return [...(agents ?? [])]
-      .filter((agent) => agent.mode !== "subagent")
-      .sort(
-        (left, right) =>
-          (order.get(left.id) ?? 99) - (order.get(right.id) ?? 99) ||
-          left.name.localeCompare(right.name),
-      )
-  }, [agents])
+  const displayAgents = useMemo(() => visiblePrimaryAgents(agents ?? []), [agents])
   const modelGroups = useMemo(() => {
     const query = modelQuery.trim().toLowerCase()
     const filtered = (models ?? []).filter((model) => {
