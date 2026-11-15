@@ -94,7 +94,7 @@ func (s *Server) ServerStatus() map[string]any {
 		"rooms":        rooms,
 		"adminSocket":  "",
 		"generatedAt":  time.Now().Unix(),
-		"protocolNote": "relay v2: one-time invites, long-lived subjects, frameless TLS",
+		"protocolNote": "relay v3: one-time invites, Noise NK authentication, long-lived subjects",
 	}
 }
 
@@ -247,18 +247,19 @@ func (s *Server) ClientInvite(roomID, name string) (string, error) {
 
 // InviteLink encodes a self-contained one-time enrollment link.
 func (s *Server) InviteLink(kind, token string) string {
-	return EncodeInviteLink(s.cfg.Store.RelayID(), s.cfg.PublicURL, kind, token)
+	return EncodeInviteLink(s.cfg.Store.RelayID(), s.cfg.PublicURL, kind, token, PublicKeyText(s.cfg.RelayKey))
 }
 
 // EncodeInviteLink builds the self-contained one-time enrollment link shared
 // by the relay binary and the admin CLI.
-func EncodeInviteLink(relayID, publicURL, kind, token string) string {
+func EncodeInviteLink(relayID, publicURL, kind, token, relayPublicKey string) string {
 	payload := map[string]any{
-		"v":       1,
+		"v":       3,
 		"kind":    kind,
 		"url":     publicURL,
 		"invite":  token,
 		"relayId": relayID,
+		"rk":      relayPublicKey,
 	}
 	raw, _ := json.Marshal(payload)
 	return "ocremote-relay://enroll#" + base64.RawURLEncoding.EncodeToString(raw)

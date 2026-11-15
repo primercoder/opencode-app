@@ -14,13 +14,15 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/flynn/noise"
 )
 
-const ProtocolVersion = 2
+const ProtocolVersion = 3
 
 type Config struct {
 	Store        *Store
 	PublicURL    string
+	RelayKey     noise.DHKey
 	MaxClients   int
 	MaxFrame     int64
 	PingInterval time.Duration
@@ -72,15 +74,18 @@ type frame struct {
 }
 
 type peer struct {
-	server    *Server
-	room      *room
-	role      string
-	subjectID string
-	id        uint32
-	conn      *websocket.Conn
-	out       chan frame
-	done      chan struct{}
-	once      sync.Once
+	server     *Server
+	room       *room
+	role       string
+	subjectID  string
+	id         uint32
+	conn       *websocket.Conn
+	sendCipher *noise.CipherState
+	recvCipher *noise.CipherState
+	cipherMu   sync.Mutex
+	out        chan frame
+	done       chan struct{}
+	once       sync.Once
 }
 
 type helloFrame struct {
@@ -99,6 +104,9 @@ func New(cfg Config) *Server {
 		panic("relay: Config.Store is required")
 	}
 	cfg.normalize()
+	if len(cfg.RelayKey.Public) != 32 || len(cfg.RelayKey.Private) != 32 {
+		panic("relay: Config.RelayKey must be a 32-byte X25519 keypair")
+	}
 	return &Server{cfg: cfg, rooms: make(map[string]*room)}
 }
 
@@ -137,9 +145,10 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"relayId": s.cfg.Store.RelayID(),
-		"v":       ProtocolVersion,
-		"wsUrl":   s.publicWSURL(r),
+		"relayId":        s.cfg.Store.RelayID(),
+		"v":              ProtocolVersion,
+		"wsUrl":          s.publicWSURL(r),
+		"relayPublicKey": PublicKeyText(s.cfg.RelayKey),
 	})
 }
 
@@ -182,9 +191,28 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		done:   make(chan struct{}),
 	}
 
-	hello, err := readHello(r.Context(), conn, s.cfg.HelloTimeout)
+	hs, err := newRelayHandshake(s.cfg.RelayKey)
 	if err != nil {
-		p.sendProtocolError(err)
+		slog.Warn("relay handshake setup failed", "error", err)
+		p.close(websocket.StatusInternalError, "relay handshake setup failed")
+		return
+	}
+
+	helloCtx, cancelHello := context.WithTimeout(r.Context(), s.cfg.HelloTimeout)
+	kind, firstMessage, err := conn.Read(helloCtx)
+	cancelHello()
+	if err != nil || kind != websocket.MessageBinary {
+		p.close(websocket.StatusPolicyViolation, "expected a Noise handshake frame")
+		return
+	}
+	helloPayload, receiveCipher, sendCipher, err := hs.ReadMessage(nil, firstMessage)
+	if err != nil {
+		p.close(websocket.StatusPolicyViolation, "invalid Noise handshake")
+		return
+	}
+	hello, err := parseHelloPayload(helloPayload)
+	if err != nil {
+		writeNoiseError(r.Context(), conn, hs, "RELAY_BAD_REQUEST", err.Error())
 		p.close(websocket.StatusPolicyViolation, "invalid relay hello")
 		return
 	}
@@ -199,7 +227,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		subject, err = s.cfg.Store.AuthenticateSubject(hello.SubjectID, hello.Secret, hello.Kind)
 	}
 	if err != nil {
-		p.sendProtocolError(err)
+		code := "RELAY_BAD_REQUEST"
+		message := err.Error()
+		var protocol *Error
+		if errors.As(err, &protocol) {
+			code = protocol.Code
+			message = protocol.Message
+		}
+		writeNoiseError(r.Context(), conn, hs, code, message)
 		p.close(websocket.StatusPolicyViolation, "relay authentication failed")
 		return
 	}
@@ -210,14 +245,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	if p.role == KindClient {
 		if _, err := s.cfg.Store.RoomAvailable(hello.Room); err != nil {
-			p.sendProtocolError(err)
+			writeNoiseError(r.Context(), conn, hs, "RELAY_ROOM_NOT_FOUND", err.Error())
 			p.close(websocket.StatusPolicyViolation, "room unavailable")
 			return
 		}
 		p.room = s.room(hello.Room)
 		clientID, ok := p.room.attachClient(p, s.cfg.MaxClients)
 		if !ok {
-			p.writeDirectJSON(map[string]any{"t": "relay.error", "code": "RELAY_ROOM_FULL", "message": "room has no host or is full"})
+			writeNoiseError(r.Context(), conn, hs, "RELAY_ROOM_FULL", "room has no host or is full")
 			p.close(websocket.StatusTryAgainLater, "room unavailable")
 			return
 		}
@@ -245,18 +280,30 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		} else {
 			welcome["clientInvite"] = link
 		}
+	} else {
+		welcome["clientId"] = p.id
+		welcome["hostOnline"] = true
 	}
-	// Flush the welcome synchronously: the write loop starts afterwards, and
-	// the client must receive the subject secret even if it disconnects early.
-	p.writeDirectJSON(welcome)
+	welcomePayload, receiveCipher, sendCipher, err := hs.WriteMessage(nil, mustJSON(welcome))
+	if err != nil {
+		p.close(websocket.StatusInternalError, "could not finish relay handshake")
+		return
+	}
+	writeCtx, cancelWrite := context.WithTimeout(r.Context(), 5*time.Second)
+	err = conn.Write(writeCtx, websocket.MessageBinary, welcomePayload)
+	cancelWrite()
+	if err != nil {
+		p.close(websocket.StatusTryAgainLater, "welcome write failed")
+		return
+	}
+	p.sendCipher = sendCipher
+	p.recvCipher = receiveCipher
 
 	if p.role == KindHost {
 		if !p.room.attachHost(p) {
 			p.close(websocket.StatusPolicyViolation, "host rejected")
 			return
 		}
-	} else {
-		p.writeDirectJSON(map[string]any{"t": "welcome", "clientId": p.id, "hostOnline": true})
 	}
 
 	s.cfg.Store.TouchSubject(subject.ID)
@@ -288,6 +335,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.role == KindHost {
 			if kind == websocket.MessageText {
+				if p.recvCipher != nil {
+					decrypted, decryptErr := decryptRelayControl(p.recvCipher, string(data))
+					if decryptErr != nil {
+						p.close(websocket.StatusPolicyViolation, "invalid encrypted host control")
+						return
+					}
+					data = decrypted
+				}
 				s.handleHostControl(p, data)
 				continue
 			}
@@ -303,6 +358,45 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			p.room.deliverToHost(p.id, data)
 		}
 	}
+}
+
+func parseHelloPayload(payload []byte) (helloFrame, error) {
+	if len(payload) > 8*1024 {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "relay.hello is too large")
+	}
+	var hello helloFrame
+	if err := json.Unmarshal(payload, &hello); err != nil {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "relay.hello is not valid JSON")
+	}
+	if hello.T != "relay.hello" {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "first frame must be relay.hello")
+	}
+	if hello.V != 0 && hello.V != ProtocolVersion {
+		return helloFrame{}, relayError("RELAY_VERSION", fmt.Sprintf("unsupported relay protocol version %d", hello.V))
+	}
+	if hello.Kind != KindHost && hello.Kind != KindClient {
+		return helloFrame{}, relayError("RELAY_BAD_REQUEST", "kind must be host or client")
+	}
+	return hello, nil
+}
+
+func writeNoiseError(ctx context.Context, conn *websocket.Conn, hs *noise.HandshakeState, code, message string) {
+	payload := mustJSON(map[string]any{"t": "relay.error", "code": code, "message": message})
+	frame, _, _, err := hs.WriteMessage(nil, payload)
+	if err != nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_ = conn.Write(writeCtx, websocket.MessageBinary, frame)
+}
+
+func mustJSON(value any) []byte {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return []byte(`{"t":"relay.error","code":"RELAY_INTERNAL","message":"json encode failed"}`)
+	}
+	return raw
 }
 
 func (s *Server) handleHostControl(p *peer, data []byte) {
@@ -583,6 +677,15 @@ func (p *peer) pingLoop(interval, timeout time.Duration) {
 }
 
 func (p *peer) sendText(text string) {
+	if p.sendCipher != nil {
+		p.cipherMu.Lock()
+		encrypted, err := encryptRelayControl(p.sendCipher, []byte(text))
+		p.cipherMu.Unlock()
+		if err != nil {
+			return
+		}
+		text = encrypted
+	}
 	p.send(frame{kind: websocket.MessageText, data: []byte(text)})
 }
 
@@ -591,7 +694,7 @@ func (p *peer) sendJSON(value any) {
 	if err != nil {
 		return
 	}
-	p.send(frame{kind: websocket.MessageText, data: raw})
+	p.sendText(string(raw))
 }
 
 func (p *peer) sendProtocolError(err error) {

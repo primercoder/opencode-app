@@ -244,6 +244,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
           kind: "relay",
           url: relayConfig.url,
           room: relayConfig.room,
+          relayKey: relayConfig.relayKey,
           priority: transports.length,
           ...(clientInvite ? { invite: clientInvite } : {}),
         })

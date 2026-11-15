@@ -18,7 +18,7 @@ import type { OpencodeTarget } from "./opencode.ts"
 
 const PROLOGUE = new TextEncoder().encode("ocremote/1")
 const PROTOCOL_VERSION = 1
-const HOST_VERSION = "0.1.2"
+const HOST_VERSION = "0.1.3"
 
 type AsrRequest = {
   chunks: Uint8Array[]

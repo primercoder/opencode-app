@@ -1,4 +1,4 @@
-import { parseRelayInviteLink } from "@ocremote/protocol"
+import { parseRelayInviteLink, relayNoiseHandshake } from "@ocremote/protocol"
 import { deviceInfo } from "@/config/device"
 import { normalizeRelayUrl, saveRelayAccess, type RelayAccess } from "@/storage/relay"
 
@@ -45,55 +45,26 @@ export async function enrollRelayClient(input: {
   socket.binaryType = "arraybuffer"
   try {
     await waitForOpen(socket, timeoutMs)
-    const welcome = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        cleanup()
-        reject(new RelayAccessError("RELAY_TIMEOUT", "中继登记超时"))
-      }, timeoutMs)
-      const cleanup = () => {
-        clearTimeout(timer)
-        socket.onmessage = null
-        socket.onerror = null
-        socket.onclose = null
-      }
-      socket.onmessage = (event) => {
-        if (typeof event.data !== "string") return
-        let value: unknown
-        try {
-          value = JSON.parse(event.data)
-        } catch {
-          return
-        }
-        if (!isRecord(value)) return
-        if (value.t === "relay.error") {
-          cleanup()
-          reject(new RelayAccessError(stringValue(value.code) || "RELAY_BAD_REQUEST", stringValue(value.message) || "中继登记失败"))
-          return
-        }
-        if (value.t === "relay.welcome") {
-          cleanup()
-          resolve(value)
-        }
-      }
-      socket.onerror = () => {
-        cleanup()
-        reject(new RelayAccessError("RELAY_NETWORK", "无法连接中继"))
-      }
-      socket.onclose = () => {
-        cleanup()
-        reject(new RelayAccessError("RELAY_NETWORK", "中继在登记完成前断开"))
-      }
-      socket.send(
-        JSON.stringify({
-          t: "relay.hello",
-          v: 2,
-          kind: "client",
-          invite: invite.invite,
-          room: input.room,
-          name: input.name ?? deviceInfo.name,
-        }),
+    const result = await relayNoiseHandshake(
+      socket,
+      invite.rk,
+      {
+        t: "relay.hello",
+        v: 3,
+        kind: "client",
+        invite: invite.invite,
+        room: input.room,
+        name: input.name ?? deviceInfo.name,
+      },
+      timeoutMs,
+    )
+    const welcome = result.welcome
+    if (welcome.t === "relay.error") {
+      throw new RelayAccessError(
+        stringValue(welcome.code) || "RELAY_BAD_REQUEST",
+        stringValue(welcome.message) || "中继登记失败",
       )
-    })
+    }
     const subjectId = stringValue(welcome.subjectId)
     const secret = stringValue(welcome.secret)
     if (!subjectId || !secret) {
@@ -102,6 +73,7 @@ export async function enrollRelayClient(input: {
     const access: RelayAccess = {
       subjectId,
       secret,
+      relayKey: invite.rk,
       room: input.room,
       name: input.name ?? deviceInfo.name,
       ...(typeof welcome.relayId === "string" ? { relayId: welcome.relayId } : {}),

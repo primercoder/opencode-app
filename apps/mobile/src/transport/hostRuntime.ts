@@ -7,6 +7,7 @@ import {
   decodeProtectedRecord,
   encodeFrame,
   encodeProtectedRecord,
+  relayNoiseHandshake,
   type CipherState,
   type OcrpControlFrame,
   type PairingOffer,
@@ -96,6 +97,7 @@ export type HostCredentials = {
 export type RelayAuth = {
   subjectId: string
   secret: string
+  relayKey: string
 }
 
 export type RelayAuthResolver = (relayUrl: string) => RelayAuth | undefined
@@ -505,42 +507,40 @@ export class HostRuntime {
     return session
   }
 
-  private authenticateRelay(relayUrl: string, room: string): Promise<void> {
+  private async authenticateRelay(relayUrl: string, room: string): Promise<void> {
     const credentials = this.relayAuth?.(relayUrl)
     if (!credentials) {
-      return Promise.reject(
-        new HostError("auth", "这台手机还没有该中继的访问权限，请先登记中继邀请", { code: "RELAY_SUBJECT_MISSING" }),
+      throw new HostError("auth", "这台手机还没有该中继的访问权限，请先登记中继邀请", {
+        code: "RELAY_SUBJECT_MISSING",
+      })
+    }
+    if (!credentials.relayKey) {
+      throw new HostError("auth", "中继凭据缺少固定公钥，请重新扫描主机配对码", {
+        code: "RELAY_KEY_MISSING",
+      })
+    }
+    const socket = this.socket
+    if (!socket) throw new HostError("network", "relay socket is missing", { code: "RELAY_SOCKET_MISSING" })
+    const result = await relayNoiseHandshake(
+      socket,
+      credentials.relayKey,
+      {
+        t: "relay.hello",
+        v: 3,
+        kind: "client",
+        subjectId: credentials.subjectId,
+        secret: credentials.secret,
+        room,
+      },
+      this.handshakeTimeoutMs,
+    )
+    if (result.welcome.t === "relay.error") {
+      throw new HostError(
+        "auth",
+        stringValue(result.welcome.message) || "relay authentication failed",
+        { code: stringValue(result.welcome.code) || "RELAY_AUTH_FAILED" },
       )
     }
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.relayWaiter = undefined
-        reject(new HostError("timeout", "relay authentication timed out", { code: "RELAY_TIMEOUT" }))
-      }, this.handshakeTimeoutMs)
-      this.relayWaiter = {
-        resolve: () => {
-          clearTimeout(timer)
-          this.relayWaiter = undefined
-          resolve()
-        },
-        reject: (error) => {
-          clearTimeout(timer)
-          this.relayWaiter = undefined
-          reject(error)
-        },
-        timer,
-      }
-      this.sendText(
-        JSON.stringify({
-          t: "relay.hello",
-          v: 2,
-          kind: "client",
-          subjectId: credentials.subjectId,
-          secret: credentials.secret,
-          room,
-        }),
-      )
-    })
   }
 
   private handleRelayControl(text: string): void {

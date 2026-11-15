@@ -30,6 +30,15 @@ export {
   type RelayInvite,
 } from "./relay.ts"
 export {
+  decodeRelayControl,
+  encodeRelayControl,
+  RELAY_CONTROL_PREFIX,
+  RELAY_NOISE_PROLOGUE,
+  relayNoiseHandshake,
+  type RelayHandshakeResult,
+  type RelayHandshakeSocket,
+} from "./relayHandshake.ts"
+export {
   decodeProtectedRecord,
   encodeProtectedRecord,
   MAX_CHUNK_DATA_BYTES,

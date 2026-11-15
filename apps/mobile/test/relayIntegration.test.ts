@@ -2,8 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { parsePairingOffer } from "@ocremote/protocol"
-import { parseRelayInviteLink } from "@ocremote/protocol"
+import { parsePairingOffer, parseRelayInviteLink, relayNoiseHandshake } from "@ocremote/protocol"
 import { enrollRelaySubject } from "../../host/src/relay.ts"
 import { startHost } from "../../host/src/server.ts"
 import { HostRuntime } from "../src/transport/hostRuntime.ts"
@@ -127,31 +126,37 @@ function initRelay(binary: string, dataDir: string, publicUrl: string): { host: 
   return { host }
 }
 
-async function enrollClient(link: string, room: string): Promise<{ subjectId: string; secret: string }> {
+async function enrollClient(link: string, room: string): Promise<{ subjectId: string; secret: string; relayKey: string }> {
   const invite = parseRelayInviteLink(link)
   const socket = new WebSocket(invite.url)
+  socket.binaryType = "arraybuffer"
   await new Promise<void>((resolve, reject) => {
     socket.onopen = () => resolve()
     socket.onerror = () => reject(new Error("relay client enroll connect failed"))
     socket.onclose = () => reject(new Error("relay client enroll closed"))
   })
-  const welcome = await new Promise<Record<string, unknown>>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("relay client enroll timed out")), 10_000)
-    socket.onmessage = (event) => {
-      const value = JSON.parse(String(event.data)) as Record<string, unknown>
-      if (value.t === "relay.error") {
-        clearTimeout(timer)
-        reject(new Error(`${String(value.code)}: ${String(value.message)}`))
-      }
-      if (value.t === "relay.welcome") {
-        clearTimeout(timer)
-        resolve(value)
-      }
-    }
-    socket.send(JSON.stringify({ t: "relay.hello", v: 2, kind: "client", invite: invite.invite, room, name: "test-phone" }))
-  })
+  const result = await relayNoiseHandshake(
+    socket,
+    invite.rk,
+    {
+      t: "relay.hello",
+      v: 3,
+      kind: "client",
+      invite: invite.invite,
+      room,
+      name: "test-phone",
+    },
+    10_000,
+  )
   socket.close(1000, "enrolled")
-  return { subjectId: String(welcome.subjectId), secret: String(welcome.secret) }
+  if (result.welcome.t === "relay.error") {
+    throw new Error(`${String(result.welcome.code)}: ${String(result.welcome.message)}`)
+  }
+  return {
+    subjectId: String(result.welcome.subjectId),
+    secret: String(result.welcome.secret),
+    relayKey: invite.rk,
+  }
 }
 
 function spawnRelay(binary: string, dataDir: string, port: number, publicUrl: string) {

@@ -210,11 +210,17 @@ function ensureEventStream(hostId: string, runtime?: HostRuntime): HostEventStre
 }
 
 async function relayAuthFor(transports: Transport[]): Promise<RelayAuthResolver | undefined> {
-  const entries = new Map<string, { subjectId: string; secret: string }>()
+  const entries = new Map<string, { subjectId: string; secret: string; relayKey: string }>()
   for (const transport of transports) {
     if (transport.kind !== "relay") continue
     const access = await loadRelayAccess(transport.url)
-    if (access) entries.set(normalizeRelayUrl(transport.url), { subjectId: access.subjectId, secret: access.secret })
+    if (access) {
+      entries.set(normalizeRelayUrl(transport.url), {
+        subjectId: access.subjectId,
+        secret: access.secret,
+        relayKey: access.relayKey,
+      })
+    }
   }
   if (entries.size === 0) return undefined
   return (url) => entries.get(normalizeRelayUrl(url))

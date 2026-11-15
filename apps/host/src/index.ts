@@ -760,12 +760,16 @@ async function resolveRelay(options: StartOptions): Promise<RelayConfig | undefi
     console.log(`enrolled relay subject ${relay.subjectId} · room ${relay.room}`)
     return relay
   }
-  if (config.relay?.url !== options.relay) {
+  const saved = config.relay
+  if (!saved || saved.url !== options.relay) {
     throw new Error(
       `no relay subject saved for ${options.relay}; enroll this host once with --relay-link`,
     )
   }
-  return config.relay
+  if (!saved.relayKey) {
+    throw new Error("this relay subject has no pinned relay key; re-enroll once with --relay-link")
+  }
+  return saved
 }
 
 async function createOffer(input: {
@@ -791,6 +795,7 @@ async function createOffer(input: {
       kind: "relay",
       url: input.config.relay.url,
       room: input.config.relay.room,
+      relayKey: input.config.relay.relayKey,
       priority: 1,
       ...(input.config.relay.clientInvite ? { invite: input.config.relay.clientInvite } : {}),
     })

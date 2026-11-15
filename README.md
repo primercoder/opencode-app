@@ -16,7 +16,7 @@
 | 命令 | 支持 `/new`、`/review`、`/goal`、`/compact` 等斜杠命令，以及 `!ls` shell 命令 |
 | 代码审阅 | 文件浏览器、文件类型图标、换行切换、行级评论、Diff 查看 |
 | 语音 | 手机 Whisper、主机 SenseVoice、Android 系统识别三选一或自动回退 |
-| 连接 | 局域网直连或自建中继；配对码一次性有效；支持设备撤销 |
+| 连接 | 局域网直连或自建中继；Noise NK 认证；可选 TLS；配对码一次性有效；支持设备撤销 |
 
 opencode 始终只监听 `127.0.0.1`。主机读取本机服务注册信息，opencode 密码不会离开电脑。
 
@@ -26,14 +26,14 @@ Release 资源文件名包含操作系统和 CPU 架构。
 
 | 文件 | 平台 | 架构 | 用途 |
 |---|---|---|---|
-| `ocremote-0.1.2-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
-| `ocremote-0.1.2-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
-| `ocremote-host-0.1.2-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
-| `ocremote-host-0.1.2-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
-| `ocremote-relay-0.2.0-linux-amd64` | Linux | x86_64 | 中继二进制 |
-| `ocremote-relay-0.2.0-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 + CA 安装脚本 |
-| `ocremote-relay-0.2.0-linux-arm64` | Linux | arm64 | 中继二进制 |
-| `ocremote-relay-0.2.0-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 + CA 安装脚本 |
+| `ocremote-0.1.3-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
+| `ocremote-0.1.3-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
+| `ocremote-host-0.1.3-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
+| `ocremote-host-0.1.3-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
+| `ocremote-relay-0.3.0-linux-amd64` | Linux | x86_64 | 中继二进制 |
+| `ocremote-relay-0.3.0-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
+| `ocremote-relay-0.3.0-linux-arm64` | Linux | arm64 | 中继二进制 |
+| `ocremote-relay-0.3.0-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
 
 `SHA256SUMS` 可校验全部资源。当前 APK 仍使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。
 
@@ -53,7 +53,7 @@ Release 资源文件名包含操作系统和 CPU 架构。
 ### 安装与配对
 
 ```bash
-adb install ocremote-0.1.2-android-arm64-v8a.apk
+adb install ocremote-0.1.3-android-arm64-v8a.apk
 ```
 
 1. 打开 OC Remote，点右上角 **+**。
@@ -99,7 +99,7 @@ adb install ocremote-0.1.2-android-arm64-v8a.apk
 ### 安装与运行
 
 ```bash
-tar xzf ocremote-host-0.1.2-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-0.1.3-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start --listen 0.0.0.0:8787 --pair
 ```
@@ -135,15 +135,16 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 
 ```bash
 ./ocremote start --listen 0.0.0.0:8787 --pair \
-  --relay-link 'ocremote-relay://enroll#...' \
-  --relay-ca ./data/tls/ca.crt
+  --relay-link 'ocremote-relay://enroll#...'
 ```
 
 | 参数 | 作用 |
 |---|---|
-| `--relay-link` | 消耗一次性 host invite，保存长期主机身份 |
-| `--relay-ca` | 校验自签中继；公共 CA 可省略 |
+| `--relay-link` | 消耗一次性 host invite，保存长期主机身份和中继固定公钥 |
+| `--relay-ca` | 仅在使用 `wss://` + 自签证书时需要 |
 | 保存后的中继 | 只有显式传 `--relay` / `--relay-link` 才启用 |
+
+中继 v3 不再依赖第三方 CA。邀请链接里带有中继的 X25519 公钥，主机和手机用 Noise NK 完成握手；认证 token 和主机控制帧在 Noise 通道里加密，应用数据仍然由手机↔主机 Noise 端到端加密。
 
 主机连上中继后，中继会下发一次性手机 invite，主机把它写进配对码。
 
@@ -169,34 +170,41 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 
 中继是 Go 单文件程序，只转发加密帧，不运行 opencode、ASR 或模型逻辑。
 
-### 默认启动
+### 简化启动：内置 Noise NK
 
 ```bash
-./ocremote-relay
+./ocremote-relay serve \
+  --data-dir /opt/ocremote/relay/data \
+  --listen 0.0.0.0:8443 \
+  --public-url ws://<公网IP>:8443/ws \
+  --no-tls
 ```
 
-默认启动 **wss:// `:8443`**，首次运行在 `./data/tls/` 生成 TLS 文件，并打印一次性 host invite。
+首次运行会生成并打印一次性 host invite。不需要额外证书即可启动；邀请链接包含 `rk`（中继 X25519 公钥），手机和主机用它固定中继身份。TLS 仍然可以按需叠加。
 
 | 文件 | 内容 |
 |---|---|
-| `data/tls/ca.crt` | CA 证书 |
-| `data/tls/ca.key` | CA 私钥（0600） |
-| `data/tls/relay.crt` | 服务器证书 |
-| `data/tls/relay.key` | 服务器私钥（0600） |
+| `data/relay.db` | BoltDB，保存房间、主体和邀请哈希 |
+| `data/relay-identity.json` | 中继 Noise 静态密钥（0600） |
+| `data/admin.sock` | 本机管理 socket（0600） |
+| `data/tls/*` | 仅在启用 wss 时生成 |
 
-自签中继需要在 Android 上安装 CA：
+### 认证模型
 
-```bash
-./install-android-ca.sh ./data/tls/ca.crt
-```
-
-Release APK 只信任 Android 系统 CA 库；QA APK 额外信任开发测试 CA，Release 不包含测试 CA。
+| 项目 | 机制 |
+|---|---|
+| 中继身份 | 邀请里的 X25519 公钥；不会弹证书确认，也不需要 CA |
+| 主机/手机认证 | Noise NK 握手，token 只在加密 payload 中传输 |
+| 主机控制帧 | 使用 Noise transport 加密（`relay.invite`、`peer` 等） |
+| 应用数据 | 手机↔主机 Noise 端到端加密，中继只看到密文 |
+| 重放 | Noise 临时密钥 + 一次性 invite + 服务端状态 |
+| 持久化 | `relay.db` 重启不丢失 |
 
 ### 初始化与管理
 
 ```bash
 ./ocremote-relay init --data-dir ./data \
-  --public-url wss://relay.example/ws
+  --public-url ws://<公网IP>:8443/ws --no-tls
 
 ./ocremote-relay admin --data-dir ./data status
 ./ocremote-relay admin --data-dir ./data subjects
@@ -210,18 +218,18 @@ Release APK 只信任 Android 系统 CA 库；QA APK 额外信任开发测试 CA
 |---|---|
 | invite | 一次性使用 |
 | subject | 长期有效，直到主动撤销 |
-| 持久化 | `data/relay.db`（BoltDB），重启不丢失 |
-| 认证 | 首帧 `relay.hello`，token 不放在 URL |
-| TLS | 用户证书优先；完整文件复用；部分或无效文件报错；`--rotate-tls` 显式重建 |
+| 认证 | Noise NK v3；token 不放在 URL，也不明文发送 |
+| TLS | 可选；内置 Noise NK 认证可独立运行，TLS 可按需叠加 |
 
-### 自定义证书
+### 可选 TLS
+
+如果希望给传输层再加一层 TLS，可以使用证书；这时主机需要 `--relay-ca`，Android Release 仍只信任系统 CA。
 
 ```bash
 ./ocremote-relay serve --data-dir ./data --listen :8443 \
+  --public-url wss://relay.example/ws \
   --tls-cert relay.crt --tls-key relay.key --tls-ca ca.crt
 ```
-
-启动前会校验 PEM 格式、证书/私钥匹配、有效期、CA 链、serverAuth 用途和 SAN 覆盖。
 
 ## 安全模型
 
@@ -230,9 +238,9 @@ Release APK 只信任 Android 系统 CA 库；QA APK 额外信任开发测试 CA
 | 配对 | 主机 Noise 静态公钥 + 一次性配对码；主机只保存设备令牌哈希 |
 | 应用数据 | Noise NK，X25519 临时密钥，ChaCha20-Poly1305，SHA-256 |
 | 直连 | `ws://` 传输 + Noise 端到端加密 |
-| 中继 | 手机↔中继、主机↔中继使用 `wss://`；手机↔主机仍是 Noise 端到端加密 |
-| 中继可见信息 | 房间、身份、时间等元数据；应用数据只有密文 |
-| 静态凭据 | 主机文件 0600；中继保存哈希；手机使用 Android SecureStore |
+| 中继 | 使用 Noise NK 固定中继公钥并认证 host/client；应用数据仍由手机↔主机 Noise 端到端加密 |
+| 中继可见信息 | 房间、身份、时间、帧大小等元数据；应用数据只有密文 |
+| 静态凭据 | 主机文件 0600；中继保存 token 哈希；手机使用 Android SecureStore |
 
 ## 技术路线
 
@@ -240,7 +248,7 @@ Release APK 只信任 Android 系统 CA 库；QA APK 额外信任开发测试 CA
 |---|---|
 | 协议 | TypeScript，OCRP 帧、Noise NK、受保护记录、配对与中继链接 |
 | 主机 | Bun + TypeScript，局域网 WebSocket、HTTP/SSE 代理、中继主机客户端 |
-| 中继 | Go，WebSocket 房间转发、首帧认证、BoltDB、Admin API、自动 TLS |
+| 中继 | Go，WebSocket 房间转发、Noise NK 认证、可选 TLS、BoltDB、Admin API |
 | 手机 | Expo / React Native（Android），Expo Router、Zustand、SecureStore |
 | 流式渲染 | SSE 事件 → 帧式呈现控制器 → 文本/思考/工具分块渲染 |
 | 文件审阅 | 主机侧文件类型与二进制判定，手机端 FlatList 浏览与行评论 |
@@ -269,10 +277,11 @@ cd apps/mobile && bunx expo run:android
 | 现象 | 处理 |
 |---|---|
 | 手机连不上主机 | 主机使用 `--listen 0.0.0.0:8787`；确认同一网络和防火墙允许 TCP 8787 |
-| 中继证书错误 | Release APK 信任系统 CA；把中继 CA 安装到系统信任库，或改用公共 CA |
-| 主机无法登记中继 | 确认 host invite 未被使用；用 `admin add-host` 重新生成；检查时钟和 `--relay-ca` |
+| 中继身份校验失败 | 用新的 host invite 重新登记主机，并让手机重新扫描配对码；确认中继的 `rk` 没有变化 |
+| 可选 TLS 证书错误 | 只有启用 `wss://` 时涉及；使用公共 CA，或把自签 CA 安装到系统信任库 |
+| 主机无法登记中继 | 确认 host invite 未被使用；用 `admin add-host` 重新生成；只有启用 `wss://` 且自签时才需要 `--relay-ca` |
 | APK 架构不匹配 | 真机用 `android-arm64-v8a`，x86_64 模拟器用 `android-x86_64` |
-| 升级后中继不可用 | 主机重连后重新生成配对码，手机会自动登记新的手机 invite |
+| 升级后中继不可用 | 从 0.1.2 升级到 0.1.3 后需要重新登记一次中继并重新配对；之后会复用长期身份 |
 | `/compact` 没反应 | 先确认会话已有可压缩内容；压缩结果会显示在消息区 |
 
 ## 许可证

@@ -6,10 +6,12 @@ export const RELAY_INVITE_PREFIX = "ocremote-relay://enroll#"
 const wsUrl = z.string().regex(/^wss?:\/\/\S+$/u, "expected a ws:// or wss:// URL")
 
 export const RelayInviteSchema = z.object({
-  v: z.literal(1),
+  v: z.literal(3),
   kind: z.enum(["host", "client"]),
   url: wsUrl,
   invite: z.string().min(16),
+  /** Relay static X25519 public key, pinned by the invite. */
+  rk: z.string().min(32),
   relayId: z.string().optional(),
   expiresAt: z.number().int().nonnegative().optional(),
 })

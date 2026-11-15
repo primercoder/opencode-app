@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/flynn/noise"
 )
 
 func testServer(t *testing.T) (*Server, *Store, *httptest.Server) {
@@ -28,7 +30,11 @@ func testServer(t *testing.T) (*Server, *Store, *httptest.Server) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	server := New(Config{Store: store})
+	key, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(Config{Store: store, RelayKey: key})
 	httpServer := httptest.NewServer(server.Handler())
 	t.Cleanup(httpServer.Close)
 	return server, store, httpServer
@@ -69,6 +75,94 @@ type welcomeFrame struct {
 	ClientID     uint32   `json:"clientId"`
 	ClientInvite string   `json:"clientInvite"`
 	Caps         []string `json:"caps"`
+	Code         string   `json:"code"`
+	Message      string   `json:"message"`
+}
+
+type noiseClient struct {
+	conn    *websocket.Conn
+	welcome welcomeFrame
+	send    *noise.CipherState
+	receive *noise.CipherState
+}
+
+func dialNoise(t *testing.T, httpServer *httptest.Server, server *Server, hello map[string]any) *noiseClient {
+	t.Helper()
+	conn := dialRaw(t, httpServer)
+	hs, err := noise.NewHandshakeState(noise.Config{
+		CipherSuite: relayCipherSuite(),
+		Pattern:     noise.HandshakeNK,
+		Initiator:   true,
+		Prologue:    []byte(relayNoisePrologue),
+		PeerStatic:  server.cfg.RelayKey.Public,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(hello)
+	first, _, _, err := hs.WriteMessage(nil, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageBinary, first); err != nil {
+		t.Fatal(err)
+	}
+	kind, second, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != websocket.MessageBinary {
+		t.Fatalf("expected binary handshake reply, got %d", kind)
+	}
+	payload, send, receive, err := hs.ReadMessage(nil, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var welcome welcomeFrame
+	if err := json.Unmarshal(payload, &welcome); err != nil {
+		t.Fatalf("decode welcome %q: %v", payload, err)
+	}
+	t.Cleanup(func() { _ = conn.Close(websocket.StatusNormalClosure, "done") })
+	return &noiseClient{conn: conn, welcome: welcome, send: send, receive: receive}
+}
+
+func readControl(t *testing.T, client *noiseClient, target any) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	kind, data, err := client.conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != websocket.MessageText {
+		t.Fatalf("expected encrypted control text, got %d", kind)
+	}
+	plaintext, err := decryptRelayControl(client.receive, string(data))
+	if err != nil {
+		t.Fatalf("decrypt control: %v", err)
+	}
+	if target != nil {
+		if err := json.Unmarshal(plaintext, target); err != nil {
+			t.Fatalf("decode control %q: %v", plaintext, err)
+		}
+	}
+	return plaintext
+}
+
+func sendControl(t *testing.T, client *noiseClient, value any) {
+	t.Helper()
+	raw, _ := json.Marshal(value)
+	encrypted, err := encryptRelayControl(client.send, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := client.conn.Write(ctx, websocket.MessageText, []byte(encrypted)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func sendHello(t *testing.T, conn *websocket.Conn, hello map[string]any) {
@@ -97,83 +191,58 @@ func readJSON(t *testing.T, conn *websocket.Conn, target any) (websocket.Message
 	return kind, data
 }
 
-func enrollHost(t *testing.T, httpServer *httptest.Server, store *Store, name string) (string, string, string) {
+func enrollHost(t *testing.T, httpServer *httptest.Server, server *Server, store *Store, name string) (string, string, string) {
 	t.Helper()
-	host := dialRaw(t, httpServer)
-	t.Cleanup(func() { _ = host.Close(websocket.StatusNormalClosure, "done") })
-	sendHello(t, host, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": name})
-	var welcome welcomeFrame
-	readJSON(t, host, &welcome)
-	if welcome.T != "relay.welcome" || !welcome.Enrolled || welcome.Secret == "" || welcome.Room == "" {
-		t.Fatalf("unexpected host welcome: %+v", welcome)
+	host := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": name})
+	if host.welcome.T != "relay.welcome" || !host.welcome.Enrolled || host.welcome.Secret == "" || host.welcome.Room == "" {
+		t.Fatalf("unexpected host welcome: %+v", host.welcome)
 	}
-	return welcome.SubjectID, welcome.Secret, welcome.Room
+	return host.welcome.SubjectID, host.welcome.Secret, host.welcome.Room
 }
 
-func enrollClient(t *testing.T, httpServer *httptest.Server, store *Store, room string) (string, string) {
+func enrollClient(t *testing.T, httpServer *httptest.Server, server *Server, store *Store, room string) (string, string) {
 	t.Helper()
-	client := dialRaw(t, httpServer)
-	t.Cleanup(func() { _ = client.Close(websocket.StatusNormalClosure, "done") })
-	sendHello(t, client, map[string]any{"t": "relay.hello", "v": 2, "kind": "client", "invite": mustInvite(t, store, KindClient), "name": "phone", "room": room})
-	var welcome welcomeFrame
-	readJSON(t, client, &welcome)
-	if welcome.T != "relay.welcome" || !welcome.Enrolled || welcome.Secret == "" {
-		t.Fatalf("unexpected client welcome: %+v", welcome)
+	client := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": mustInvite(t, store, KindClient), "name": "phone", "room": room})
+	if client.welcome.T != "relay.welcome" || !client.welcome.Enrolled || client.welcome.Secret == "" {
+		t.Fatalf("unexpected client welcome: %+v", client.welcome)
 	}
-	_, data := readJSON(t, client, nil)
-	if !strings.Contains(string(data), `"t":"welcome"`) {
-		t.Fatalf("expected room welcome, got %s", data)
-	}
-	return welcome.SubjectID, welcome.Secret
+	return client.welcome.SubjectID, client.welcome.Secret
 }
 
 func TestHostClientEnrollmentAndForwarding(t *testing.T) {
-	_, store, httpServer := testServer(t)
+	server, store, httpServer := testServer(t)
 
-	host := dialRaw(t, httpServer)
-	defer host.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, host, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": "desktop"})
-	var hostWelcome welcomeFrame
-	readJSON(t, host, &hostWelcome)
-	if hostWelcome.Room == "" || hostWelcome.Secret == "" || hostWelcome.SubjectID == "" {
-		t.Fatalf("host enrollment failed: %+v", hostWelcome)
+	host := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": "desktop"})
+	if host.welcome.Room == "" || host.welcome.Secret == "" || host.welcome.SubjectID == "" {
+		t.Fatalf("host enrollment failed: %+v", host.welcome)
 	}
-	if !strings.HasPrefix(hostWelcome.SubjectID, "sub_") || !strings.HasPrefix(hostWelcome.Room, "room_") {
-		t.Fatalf("unexpected ids: %+v", hostWelcome)
+	if !strings.HasPrefix(host.welcome.SubjectID, "sub_") || !strings.HasPrefix(host.welcome.Room, "room_") {
+		t.Fatalf("unexpected ids: %+v", host.welcome)
 	}
 
-	client := dialRaw(t, httpServer)
-	defer client.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, client, map[string]any{"t": "relay.hello", "v": 2, "kind": "client", "invite": mustInvite(t, store, KindClient), "name": "phone", "room": hostWelcome.Room})
-	var clientWelcome welcomeFrame
-	readJSON(t, client, &clientWelcome)
-	if !clientWelcome.Enrolled || clientWelcome.Room != hostWelcome.Room || clientWelcome.SubjectID == "" {
-		t.Fatalf("client enrollment failed: %+v", clientWelcome)
+	client := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": mustInvite(t, store, KindClient), "name": "phone", "room": host.welcome.Room})
+	if !client.welcome.Enrolled || client.welcome.Room != host.welcome.Room || client.welcome.SubjectID == "" {
+		t.Fatalf("client enrollment failed: %+v", client.welcome)
 	}
-	var roomWelcome struct {
-		T        string `json:"t"`
-		ClientID uint32 `json:"clientId"`
-	}
-	readJSON(t, client, &roomWelcome)
-	if roomWelcome.T != "welcome" || roomWelcome.ClientID == 0 {
-		t.Fatalf("expected room welcome, got %+v", roomWelcome)
+	if client.welcome.ClientID == 0 {
+		t.Fatalf("expected room client id, got %+v", client.welcome)
 	}
 
 	var peer struct {
 		T        string `json:"t"`
 		ClientID uint32 `json:"clientId"`
 	}
-	readJSON(t, host, &peer)
-	if peer.T != "peer" || peer.ClientID != roomWelcome.ClientID {
+	readControl(t, host, &peer)
+	if peer.T != "peer" || peer.ClientID != client.welcome.ClientID {
 		t.Fatalf("expected peer control, got %+v", peer)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := client.Write(ctx, websocket.MessageText, []byte(`{"t":"noise"}`)); err != nil {
+	if err := client.conn.Write(ctx, websocket.MessageText, []byte(`{"t":"noise"}`)); err != nil {
 		t.Fatal(err)
 	}
-	kind, data, err := host.Read(ctx)
+	kind, data, err := host.conn.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,10 +253,10 @@ func TestHostClientEnrollmentAndForwarding(t *testing.T) {
 	reply := make([]byte, 4+len("world"))
 	binary.BigEndian.PutUint32(reply, clientID)
 	copy(reply[4:], "world")
-	if err := host.Write(ctx, websocket.MessageBinary, reply); err != nil {
+	if err := host.conn.Write(ctx, websocket.MessageBinary, reply); err != nil {
 		t.Fatal(err)
 	}
-	kind, data, err = client.Read(ctx)
+	kind, data, err = client.conn.Read(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,98 +265,66 @@ func TestHostClientEnrollmentAndForwarding(t *testing.T) {
 	}
 
 	// Subjects are long-lived and can reconnect with the returned secret.
-	reconnect := dialRaw(t, httpServer)
-	defer reconnect.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, reconnect, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "subjectId": hostWelcome.SubjectID, "secret": hostWelcome.Secret})
-	var again welcomeFrame
-	readJSON(t, reconnect, &again)
-	if again.T != "relay.welcome" || again.Room != hostWelcome.Room || again.Secret != "" {
-		t.Fatalf("unexpected reconnect welcome: %+v", again)
+	reconnect := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "subjectId": host.welcome.SubjectID, "secret": host.welcome.Secret})
+	if reconnect.welcome.T != "relay.welcome" || reconnect.welcome.Room != host.welcome.Room || reconnect.welcome.Secret != "" {
+		t.Fatalf("unexpected reconnect welcome: %+v", reconnect.welcome)
 	}
 }
 
 func TestHostReceivesOneTimePhoneInvites(t *testing.T) {
-	_, store, httpServer := testServer(t)
+	server, store, httpServer := testServer(t)
 
-	host := dialRaw(t, httpServer)
-	defer host.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, host, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": "desktop"})
-	var hostWelcome welcomeFrame
-	readJSON(t, host, &hostWelcome)
-	if hostWelcome.ClientInvite == "" {
-		t.Fatalf("host welcome did not include a phone invite: %+v", hostWelcome)
+	host := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": "desktop"})
+	if host.welcome.ClientInvite == "" {
+		t.Fatalf("host welcome did not include a phone invite: %+v", host.welcome)
 	}
-	if len(hostWelcome.Caps) == 0 || hostWelcome.Caps[0] != "clientInvite" {
-		t.Fatalf("host welcome did not advertise phone invites: %+v", hostWelcome)
+	if len(host.welcome.Caps) == 0 || host.welcome.Caps[0] != "clientInvite" {
+		t.Fatalf("host welcome did not advertise phone invites: %+v", host.welcome)
 	}
-	token, kind := linkToken(t, hostWelcome.ClientInvite)
+	token, kind := linkToken(t, host.welcome.ClientInvite)
 	if kind != KindClient {
 		t.Fatalf("host phone invite has kind %q", kind)
 	}
 
 	// The host-issued link enrolls a phone for this room.
-	client := dialRaw(t, httpServer)
-	defer client.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, client, map[string]any{"t": "relay.hello", "v": 2, "kind": "client", "invite": token, "room": hostWelcome.Room})
-	var clientWelcome welcomeFrame
-	readJSON(t, client, &clientWelcome)
-	if !clientWelcome.Enrolled || clientWelcome.Room != hostWelcome.Room {
-		t.Fatalf("phone enrollment with host invite failed: %+v", clientWelcome)
+	client := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": token, "room": host.welcome.Room})
+	if !client.welcome.Enrolled || client.welcome.Room != host.welcome.Room {
+		t.Fatalf("phone enrollment with host invite failed: %+v", client.welcome)
 	}
-	// Drain the client's room welcome and the host's peer notification.
-	readJSON(t, client, nil)
-	readJSON(t, host, nil)
+	var peer struct {
+		T string `json:"t"`
+	}
+	readControl(t, host, &peer)
 
 	// The link is single-use.
-	again := dialRaw(t, httpServer)
-	defer again.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, again, map[string]any{"t": "relay.hello", "v": 2, "kind": "client", "invite": token, "room": hostWelcome.Room})
-	var failure struct {
-		Code string `json:"code"`
-	}
-	readJSON(t, again, &failure)
-	if failure.Code != "RELAY_INVITE_CONSUMED" {
-		t.Fatalf("expected consumed invite, got %+v", failure)
+	again := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": token, "room": host.welcome.Room})
+	if again.welcome.T != "relay.error" || again.welcome.Code != "RELAY_INVITE_CONSUMED" {
+		t.Fatalf("expected consumed invite, got %+v", again.welcome)
 	}
 
 	// A room-bound invite cannot be replayed against another host room.
-	other := dialRaw(t, httpServer)
-	defer other.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, other, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": "other"})
-	var otherWelcome welcomeFrame
-	readJSON(t, other, &otherWelcome)
-	otherToken, _ := linkToken(t, otherWelcome.ClientInvite)
-	wrongRoom := dialRaw(t, httpServer)
-	defer wrongRoom.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, wrongRoom, map[string]any{"t": "relay.hello", "v": 2, "kind": "client", "invite": otherToken, "room": hostWelcome.Room})
-	readJSON(t, wrongRoom, &failure)
-	if failure.Code != "RELAY_INVITE_INVALID" {
-		t.Fatalf("expected room binding failure, got %+v", failure)
+	other := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": mustInvite(t, store, KindHost), "name": "other"})
+	otherToken, _ := linkToken(t, other.welcome.ClientInvite)
+	wrongRoom := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": otherToken, "room": host.welcome.Room})
+	if wrongRoom.welcome.T != "relay.error" || wrongRoom.welcome.Code != "RELAY_INVITE_INVALID" {
+		t.Fatalf("expected room binding failure, got %+v", wrongRoom.welcome)
 	}
 
 	// A connected host can ask for another invite on demand. The pairing offer
 	// uses this fresh link.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := host.Write(ctx, websocket.MessageText, []byte(`{"t":"relay.invite","kind":"client"}`)); err != nil {
-		t.Fatal(err)
-	}
+	sendControl(t, host, map[string]any{"t": "relay.invite", "kind": "client"})
 	var inviteFrame struct {
 		T      string `json:"t"`
 		Invite string `json:"invite"`
 	}
-	readJSON(t, host, &inviteFrame)
+	readControl(t, host, &inviteFrame)
 	if inviteFrame.T != "relay.invite" || inviteFrame.Invite == "" {
 		t.Fatalf("unexpected invite control reply: %+v", inviteFrame)
 	}
 	requested, _ := linkToken(t, inviteFrame.Invite)
-	phone := dialRaw(t, httpServer)
-	defer phone.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, phone, map[string]any{"t": "relay.hello", "v": 2, "kind": "client", "invite": requested, "room": hostWelcome.Room})
-	var phoneWelcome welcomeFrame
-	readJSON(t, phone, &phoneWelcome)
-	if !phoneWelcome.Enrolled {
-		t.Fatalf("phone enrollment with requested invite failed: %+v", phoneWelcome)
+	phone := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": requested, "room": host.welcome.Room})
+	if !phone.welcome.Enrolled {
+		t.Fatalf("phone enrollment with requested invite failed: %+v", phone.welcome)
 	}
 }
 
@@ -306,100 +343,68 @@ func linkToken(t *testing.T, link string) (string, string) {
 }
 
 func TestInviteIsOneTime(t *testing.T) {
-	_, store, httpServer := testServer(t)
+	server, store, httpServer := testServer(t)
 	token := mustInvite(t, store, KindHost)
 
-	first := dialRaw(t, httpServer)
-	defer first.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, first, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "invite": token})
-	var welcome welcomeFrame
-	readJSON(t, first, &welcome)
-	if !welcome.Enrolled {
-		t.Fatalf("first enrollment failed: %+v", welcome)
+	first := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": token})
+	if !first.welcome.Enrolled {
+		t.Fatalf("first enrollment failed: %+v", first.welcome)
 	}
 
-	second := dialRaw(t, httpServer)
-	defer second.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, second, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "invite": token})
-	var failure struct {
-		T    string `json:"t"`
-		Code string `json:"code"`
-	}
-	readJSON(t, second, &failure)
-	if failure.T != "relay.error" || failure.Code != "RELAY_INVITE_CONSUMED" {
-		t.Fatalf("expected consumed invite error, got %+v", failure)
+	second := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": token})
+	if second.welcome.T != "relay.error" || second.welcome.Code != "RELAY_INVITE_CONSUMED" {
+		t.Fatalf("expected consumed invite error, got %+v", second.welcome)
 	}
 }
 
 func TestRotateInvalidatesInviteAndRevokeDisconnects(t *testing.T) {
 	server, store, httpServer := testServer(t)
-	hostID, hostSecret, room := enrollHost(t, httpServer, store, "desktop")
+	hostID, hostSecret, room := enrollHost(t, httpServer, server, store, "desktop")
 
 	oldClientInvite := mustInvite(t, store, KindClient)
 	if _, _, err := store.RotateInvite(KindClient, ""); err != nil {
 		t.Fatal(err)
 	}
-	stale := dialRaw(t, httpServer)
-	defer stale.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, stale, map[string]any{"t": "relay.hello", "v": 2, "kind": "client", "invite": oldClientInvite, "room": room})
-	var failure struct {
-		Code string `json:"code"`
-	}
-	readJSON(t, stale, &failure)
-	if failure.Code != "RELAY_INVITE_INVALID" {
-		t.Fatalf("expected invalid invite after rotate, got %+v", failure)
+	stale := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "invite": oldClientInvite, "room": room})
+	if stale.welcome.Code != "RELAY_INVITE_INVALID" {
+		t.Fatalf("expected invalid invite after rotate, got %+v", stale.welcome)
 	}
 
-	clientID, _ := enrollClient(t, httpServer, store, room)
+	clientID, _ := enrollClient(t, httpServer, server, store, room)
 	if _, err := server.RevokeSubject(clientID); err != nil {
 		t.Fatal(err)
 	}
 
-	reconnect := dialRaw(t, httpServer)
-	defer reconnect.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, reconnect, map[string]any{"t": "relay.hello", "v": 2, "kind": "client", "subjectId": clientID, "secret": "whatever", "room": room})
-	readJSON(t, reconnect, &failure)
-	if failure.Code != "RELAY_SUBJECT_REVOKED" && failure.Code != "RELAY_SUBJECT_INVALID" {
-		t.Fatalf("expected revoked subject error, got %+v", failure)
+	reconnect := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "client", "subjectId": clientID, "secret": "whatever", "room": room})
+	if reconnect.welcome.Code != "RELAY_SUBJECT_REVOKED" && reconnect.welcome.Code != "RELAY_SUBJECT_INVALID" {
+		t.Fatalf("expected revoked subject error, got %+v", reconnect.welcome)
 	}
 
 	if _, err := server.RevokeSubject(hostID); err != nil {
 		t.Fatal(err)
 	}
-	hostReconnect := dialRaw(t, httpServer)
-	defer hostReconnect.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, hostReconnect, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "subjectId": hostID, "secret": hostSecret})
-	readJSON(t, hostReconnect, &failure)
-	if failure.Code != "RELAY_SUBJECT_REVOKED" {
-		t.Fatalf("expected revoked host error, got %+v", failure)
+	hostReconnect := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "subjectId": hostID, "secret": hostSecret})
+	if hostReconnect.welcome.Code != "RELAY_SUBJECT_REVOKED" {
+		t.Fatalf("expected revoked host error, got %+v", hostReconnect.welcome)
 	}
 }
 
 func TestWrongKindAndExpiredInvites(t *testing.T) {
-	_, store, httpServer := testServer(t)
+	server, store, httpServer := testServer(t)
 	clientInvite := mustInvite(t, store, KindClient)
 
-	conn := dialRaw(t, httpServer)
-	defer conn.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, conn, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "invite": clientInvite})
-	var failure struct {
-		Code string `json:"code"`
-	}
-	readJSON(t, conn, &failure)
-	if failure.Code != "RELAY_INVITE_INVALID" {
-		t.Fatalf("expected kind mismatch, got %+v", failure)
+	conn := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": clientInvite})
+	if conn.welcome.Code != "RELAY_INVITE_INVALID" {
+		t.Fatalf("expected kind mismatch, got %+v", conn.welcome)
 	}
 
 	_, expired, err := store.CreateInvite(KindHost, "", time.Now().Add(-time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn2 := dialRaw(t, httpServer)
-	defer conn2.Close(websocket.StatusNormalClosure, "done")
-	sendHello(t, conn2, map[string]any{"t": "relay.hello", "v": 2, "kind": "host", "invite": expired})
-	readJSON(t, conn2, &failure)
-	if failure.Code != "RELAY_INVITE_EXPIRED" {
-		t.Fatalf("expected expired invite, got %+v", failure)
+	conn2 := dialNoise(t, httpServer, server, map[string]any{"t": "relay.hello", "v": 3, "kind": "host", "invite": expired})
+	if conn2.welcome.Code != "RELAY_INVITE_EXPIRED" {
+		t.Fatalf("expected expired invite, got %+v", conn2.welcome)
 	}
 }
 
@@ -428,7 +433,7 @@ func TestAdminInviteLinkShape(t *testing.T) {
 	}
 	raw := strings.TrimPrefix(link, "ocremote-relay://enroll#")
 	payload := decodeLink(t, raw)
-	if payload["invite"] != token || payload["kind"] != KindClient || payload["relayId"] != store.RelayID() {
+	if payload["invite"] != token || payload["kind"] != KindClient || payload["relayId"] != store.RelayID() || payload["rk"] != PublicKeyText(server.cfg.RelayKey) {
 		t.Fatalf("unexpected payload: %+v", payload)
 	}
 	if invite.Kind != KindClient || invite.ConsumedAt != 0 {

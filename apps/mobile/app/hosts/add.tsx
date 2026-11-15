@@ -256,7 +256,7 @@ async function relayAuthFor(
   offer: PairingOffer,
   enrolled: RelayEnrollment | null,
 ): Promise<{ auth?: RelayAuthResolver; error?: string }> {
-  const entries = new Map<string, { subjectId: string; secret: string }>()
+  const entries = new Map<string, { subjectId: string; secret: string; relayKey: string }>()
   let error: string | undefined
   for (const transport of offer.transports) {
     if (transport.kind !== "relay") continue
@@ -270,6 +270,7 @@ async function relayAuthFor(
         entries.set(normalizeRelayUrl(result.url), {
           subjectId: result.access.subjectId,
           secret: result.access.secret,
+          relayKey: result.access.relayKey,
         })
         continue
       } catch (cause) {
@@ -280,7 +281,11 @@ async function relayAuthFor(
       }
     }
     if (access) {
-      entries.set(normalizeRelayUrl(transport.url), { subjectId: access.subjectId, secret: access.secret })
+      entries.set(normalizeRelayUrl(transport.url), {
+        subjectId: access.subjectId,
+        secret: access.secret,
+        relayKey: access.relayKey,
+      })
       continue
     }
     error ??= "这台手机还没有该中继的访问权限，请让主机重新生成配对码或在下面粘贴手机邀请。"
@@ -289,6 +294,7 @@ async function relayAuthFor(
     entries.set(normalizeRelayUrl(enrolled.url), {
       subjectId: enrolled.access.subjectId,
       secret: enrolled.access.secret,
+      relayKey: enrolled.access.relayKey,
     })
   }
   if (entries.size === 0) return error ? { error } : {}

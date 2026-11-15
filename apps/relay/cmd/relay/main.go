@@ -19,9 +19,11 @@ import (
 	"time"
 
 	"ocremote/relay/internal/relay"
+
+	"github.com/flynn/noise"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 func main() {
 	var err error
@@ -174,9 +176,14 @@ func runServe(args []string) error {
 		socket = filepath.Join(*dataDir, "admin.sock")
 	}
 
+	relayKey, err := relay.LoadOrCreateRelayKey(*dataDir)
+	if err != nil {
+		return fmt.Errorf("relay identity: %w", err)
+	}
 	server := relay.New(relay.Config{
 		Store:      store,
 		PublicURL:  *publicURL,
+		RelayKey:   relayKey,
 		MaxClients: *maxClients,
 		MaxFrame:   *maxFrame,
 	})
@@ -268,7 +275,11 @@ func runInit(args []string) error {
 	}
 	defer store.Close()
 
-	server := relay.New(relay.Config{Store: store, PublicURL: *publicURL})
+	relayKey, err := relay.LoadOrCreateRelayKey(*dataDir)
+	if err != nil {
+		return fmt.Errorf("relay identity: %w", err)
+	}
+	server := relay.New(relay.Config{Store: store, PublicURL: *publicURL, RelayKey: relayKey})
 	type inviteOutput struct {
 		Kind string `json:"kind"`
 		Name string `json:"name"`
@@ -362,7 +373,11 @@ func runAdmin(args []string) error {
 			return fmt.Errorf("relay is not running and data store could not be opened: %w", err)
 		}
 		defer store.Close()
-		client = &directAdmin{store: store, publicURL: env("RELAY_PUBLIC_URL", "")}
+		relayKey, keyErr := relay.LoadOrCreateRelayKey(*dataDir)
+		if keyErr != nil {
+			return fmt.Errorf("relay identity: %w", keyErr)
+		}
+		client = &directAdmin{store: store, publicURL: env("RELAY_PUBLIC_URL", ""), relayKey: relayKey}
 	}
 
 	switch command {
@@ -596,6 +611,7 @@ func (a *httpAdmin) deleteInvite(hash string) error {
 type directAdmin struct {
 	store     *relay.Store
 	publicURL string
+	relayKey  noise.DHKey
 }
 
 func (a *directAdmin) status() (any, error) {
@@ -619,7 +635,7 @@ func (a *directAdmin) addInvite(kind, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return encodeInviteLink(a.store.RelayID(), a.publicURL, kind, token), nil
+	return relay.EncodeInviteLink(a.store.RelayID(), a.publicURL, kind, token, relay.PublicKeyText(a.relayKey)), nil
 }
 
 func (a *directAdmin) rotateInvite(kind, name string) (string, error) {
@@ -627,7 +643,7 @@ func (a *directAdmin) rotateInvite(kind, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return encodeInviteLink(a.store.RelayID(), a.publicURL, kind, token), nil
+	return relay.EncodeInviteLink(a.store.RelayID(), a.publicURL, kind, token, relay.PublicKeyText(a.relayKey)), nil
 }
 
 func (a *directAdmin) revoke(subjectID string) (any, error) {
@@ -639,10 +655,6 @@ func (a *directAdmin) revoke(subjectID string) (any, error) {
 }
 
 func (a *directAdmin) deleteInvite(hash string) error { return a.store.DeleteInvite(hash) }
-
-func encodeInviteLink(relayID, publicURL, kind, token string) string {
-	return relay.EncodeInviteLink(relayID, publicURL, kind, token)
-}
 
 // printFirstHostInvite makes a parameterless relay usable immediately: if no
 // host has enrolled and no host invite is pending, print one for the first host.

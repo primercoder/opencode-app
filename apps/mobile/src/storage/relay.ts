@@ -5,6 +5,8 @@ import { base64UrlEncode } from "@ocremote/protocol"
 export type RelayAccess = {
   subjectId: string
   secret: string
+  /** Relay X25519 public key pinned by the invite. */
+  relayKey: string
   room?: string
   name?: string
   relayId?: string
@@ -33,6 +35,7 @@ export async function loadRelayAccess(url: string): Promise<RelayAccess | undefi
     return {
       subjectId: parsed.subjectId,
       secret: parsed.secret,
+      relayKey: typeof parsed.relayKey === "string" ? parsed.relayKey : "",
       ...(typeof parsed.room === "string" ? { room: parsed.room } : {}),
       ...(typeof parsed.name === "string" ? { name: parsed.name } : {}),
       ...(typeof parsed.relayId === "string" ? { relayId: parsed.relayId } : {}),
@@ -52,6 +55,7 @@ export async function saveRelayAccess(url: string, access: RelayAccess): Promise
   const summary: RelayAccessSummary = {
     url: normalized,
     subjectId: access.subjectId,
+    relayKey: access.relayKey,
     ...(access.room ? { room: access.room } : {}),
     ...(access.name ? { name: access.name } : {}),
     ...(access.relayId ? { relayId: access.relayId } : {}),

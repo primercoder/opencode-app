@@ -1,4 +1,11 @@
-import { parseRelayInviteLink as parseSharedInvite, type RelayInvite } from "@ocremote/protocol"
+import {
+  decodeRelayControl,
+  encodeRelayControl,
+  parseRelayInviteLink as parseSharedInvite,
+  relayNoiseHandshake,
+  type CipherState,
+  type RelayInvite,
+} from "@ocremote/protocol"
 import type { RelayConfig } from "./config.ts"
 import type { ConnectionSession, SessionSocket } from "./session.ts"
 
@@ -51,49 +58,25 @@ export async function enrollRelaySubject(input: EnrollRelayInput): Promise<Relay
   socket.binaryType = "arraybuffer"
   try {
     await waitForOpen(socket, 10_000)
-    const welcome = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        cleanup()
-        reject(new RelayError("RELAY_BAD_REQUEST", "relay enrollment timed out"))
-      }, 10_000)
-      const cleanup = () => {
-        clearTimeout(timer)
-        socket.onmessage = null
-        socket.onerror = null
-        socket.onclose = null
-      }
-      socket.onmessage = (event) => {
-        const text = typeof event.data === "string" ? event.data : ""
-        const value = parseControl(text)
-        if (!value) return
-        if (value.t === "relay.error") {
-          cleanup()
-          reject(new RelayError(stringValue(value.code) || "RELAY_BAD_REQUEST", stringValue(value.message) || "relay enrollment failed"))
-          return
-        }
-        if (value.t === "relay.welcome") {
-          cleanup()
-          resolve(value)
-        }
-      }
-      socket.onerror = () => {
-        cleanup()
-        reject(new RelayError("RELAY_BAD_REQUEST", "relay connection failed during enrollment"))
-      }
-      socket.onclose = () => {
-        cleanup()
-        reject(new RelayError("RELAY_BAD_REQUEST", "relay closed during enrollment"))
-      }
-      socket.send(
-        JSON.stringify({
-          t: "relay.hello",
-          v: 2,
-          kind: "host",
-          invite: invite.invite,
-          ...(input.name ? { name: input.name } : {}),
-        }),
+    const result = await relayNoiseHandshake(
+      socket,
+      invite.rk,
+      {
+        t: "relay.hello",
+        v: 3,
+        kind: "host",
+        invite: invite.invite,
+        ...(input.name ? { name: input.name } : {}),
+      },
+      10_000,
+    )
+    const welcome = result.welcome
+    if (welcome.t === "relay.error") {
+      throw new RelayError(
+        stringValue(welcome.code) || "RELAY_BAD_REQUEST",
+        stringValue(welcome.message) || "relay enrollment failed",
       )
-    })
+    }
     const subjectId = stringValue(welcome.subjectId)
     const secret = stringValue(welcome.secret)
     const room = stringValue(welcome.room)
@@ -106,6 +89,7 @@ export async function enrollRelaySubject(input: EnrollRelayInput): Promise<Relay
       room,
       subjectId,
       secret,
+      relayKey: invite.rk,
       ...(clientInvite ? { clientInvite } : {}),
     }
   } finally {
@@ -133,11 +117,6 @@ type Entry = {
   peer: RelayPeer
 }
 
-type AuthWaiter = {
-  resolve(): void
-  reject(error: Error): void
-}
-
 type InviteWaiter = {
   promise: Promise<string>
   resolve(link: string): void
@@ -151,7 +130,8 @@ export class RelayHostClient {
   private attempt = 0
   private retryTimer: ReturnType<typeof setTimeout> | undefined
   private authenticated = false
-  private authWaiter: AuthWaiter | undefined
+  private sendCipher: CipherState | undefined
+  private receiveCipher: CipherState | undefined
   private inviteWaiter: InviteWaiter | undefined
   private readonly caps = new Set<string>()
 
@@ -211,7 +191,11 @@ export class RelayHostClient {
       },
     }
     this.inviteWaiter = waiter
-    socket.send(JSON.stringify({ t: "relay.invite", v: 2, kind: "client" }))
+    if (!this.sendCipher) {
+      waiter.reject(new RelayError("RELAY_OFFLINE", "relay is not authenticated"))
+      return promise
+    }
+    socket.send(encodeRelayControl(this.sendCipher, JSON.stringify({ t: "relay.invite", v: 3, kind: "client" })))
     return promise
   }
 
@@ -230,11 +214,16 @@ export class RelayHostClient {
 
   private async open(): Promise<void> {
     if (this.closed) throw new Error("relay client is closed")
+    if (!this.options.config.relayKey) {
+      throw new RelayError("RELAY_SUBJECT_INVALID", "relay subject has no pinned relay key; re-enroll this host")
+    }
     this.options.onState?.("connecting")
     const socket = createSocket(this.options.config.url, this.options.caPath)
     socket.binaryType = "arraybuffer"
     this.socket = socket
     this.authenticated = false
+    this.sendCipher = undefined
+    this.receiveCipher = undefined
     this.caps.clear()
 
     await waitForOpen(socket, 10_000)
@@ -242,6 +231,31 @@ export class RelayHostClient {
       socket.close()
       throw new Error("relay connection was cancelled")
     }
+
+    this.options.onState?.("authenticating")
+    const result = await relayNoiseHandshake(
+      socket,
+      this.options.config.relayKey,
+      {
+        t: "relay.hello",
+        v: 3,
+        kind: "host",
+        subjectId: this.options.config.subjectId,
+        secret: this.options.config.secret,
+      },
+      10_000,
+    )
+    const welcome = result.welcome
+    if (welcome.t === "relay.error") {
+      throw new RelayError(
+        stringValue(welcome.code) || "RELAY_BAD_REQUEST",
+        stringValue(welcome.message) || "relay authentication failed",
+      )
+    }
+    this.sendCipher = result.send
+    this.receiveCipher = result.receive
+    this.authenticated = true
+    this.applyWelcome(welcome)
 
     socket.onmessage = (event) => this.handleIncoming(event.data)
     socket.onclose = () => {
@@ -253,83 +267,38 @@ export class RelayHostClient {
       this.handleDisconnect("relay connection failed")
     }
 
-    this.options.onState?.("authenticating")
-    await this.authenticate(socket)
-
     this.attempt = 0
     this.options.onState?.("open")
   }
 
-  private authenticate(socket: WebSocket): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.authWaiter = undefined
-        reject(new RelayError("RELAY_BAD_REQUEST", "relay authentication timed out"))
-      }, 10_000)
-      this.authWaiter = {
-        resolve: () => {
-          clearTimeout(timer)
-          this.authWaiter = undefined
-          this.authenticated = true
-          resolve()
-        },
-        reject: (error) => {
-          clearTimeout(timer)
-          this.authWaiter = undefined
-          reject(error)
-        },
+  private applyWelcome(value: Record<string, unknown>): void {
+    const room = stringValue(value.room)
+    if (room && room !== this.options.config.room) {
+      this.options.onState?.("authenticating", `relay room changed to ${room}`)
+      this.options.config.room = room
+    }
+    const clientInvite = stringValue(value.clientInvite)
+    if (clientInvite) {
+      this.options.config.clientInvite = clientInvite
+      this.options.onClientInvite?.(clientInvite)
+    }
+    if (Array.isArray(value.caps)) {
+      this.caps.clear()
+      for (const cap of value.caps) {
+        if (typeof cap === "string") this.caps.add(cap)
       }
-      socket.send(
-        JSON.stringify({
-          t: "relay.hello",
-          v: 2,
-          kind: "host",
-          subjectId: this.options.config.subjectId,
-          secret: this.options.config.secret,
-        }),
-      )
-    })
+    }
   }
 
   private handleIncoming(data: unknown): void {
-    if (!this.authenticated) {
-      if (typeof data !== "string") return
-      const value = parseControl(data)
-      if (!value) return
-      if (value.t === "relay.error") {
-        this.authWaiter?.reject(
-          new RelayError(stringValue(value.code) || "RELAY_BAD_REQUEST", stringValue(value.message) || "relay authentication failed"),
-        )
-        this.handleDisconnect("relay authentication failed")
-        return
-      }
-      if (value.t === "relay.welcome") {
-        const room = stringValue(value.room)
-        if (room && room !== this.options.config.room) {
-          this.options.onState?.("authenticating", `relay room changed to ${room}`)
-          this.options.config.room = room
-        }
-        const clientInvite = stringValue(value.clientInvite)
-        if (clientInvite) {
-          this.options.config.clientInvite = clientInvite
-          this.options.onClientInvite?.(clientInvite)
-        }
-        if (Array.isArray(value.caps)) {
-          this.caps.clear()
-          for (const cap of value.caps) {
-            if (typeof cap === "string") this.caps.add(cap)
-          }
-        }
-        this.authWaiter?.resolve()
-      }
-      return
-    }
     this.handleMessage(data)
   }
 
   private handleMessage(data: unknown): void {
     if (typeof data === "string") {
-      this.handleControl(data)
+      if (!this.receiveCipher) return
+      const text = decodeRelayControl(this.receiveCipher, data)
+      if (text) this.handleControl(text)
       return
     }
 
@@ -391,9 +360,10 @@ export class RelayHostClient {
   }
 
   private handleDisconnect(reason: string): void {
-    this.authWaiter?.reject(new RelayError("RELAY_BAD_REQUEST", reason))
     this.rejectInvite(new RelayError("RELAY_OFFLINE", reason))
     this.authenticated = false
+    this.sendCipher = undefined
+    this.receiveCipher = undefined
     this.closeSessions()
     this.closeSocket()
     if (this.closed) return

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>安全模型 — OC Remote</title>
-    <meta name="description" content="OC Remote 的配对、Noise NK 端到端加密、中继可见信息、密钥存储和 Release/QA TLS 差异。" />
+    <meta name="description" content="OC Remote 的配对、Noise NK 端到端加密、中继 Noise NK 认证、可选 TLS、密钥存储和可见信息。" />
     <meta name="page-type" content="software" />
     <meta name="site-kind" content="software" />
     <meta name="color-scheme" content="light dark" />
@@ -49,7 +49,7 @@
           <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub 仓库" rel="noreferrer">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" /></svg>
           </a>
-          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.2 <span class="arrow">↓</span></a>
+          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.3 <span class="arrow">↓</span></a>
           <button class="nav-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="site-menu">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
           </button>
@@ -62,7 +62,7 @@
         <div class="wrap">
           <p class="eyebrow"><span class="dot"></span>SECURITY MODEL</p>
           <h1>中继可以转发，<br />但不能读懂。</h1>
-          <p class="lede">手机和主机之间始终是 Noise NK 端到端加密。直连模式只多一层可替换的传输；中继模式把应用数据当作密文转发，并暴露必要的路由元数据。</p>
+          <p class="lede">手机和主机之间始终是 Noise NK 端到端加密。中继与主机、手机之间再用 Noise NK 完成身份认证和控制帧保护；TLS 是可选的额外传输层。中继只把应用数据当作密文转发，并暴露必要的路由元数据。</p>
         </div>
       </section>
 
@@ -86,7 +86,7 @@
               <thead><tr><th>观察点</th><th>直连</th><th>中继</th></tr></thead>
               <tbody>
                 <tr><td><strong>手机 ↔ 主机应用数据</strong></td><td>Noise NK 密文</td><td>Noise NK 密文</td></tr>
-                <tr><td><strong>传输层</strong></td><td><code>ws://</code>，仅局域网</td><td><code>wss://</code> 到中继，再转发</td></tr>
+                <tr><td><strong>传输层</strong></td><td><code>ws://</code>，仅局域网</td><td><code>ws://</code> + Noise NK 认证；可选 <code>wss://</code> TLS</td></tr>
                 <tr><td><strong>中继可见</strong></td><td>—</td><td>房间、subject 身份、连接时间、帧大小</td></tr>
                 <tr><td><strong>中继不可见</strong></td><td>—</td><td>提示词、回复、工具输入输出、文件内容</td></tr>
                 <tr><td><strong>opencode 密码</strong></td><td>只留在主机</td><td>只留在主机</td></tr>
@@ -126,7 +126,8 @@
                 <tr><td><strong>设备令牌</strong></td><td>手机 SecureStore；主机保存哈希</td><td>可单独撤销设备</td></tr>
                 <tr><td><strong>中继 subject secret</strong></td><td>手机 SecureStore；中继保存哈希</td><td>长期有效，可 revoke</td></tr>
                 <tr><td><strong>中继邀请</strong></td><td>一次性 host / phone invite</td><td>使用后失效，默认短时有效</td></tr>
-                <tr><td><strong>中继 TLS 私钥</strong></td><td><code>data/tls/relay.key</code></td><td>0600；发布包不包含生成材料</td></tr>
+                <tr><td><strong>中继 Noise 静态私钥</strong></td><td><code>data/relay-identity.json</code></td><td>0600；公钥随邀请下发，用于固定中继身份</td></tr>
+                <tr><td><strong>可选 TLS 私钥</strong></td><td><code>data/tls/relay.key</code></td><td>仅启用 wss 时生成，0600</td></tr>
               </tbody>
             </table>
           </div>
@@ -140,21 +141,21 @@
       <section class="section">
         <div class="wrap prose-grid">
           <aside class="sticky-note">
-            <h2>Release 与 QA 分开。</h2>
-            <p>发布 APK 和 QA APK 使用不同 application id 和证书信任策略。Release 只使用 Android 系统 CA 库。</p>
+            <h2>认证与传输分层。</h2>
+            <p>Noise NK 认证在所有构建中启用，不依赖证书。Release 和 QA 的区别在 application id 和可选 TLS 的 CA 信任范围。</p>
           </aside>
           <div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>构建</th><th>application id</th><th>TLS 信任</th></tr></thead>
+                <thead><tr><th>构建</th><th>application id</th><th>可选 TLS 信任</th></tr></thead>
                 <tbody>
                   <tr><td><strong>Release</strong></td><td><code>app.ocremote.android</code></td><td>Android 系统 CA 库</td></tr>
                   <tr><td><strong>QA</strong></td><td><code>app.ocremote.android.qa</code></td><td>系统 CA + 开发测试 CA</td></tr>
                 </tbody>
               </table>
             </div>
-            <p style="margin-top: 18px; font-size: 13px; line-height: 1.8; color: var(--muted)">测试 CA 只用于开发环境。自签中继如果要在 Release APK 上使用，需要把 CA 安装到 Android 系统信任库，或者给中继换成公共 CA 签发的证书。</p>
-            <a class="inline-cta" href="faq.html#tls">TLS 故障排查 <span>→</span></a>
+            <p style="margin-top: 18px; font-size: 13px; line-height: 1.8; color: var(--muted)">Noise NK 不需要 CA，所有构建都能直接使用。只有启用 <code>wss://</code> 且使用自签证书时，才需要把 CA 安装到 Android 系统信任库，或改用公共 CA 签发的证书。</p>
+            <a class="inline-cta" href="faq.html#tls">中继认证与 TLS 排查 <span>→</span></a>
           </div>
         </div>
       </section>

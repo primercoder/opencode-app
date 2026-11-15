@@ -14,6 +14,8 @@ export const RelayTransportSchema = z.object({
   kind: z.literal("relay"),
   url: wsUrl,
   room: z.string().min(1),
+  /** Relay static X25519 public key, pinned from the invite. */
+  relayKey: z.string().min(32).optional(),
   priority: z.number().int().nonnegative(),
   /**
    * One-time phone invite issued by the relay to the host. It is carried inside

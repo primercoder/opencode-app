@@ -29,6 +29,8 @@ export type RelayConfig = {
   /** Long-lived relay subject returned by a one-time host invite. */
   subjectId: string
   secret: string
+  /** Relay X25519 public key pinned by the host invite. */
+  relayKey: string
   /**
    * One-time phone invite last issued by the relay. Pairing offers prefer a
    * fresh invite requested while connected, but this cached copy keeps
