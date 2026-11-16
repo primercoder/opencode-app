@@ -4,7 +4,7 @@ import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, Text, V
 import { useT } from "@/i18n"
 import { useTheme } from "@/theme"
 import type { AssistantContent, SessionMessage } from "@/opencode/client"
-import { BottomSheet } from "./BottomSheet"
+import { BottomSheet, useBottomSheetHeight } from "./BottomSheet"
 import { Icon } from "./Icon"
 import { Markdown } from "./Markdown"
 
@@ -26,7 +26,11 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
             paddingVertical: 10,
           }}
         >
-          <Text style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}>
+          <Text
+            selectable
+            selectionColor={colors.accent}
+            style={{ color: colors.text, fontSize: 15, lineHeight: 22 }}
+          >
             {message.text ?? ""}
           </Text>
         </View>
@@ -262,6 +266,7 @@ function StreamingCursor() {
 function CompactionView({ message }: { message: SessionMessage }) {
   const { colors } = useTheme()
   const t = useT()
+  const sheetHeight = useBottomSheetHeight()
   const [open, setOpen] = useState(false)
   const running = message.status === "running"
   const failed = message.status === "failed"
@@ -322,6 +327,7 @@ function CompactionView({ message }: { message: SessionMessage }) {
         visible={open && Boolean(summary)}
         title={status}
         onClose={() => setOpen(false)}
+        height={sheetHeight}
       >
         <Markdown text={summary} />
       </BottomSheet>
@@ -354,6 +360,7 @@ function groupBlocks(blocks: AssistantContent[]): BlockGroup[] {
 function ActivityGroup({ blocks, live = false }: { blocks: AssistantContent[]; live?: boolean }) {
   const { colors } = useTheme()
   const t = useT()
+  const sheetHeight = useBottomSheetHeight()
   const [open, setOpen] = useState(false)
   const running =
     live || blocks.some((block) => block.type === "tool" && (block.state?.status ?? "running") === "running")
@@ -385,7 +392,12 @@ function ActivityGroup({ blocks, live = false }: { blocks: AssistantContent[]; l
         {running ? <Text style={{ fontSize: 10.5, color: colors.warning }}>{t("toolRunning")}</Text> : null}
         <Icon name="chevronRight" size={14} color={colors.faint} />
       </Pressable>
-      <BottomSheet visible={open} title={t("thinkingTools", { n: blocks.length })} onClose={() => setOpen(false)}>
+      <BottomSheet
+        visible={open}
+        title={t("thinkingTools", { n: blocks.length })}
+        onClose={() => setOpen(false)}
+        height={sheetHeight}
+      >
         <View style={{ gap: 8 }}>
           {blocks.map((block, index) =>
             block.type === "reasoning" ? (

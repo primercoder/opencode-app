@@ -21,7 +21,7 @@ import {
 } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { ExpoSpeechRecognitionModule } from "expo-speech-recognition"
-import { BottomSheet } from "@/components/BottomSheet"
+import { BottomSheet, useBottomSheetHeight } from "@/components/BottomSheet"
 import { Icon } from "@/components/Icon"
 import { MessageView } from "@/components/Message"
 import { PendingDock } from "@/components/PendingDock"
@@ -55,6 +55,7 @@ import {
   UNAVAILABLE_COMMANDS,
   type CoreCommandAction,
 } from "@/features/session/commands"
+import { clearSessionDraft, readSessionDraft, useSessionDraft, writeSessionDraft } from "@/features/session/drafts"
 import {
   deleteSessionCache,
   readSessionCache,
@@ -106,8 +107,8 @@ const NO_REVIEW_COMMENTS: ReviewComment[] = []
 
 export default function WorkspaceScreen() {
   const insets = useSafeAreaInsets()
-  const { height: windowHeight, width: windowWidth } = useWindowDimensions()
-  const panelHeight = Math.round(windowHeight * 0.7)
+  const { width: windowWidth } = useWindowDimensions()
+  const panelHeight = useBottomSheetHeight()
   const params = useLocalSearchParams<{ hostId: string; session?: string; new?: string }>()
   const hostId = params.hostId
   const { colors } = useTheme()
@@ -134,7 +135,7 @@ export default function WorkspaceScreen() {
   const [commands, setCommands] = useState<CommandInfo[]>([])
   const [loadingSession, setLoadingSession] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [draft, setDraft] = useState("")
+  const draft = useSessionDraft(hostId, sessionId)
   const [draftSelection, setDraftSelection] = useState({ start: 0, end: 0 })
   const [sending, setSending] = useState(false)
   const [permissions, setPermissions] = useState<PermissionRequest[]>([])
@@ -180,6 +181,19 @@ export default function WorkspaceScreen() {
   const olderCursorRef = useRef<string | undefined>(undefined)
   const loadOlderRef = useRef<() => void>(() => undefined)
   const statusGesture = useRef({ x: 0, y: 0, scrolled: false })
+
+  const setDraftFor = useCallback(
+    (target: string | undefined, value: string | ((current: string) => string)) => {
+      if (!target) return
+      const current = readSessionDraft(hostId, target)
+      writeSessionDraft(hostId, target, typeof value === "function" ? value(current) : value)
+    },
+    [hostId],
+  )
+  const setDraft = useCallback(
+    (value: string | ((current: string) => string)) => setDraftFor(sessionId, value),
+    [sessionId, setDraftFor],
+  )
 
   const openDrawer = useCallback(() => {
     drawerOpenRef.current = true
@@ -304,8 +318,10 @@ export default function WorkspaceScreen() {
   useEffect(() => {
     setVoiceOverride(undefined)
     setSelectedSkills([])
+    const cached = sessionId ? readSessionDraft(hostId, sessionId) : ""
+    setDraftSelection({ start: cached.length, end: cached.length })
     void loadSessionVoiceEngine(sessionId ?? "").then(setVoiceOverride).catch(() => undefined)
-  }, [sessionId])
+  }, [hostId, sessionId])
 
   useEffect(() => {
     if (!sessionId || !ready) {
@@ -636,6 +652,7 @@ export default function WorkspaceScreen() {
         invalidateSessionIndex(hostId)
         if (deletedId && deletedId === sessionIdRef.current) {
           deleteSessionCache(hostId, deletedId)
+          clearSessionDraft(hostId, deletedId)
           setLiveState({ messages: [] })
           setSessionId(undefined)
           setSession(null)
@@ -1023,9 +1040,10 @@ export default function WorkspaceScreen() {
           )
         : null
     if ((!text && !reviewPrompt) || sending || !sessionId || !ready || readOnly) return
+    const targetSessionId = sessionId
     setSending(true)
     setError(null)
-    setDraft("")
+    setDraftFor(targetSessionId, "")
     try {
       const runtime = await ensureConnection(hostId)
       const client = new OpencodeClient(runtime)
@@ -1034,8 +1052,8 @@ export default function WorkspaceScreen() {
       if (!reviewPrompt && text.startsWith("!")) {
         const command = text.slice(1).trim()
         if (!command) return
-        await client.runShell(sessionId, command)
-        setTimeout(() => void loadSession(sessionId), 350)
+        await client.runShell(targetSessionId, command)
+        setTimeout(() => void loadSession(targetSessionId), 350)
         return
       }
       if (!reviewPrompt && text.startsWith("/")) {
@@ -1050,11 +1068,11 @@ export default function WorkspaceScreen() {
           return
         }
         if (commands.some((command) => command.name === name)) {
-          await client.runCommand(sessionId, name, args)
-          setTimeout(() => void loadSession(sessionId), 350)
+          await client.runCommand(targetSessionId, name, args)
+          setTimeout(() => void loadSession(targetSessionId), 350)
           return
         }
-        setDraft(text)
+        setDraftFor(targetSessionId, text)
         notify(
           isUnavailableCommand(key)
             ? t("commandUnsupported", { name })
@@ -1070,20 +1088,20 @@ export default function WorkspaceScreen() {
         ? null
         : { id: `local_${Date.now()}`, type: "user", text: promptText, time: { created: Date.now() } }
       if (optimistic) setMessages((current) => [...(current ?? []), optimistic])
-      await client.prompt(sessionId, {
+      await client.prompt(targetSessionId, {
         ...(finalReview ?? { text: promptText }),
         ...(queued ? { delivery: "queue" as const } : {}),
         ...(selectedSkills.length > 0
           ? { skills: selectedSkills.map((skill) => ({ id: skill.id })) }
           : {}),
       })
-      if (reviewPrompt) clearStagedComments(sessionId)
+      if (reviewPrompt) clearStagedComments(targetSessionId)
       setSelectedSkills([])
       if (queued) notify(t("sessionQueueing"))
-      await loadSession(sessionId)
+      await loadSession(targetSessionId)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("error"))
-      setDraft(text)
+      setDraftFor(targetSessionId, text)
     } finally {
       setSending(false)
     }
@@ -1533,6 +1551,9 @@ export default function WorkspaceScreen() {
                 viewabilityConfig={viewabilityConfig}
                 onScroll={handleMessageScroll}
                 scrollEventThrottle={80}
+                // Selecting text focuses the native TextView; without this
+                // Android scrolls the transcript on the first selection.
+                scrollsChildToFocus={false}
                 onContentSizeChange={() => {
                   const offset = restoreOffsetRef.current
                   if (offset === undefined) return

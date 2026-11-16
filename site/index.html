@@ -70,7 +70,7 @@
               <path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" />
             </svg>
           </a>
-          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.8 <span class="arrow">↓</span></a>
+          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.9 <span class="arrow">↓</span></a>
           <button class="nav-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="site-menu">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
           </button>
@@ -393,20 +393,30 @@ opencode  <span class="ok">online</span></pre>
         <div class="wrap download-grid">
           <div data-reveal>
             <h2>从手机开始，<br />电脑继续工作。</h2>
-            <p class="lede">下载 0.1.8。APK 按手机架构选择，主机包自带 Bun 和语音模型。</p>
+            <p class="lede">下载 0.1.9。APK 按手机架构选择，主机包自带 Bun 和语音模型。</p>
+            <div class="release-versions" aria-label="当前三端版本">
+              <span><em>手机</em><code>0.1.9</code></span>
+              <span><em>主机</em><code>0.1.6</code></span>
+              <span><em>中继</em><code>0.4.1</code></span>
+            </div>
             <a class="btn btn-primary" href="https://github.com/primercoder/opencode-app/releases/latest">打开最新 Release <span class="arrow">↗</span></a>
             <p class="download-note">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16v.1" /></svg>
               当前 APK 使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。Release APK 使用 Android 系统 CA；Noise NK 认证不依赖证书。
             </p>
           </div>
-          <div class="download-list" data-reveal aria-label="0.1.7 下载文件">
-            <div class="download-row"><div><strong>Android · arm64-v8a</strong><span>真机、平板 · 87 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.6/ocremote-0.1.8-android-arm64-v8a.apk">APK ↗</a></div>
-            <div class="download-row"><div><strong>Android · x86_64</strong><span>模拟器、x86_64 设备 · 87 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.6/ocremote-0.1.8-android-x86_64.apk">APK ↗</a></div>
-            <div class="download-row"><div><strong>Host · Linux x64</strong><span>自带 Bun + sherpa-onnx · 60 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.6/ocremote-host-0.1.6-linux-x64.tar.gz">tar.gz ↗</a></div>
-            <div class="download-row"><div><strong>Host · Linux arm64</strong><span>自带 arm64 Bun + sherpa-onnx · 62 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.6/ocremote-host-0.1.6-linux-arm64.tar.gz">tar.gz ↗</a></div>
-            <div class="download-row"><div><strong>Relay · Linux x64</strong><span>静态 Go 二进制 · 8.4 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.6/ocremote-relay-0.4.1-linux-amd64">binary ↗</a></div>
-            <div class="download-row"><div><strong>Relay · Linux arm64</strong><span>静态 Go 二进制 · 7.7 MB</span></div><a href="https://github.com/primercoder/opencode-app/releases/download/v0.1.6/ocremote-relay-0.4.1-linux-arm64">binary ↗</a></div>
+          <div class="asset-list" data-reveal aria-label="0.1.9 发布资产" data-release-published="2026-11-16T02:38:00Z">
+            <div class="asset-head" aria-hidden="true"><span>文件</span><span>SHA256</span><span>大小</span><span>发布</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/ocremote-0.1.9-android-arm64-v8a.apk">ocremote-0.1.9-android-arm64-v8a.apk</a><code class="asset-hash">76ba0042ecea839b718a5b68a38d6ec1d5ea85fcb3d81094893fb17046f2e554</code><span class="asset-size" title="90,789,780 bytes">86.6 MB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/ocremote-0.1.9-android-x86_64.apk">ocremote-0.1.9-android-x86_64.apk</a><code class="asset-hash">f1d9036fda057489126ef753cf62aa2d52f408974093233e97730c9895176868</code><span class="asset-size" title="91,283,912 bytes">87.1 MB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/ocremote-host-0.1.6-linux-x64.tar.gz">ocremote-host-0.1.6-linux-x64.tar.gz</a><code class="asset-hash">e2c9a570e80304f2c7d8d2a624da7ff5837cf2ef774afccbc0e1f11cacd35e4e</code><span class="asset-size" title="62,835,806 bytes">59.9 MB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/ocremote-host-0.1.6-linux-arm64.tar.gz">ocremote-host-0.1.6-linux-arm64.tar.gz</a><code class="asset-hash">371dc5f77d5660a2841f1d0e8d05c35b8ad945bc046218589465b35e8cb8cb85</code><span class="asset-size" title="65,355,109 bytes">62.3 MB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/ocremote-relay-0.4.1-linux-amd64">ocremote-relay-0.4.1-linux-amd64</a><code class="asset-hash">6723600f00c6268f5bc44a97e5234d9789e1911474160ab29d86419e09d8bce4</code><span class="asset-size" title="8,773,792 bytes">8.4 MB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/ocremote-relay-0.4.1-linux-amd64.tar.gz">ocremote-relay-0.4.1-linux-amd64.tar.gz</a><code class="asset-hash">dc84ee62cd991cc9be752d23545e152eb297fa16562e84aacbfe2706c37e8a34</code><span class="asset-size" title="3,631,585 bytes">3.5 MB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/ocremote-relay-0.4.1-linux-arm64">ocremote-relay-0.4.1-linux-arm64</a><code class="asset-hash">168719e1db782ddf929ece2b574f1d38d6abbee6033f467b9afefac7266fcd18</code><span class="asset-size" title="8,061,088 bytes">7.7 MB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/ocremote-relay-0.4.1-linux-arm64.tar.gz">ocremote-relay-0.4.1-linux-arm64.tar.gz</a><code class="asset-hash">cc37edd771ce7dc331c93e43eb4bf35c3a5b17d63556e197b764a2180299d403</code><span class="asset-size" title="3,245,317 bytes">3.1 MB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/RELEASE.txt">RELEASE.txt</a><code class="asset-hash">76db07367d69fa615e129894b841ed8941d6a32a1dab75273f5823895acc087b</code><span class="asset-size" title="1,273 bytes">1.2 KB</span><span class="asset-age" data-release-age>刚刚</span></div>
+            <div class="asset-row"><a class="asset-name" href="https://github.com/primercoder/opencode-app/releases/download/v0.1.9/SHA256SUMS">SHA256SUMS</a><code class="asset-hash">e836acdc0bc62e6c6818955a0ff434e73f1ff0f03e1876f41fe6f69ef6fdacd7</code><span class="asset-size" title="899 bytes">899 B</span><span class="asset-age" data-release-age>刚刚</span></div>
           </div>
         </div>
       </section>

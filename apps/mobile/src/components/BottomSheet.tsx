@@ -1,8 +1,24 @@
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native"
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Icon } from "@/components/Icon"
 import { IconButton } from "@/components/ui"
 import { useTheme } from "@/theme"
+
+/** Shared tall-sheet height so panels open at the same size every time. */
+export function useBottomSheetHeight(ratio = 0.7) {
+  const { height } = useWindowDimensions()
+  return Math.round(height * ratio)
+}
 
 export function BottomSheet(props: {
   visible: boolean

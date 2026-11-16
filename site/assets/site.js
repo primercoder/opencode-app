@@ -135,6 +135,67 @@
   });
 
   /* ----------------------------------------------------------------
+     Release asset ages
+     ---------------------------------------------------------------- */
+
+  var release = document.querySelector("[data-release-published]");
+
+  if (release) {
+    var releaseTime = Date.parse(
+      release.getAttribute("data-release-published") || ""
+    );
+
+    if (!Number.isNaN(releaseTime)) {
+      var ageItems = document.querySelectorAll("[data-release-age]");
+      var releaseTitle = new Date(releaseTime).toLocaleString();
+
+      var formatAge = function (elapsed) {
+        var seconds = Math.max(0, Math.floor(elapsed / 1000));
+        if (seconds < 60) return zh ? "刚刚" : "just now";
+        var minutes = Math.floor(seconds / 60);
+        if (minutes < 60) {
+          return zh
+            ? minutes + " 分钟前"
+            : minutes + " minute" + (minutes === 1 ? "" : "s") + " ago";
+        }
+        var hours = Math.floor(minutes / 60);
+        if (hours < 24) {
+          return zh
+            ? hours + " 小时前"
+            : hours + " hour" + (hours === 1 ? "" : "s") + " ago";
+        }
+        var days = Math.floor(hours / 24);
+        if (days < 365) {
+          if (days < 30) {
+            return zh
+              ? days + " 天前"
+              : days + " day" + (days === 1 ? "" : "s") + " ago";
+          }
+          var months = Math.floor(days / 30);
+          return zh
+            ? months + " 个月前"
+            : months + " month" + (months === 1 ? "" : "s") + " ago";
+        }
+        var years = Math.floor(days / 365);
+        return zh
+          ? years + " 年前"
+          : years + " year" + (years === 1 ? "" : "s") + " ago";
+      };
+
+      var paintAges = function () {
+        var label = formatAge(Date.now() - releaseTime);
+        ageItems.forEach(function (item) {
+          item.textContent = label;
+          item.setAttribute("title", releaseTitle);
+        });
+      };
+
+      paintAges();
+      window.setInterval(paintAges, 60000);
+    }
+  }
+
+  /* ----------------------------------------------------------------
      Reveal on scroll
      ---------------------------------------------------------------- */
 
