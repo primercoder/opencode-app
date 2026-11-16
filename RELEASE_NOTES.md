@@ -31,5 +31,5 @@
   - 原始 Markdown 首次选择不跳动
   - 两个会话的草稿互相隔离，切换后正确恢复
 
-完整资产列表（文件名、SHA256、大小与发布时间）见项目网站发布页：
+按平台分类的下载列表见项目网站发布页：
 <https://primercoder.github.io/opencode-app/#download>
