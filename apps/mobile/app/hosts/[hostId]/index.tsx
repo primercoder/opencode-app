@@ -1192,7 +1192,7 @@ export default function WorkspaceScreen() {
         </Text>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${t("createInDirectory")} ${path || dirHome ?? ""}`}
+          accessibilityLabel={`${t("createInDirectory")} ${path || (dirHome ?? "")}`}
           disabled={creating || !opencodeOnline}
           onPress={() => void createSessionIn(path)}
           hitSlop={6}
@@ -1278,6 +1278,28 @@ export default function WorkspaceScreen() {
     // identity whenever its cached data changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalogRevision, ready])
+
+  // When opencode comes back after being down, resync everything the screen
+  // shows: the current transcript, the drawer's session list and the option
+  // catalog. Stale "network error" banners from the outage are cleared.
+  const wasOffline = useRef(false)
+  useEffect(() => {
+    if (opencodeOnline !== false) {
+      if (opencodeOnline === true && wasOffline.current) {
+        wasOffline.current = false
+        setError(null)
+        if (sessionIdRef.current) void loadSession(sessionIdRef.current)
+        invalidateSessionIndex(hostId)
+        if (agents !== null || models !== null || mcp !== null || skills !== null) void loadOptions()
+      }
+      return
+    }
+    wasOffline.current = true
+    // Suppress request errors while the outage lasts: the status bar already
+    // explains the state, and stray red text breaks the UI language.
+    setError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opencodeOnline, hostId])
 
   const refreshMcp = useCallback(async () => {
     try {
@@ -1878,9 +1900,9 @@ export default function WorkspaceScreen() {
         <View style={styles.headerActions}>
           <IconButton
             label={t("review")}
-            disabled={!sessionId}
+            disabled={!sessionId || opencodeOnline === false}
             onPress={() =>
-              sessionId
+              sessionId && opencodeOnline !== false
                 ? router.push({
                     pathname: "/hosts/[hostId]/sessions/[sessionId]/review",
                     params: { hostId, sessionId, directory: session?.location?.directory ?? "" },
@@ -1888,13 +1910,13 @@ export default function WorkspaceScreen() {
                 : undefined
             }
           >
-            <Icon name="edit" size={20} color={sessionId ? colors.muted : colors.faint} />
+            <Icon name="edit" size={20} color={sessionId && opencodeOnline !== false ? colors.muted : colors.faint} />
           </IconButton>
           <IconButton
             label={t("diff")}
-            disabled={!sessionId}
+            disabled={!sessionId || opencodeOnline === false}
             onPress={() =>
-              sessionId
+              sessionId && opencodeOnline !== false
                 ? router.push({
                     pathname: "/hosts/[hostId]/sessions/[sessionId]/diff",
                     params: { hostId, sessionId },
@@ -1902,7 +1924,7 @@ export default function WorkspaceScreen() {
                 : undefined
             }
           >
-            <Icon name="diff" size={20} color={sessionId ? colors.muted : colors.faint} />
+            <Icon name="diff" size={20} color={sessionId && opencodeOnline !== false ? colors.muted : colors.faint} />
           </IconButton>
         </View>
       </View>
@@ -2063,7 +2085,7 @@ export default function WorkspaceScreen() {
             </View>
           ) : null}
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {error && opencodeOnline !== false ? <Text style={styles.error}>{error}</Text> : null}
 
           <PendingDock
             permissions={permissions}
@@ -2218,7 +2240,7 @@ export default function WorkspaceScreen() {
             <View style={styles.composerRow}>
               <TextInput
                 ref={inputRef}
-                editable={ready && !sending && !readOnly && voiceStage === "closed"}
+                editable={ready && !sending && !readOnly && voiceStage === "closed" && opencodeOnline !== false}
                 multiline
                 onChangeText={setDraft}
                 onSelectionChange={(event) => setDraftSelection(event.nativeEvent.selection)}
@@ -2234,12 +2256,13 @@ export default function WorkspaceScreen() {
                   sending ||
                   dictation.transcribing ||
                   !voiceReady ||
-                  voiceStage !== "closed"
+                  voiceStage !== "closed" ||
+                  opencodeOnline === false
                 }
                 onPress={openVoicePanel}
                 style={({ pressed }) => [
                   styles.iconAction,
-                  (!ready || readOnly || sending || !voiceReady || voiceStage !== "closed") && { opacity: 0.32 },
+                  (!ready || readOnly || sending || !voiceReady || voiceStage !== "closed" || opencodeOnline === false) && { opacity: 0.32 },
                   pressed && { opacity: 0.6 },
                 ]}
               >
@@ -2257,6 +2280,7 @@ export default function WorkspaceScreen() {
                   sending ||
                   readOnly ||
                   voiceStage !== "closed" ||
+                  opencodeOnline === false ||
                   (draft.trim().length === 0 && stagedComments.length === 0)
                 }
                 onPress={() => void send()}
@@ -2267,6 +2291,7 @@ export default function WorkspaceScreen() {
                     sending ||
                     readOnly ||
                     voiceStage !== "closed" ||
+                    opencodeOnline === false ||
                     (draft.trim().length === 0 && stagedComments.length === 0)) && {
                     opacity: 0.32,
                   },
@@ -2317,7 +2342,10 @@ export default function WorkspaceScreen() {
                   const dy = touch ? Math.abs(touch.pageY - statusGesture.current.y) : 0
                   const wasScrolled = statusGesture.current.scrolled || dx > 8 || dy > 8
                   statusGesture.current.scrolled = false
-                  if (!wasScrolled) openPanel()
+                  // The session-settings panel is opencode-backed; keep it
+                  // closed while opencode is down instead of surfacing another
+                  // error surface.
+                  if (!wasScrolled && opencodeOnline !== false) openPanel()
                 }}
                 onScrollBeginDrag={() => {
                   statusGesture.current.scrolled = true
@@ -2356,6 +2384,7 @@ export default function WorkspaceScreen() {
         hostName={host.name}
         statusLabel={statusLabel}
         currentSessionId={sessionId}
+        opencodeOffline={opencodeOnline === false}
         onClose={closeDrawer}
         onSelect={(next) => selectSession(next.id)}
         onNewSession={() => void openProjectPicker()}

@@ -18,6 +18,8 @@ export function SessionDrawer(props: {
   hostId: string
   hostName: string
   currentSessionId?: string
+  /** True while the host is reachable but opencode is down. */
+  opencodeOffline?: boolean
   onClose: () => void
   onSelect: (session: SessionInfo) => void
   onNewSession: () => void
@@ -189,11 +191,16 @@ export function SessionDrawer(props: {
           {index.loading && index.sessions === null ? (
             <Text style={{ fontSize: 13, color: colors.faint, textAlign: "center", marginTop: 24 }}>{t("loadingSessions")}</Text>
           ) : null}
-          {index.error ? (
+          {index.error && !props.opencodeOffline ? (
             <Pressable onPress={() => void index.reload()} style={{ padding: 12 }}>
               <Text style={{ fontSize: 12.5, color: colors.danger }}>{t("networkError", { message: index.error })}</Text>
               <Text style={{ fontSize: 12.5, color: colors.accent, marginTop: 4 }}>{t("retry")}</Text>
             </Pressable>
+          ) : null}
+          {props.opencodeOffline ? (
+            <Text style={{ fontSize: 12.5, color: colors.faint, textAlign: "center", marginTop: 16, paddingHorizontal: 12 }}>
+              {t("opencodeOfflineShort")}
+            </Text>
           ) : null}
 
           {value ? (
