@@ -14,11 +14,12 @@ import { addDevice, consumePendingPair, createDevice, findDevice, verifyDeviceTo
 import { AsrError, type AsrService } from "./asr/service.ts"
 import { handleProxyRequest } from "./proxy.ts"
 import type { DeviceScope, HostConfig, Identity } from "./config.ts"
-import type { OpencodeTarget } from "./opencode.ts"
+import type { OpencodeState } from "./opencode.ts"
+import { checkDirectory, listDirectories, parseDirectoryPath } from "./pathService.ts"
+import { HOST_VERSION } from "./daemon.ts"
 
 const PROLOGUE = new TextEncoder().encode("ocremote/1")
 const PROTOCOL_VERSION = 1
-const HOST_VERSION = "0.1.6"
 
 type AsrRequest = {
   chunks: Uint8Array[]
@@ -54,7 +55,10 @@ export type ClientRegistry = {
 export type HostContext = {
   identity: Identity
   config: HostConfig
-  target: OpencodeTarget
+  /** Live opencode availability, re-read on every request. */
+  opencode(): OpencodeState
+  /** Root directory phones may browse when creating sessions. */
+  browseRoot: string
   lanUrls: string[]
   asr: AsrService
   clients: ClientRegistry
@@ -82,6 +86,15 @@ export class ConnectionSession {
 
   get handshakeComplete(): boolean {
     return this.sendCipher !== undefined
+  }
+
+  get isClosed(): boolean {
+    return this.closed
+  }
+
+  /** Pushes an unsolicited control frame (for example opencode state). */
+  push(value: OcrpControlFrame): void {
+    if (this.deviceId) this.sendControl(value)
   }
 
   onText(message: string): void {
@@ -266,9 +279,25 @@ export class ConnectionSession {
       this.sendError("BAD_REQUEST", "invalid request frame")
       return
     }
+    // Host-served routes work without opencode (directory picking for new
+    // sessions, and health info). Everything else proxies to opencode.
+    const local = await this.handleLocalRequest(value)
+    if (local) return
+
     const controller = new AbortController()
     this.aborts.set(value.id, controller)
     try {
+      const opencode = this.ctx.opencode()
+      const target = opencode.target
+      if (!opencode.available || !target) {
+        this.sendControl({
+          t: "err",
+          id: value.id,
+          code: "OPENCODE_OFFLINE",
+          message: `opencode is not running on the host${opencode.error ? ` (${opencode.error})` : ""}`,
+        })
+        return
+      }
       await handleProxyRequest({
         request: {
           id: value.id,
@@ -279,7 +308,7 @@ export class ConnectionSession {
             : {}),
           ...(typeof value.body === "string" ? { body: value.body } : {}),
         },
-        target: this.ctx.target,
+        target,
         scope: this.scope,
         signal: controller.signal,
         sender: {
@@ -294,6 +323,68 @@ export class ConnectionSession {
     } finally {
       this.aborts.delete(value.id)
     }
+  }
+
+  /**
+   * Routes served by the host itself. Returns true when the request was fully
+   * answered. These keep working while opencode is down, which is what lets
+   * the phone pick a new session directory before opencode starts.
+   */
+  private async handleLocalRequest(value: OcrpControlFrame): Promise<boolean> {
+    const path = value.path
+    const method = value.method
+    if (typeof path !== "string" || typeof method !== "string") return false
+    if (!path.startsWith("/host/")) return false
+
+    const [rawPath, query = ""] = path.split("?")
+    try {
+      if (rawPath === "/host/runtime" && method === "GET") {
+        const opencode = this.ctx.opencode()
+        this.sendJson(value.id, {
+          home: this.ctx.browseRoot,
+          opencode: {
+            available: opencode.available,
+            version: opencode.target?.version ?? "unknown",
+            ...(opencode.target ? { baseUrl: opencode.target.url } : {}),
+            ...(opencode.error ? { error: opencode.error } : {}),
+          },
+        })
+        return true
+      }
+      if (rawPath === "/host/dirs" && method === "GET") {
+        const listing = await listDirectories(parseDirectoryPath(query), this.ctx.browseRoot)
+        this.sendJson(value.id, listing)
+        return true
+      }
+      if (rawPath === "/host/dirs/check" && method === "GET") {
+        const check = await checkDirectory(parseDirectoryPath(query), this.ctx.browseRoot)
+        this.sendJson(value.id, check)
+        return true
+      }
+      // A read-only device may still browse directories; it cannot create.
+      if (rawPath === "/host/dirs" && method !== "GET") {
+        this.sendControl({ t: "err", id: value.id, code: "BAD_REQUEST", message: "unsupported directory method" })
+        return true
+      }
+    } catch (error) {
+      this.sendControl({
+        t: "err",
+        id: value.id,
+        code: "DIRECTORY_ERROR",
+        message: error instanceof Error ? error.message : "directory request failed",
+      })
+      return true
+    }
+    this.sendControl({ t: "err", id: value.id, code: "NOT_FOUND", message: `unknown host route: ${rawPath}` })
+    return true
+  }
+
+  private sendJson(id: unknown, body: unknown): void {
+    const text = JSON.stringify(body)
+    const requestId = typeof id === "number" ? id : -1
+    this.sendControl({ t: "res", id: requestId, status: 200, headers: { "content-type": "application/json" } })
+    if (text) this.sendControl({ t: "chunk", id: requestId, seq: 0, data: text })
+    this.sendControl({ t: "end", id: requestId })
   }
 
   private async asrInfo(): Promise<Record<string, unknown>> {
@@ -400,14 +491,19 @@ export class ConnectionSession {
   }
 
   private hostInfo(): Record<string, unknown> {
+    const opencode = this.ctx.opencode()
     return {
       v: PROTOCOL_VERSION,
       host: { id: this.ctx.identity.hostId, name: this.ctx.config.name, version: HOST_VERSION },
       opencode: {
-        version: this.ctx.target.version ?? "unknown",
+        available: opencode.available,
+        version: opencode.target?.version ?? "unknown",
         api: "v2",
-        baseUrl: this.ctx.target.url,
+        ...(opencode.target ? { baseUrl: opencode.target.url } : {}),
+        ...(opencode.error ? { error: opencode.error } : {}),
       },
+      /** Root the phone may browse when choosing a session directory. */
+      home: this.ctx.browseRoot,
       capabilities: ["binary", "sse"],
       lanUrls: this.ctx.lanUrls,
     }

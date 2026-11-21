@@ -57,6 +57,7 @@ export class HostEventStream {
   }
 
   private async loop(): Promise<void> {
+    let failures = 0
     while (this.running) {
       if (this.source.state !== "ready") {
         await delay(1_000)
@@ -66,6 +67,7 @@ export class HostEventStream {
       const controller = new AbortController()
       this.abort = controller
       const parser = new SseParser()
+      let streamed = false
       try {
         await this.source.stream({
           method: "GET",
@@ -74,6 +76,8 @@ export class HostEventStream {
           signal: controller.signal,
           timeoutMs: 0,
           onChunk: (text) => {
+            streamed = true
+            failures = 0
             for (const raw of parser.push(text)) this.dispatch(raw.data)
           },
         })
@@ -87,7 +91,12 @@ export class HostEventStream {
         if (this.abort === controller) this.abort = undefined
       }
 
-      if (this.running) await delay(1_000)
+      if (!this.running) return
+      // Back off when the stream keeps failing without delivering data, so an
+      // unreachable host does not cause a reconnect every second.
+      failures = streamed ? 0 : failures + 1
+      const wait = failures <= 1 ? 1_000 : Math.min(15_000, 1_000 * 2 ** Math.min(failures - 1, 4))
+      await delay(wait)
     }
   }
 

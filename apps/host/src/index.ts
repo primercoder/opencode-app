@@ -26,6 +26,7 @@ import {
   sameRelayUrl,
 } from "./relay.ts"
 import { resolveOpencodeTarget } from "./opencode.ts"
+import { installService, serviceInfo, uninstallService, type ServiceInfo } from "./service.ts"
 import { httpOrigin, lanUrls, startHost, type DirectStatus, type Host, type PairRoute } from "./server.ts"
 import {
   HOST_VERSION,
@@ -474,17 +475,67 @@ asrCommand
     }
   })
 
+const serviceCommand = program
+  .command("service")
+  .description("Install or remove user-level autostart for the host")
+
+serviceCommand
+  .command("status")
+  .description("Show the autostart unit and the commands that control it")
+  .action(async () => {
+    printService(await serviceInfo())
+  })
+
+serviceCommand
+  .command("install")
+  .description("Write the user-level autostart unit (does not start it)")
+  .option("--systemd", "install a systemd user unit even if detection says otherwise", false)
+  .action(async () => {
+    const command = selfCommand()
+    const info = await installService({
+      // Autostart always runs in the foreground so the supervisor owns the
+      // process lifetime. The host itself remains independent of opencode.
+      command: [...command.prefix, "start", "--foreground"],
+      cwd: command.cwd,
+      env: { OCREMOTE_DAEMON_CHILD: "1" },
+    })
+    printService(info)
+    if (info.enableCommand) {
+      console.log("")
+      console.log("Enable autostart now with:")
+      console.log(`  ${info.enableCommand}`)
+    }
+  })
+
+serviceCommand
+  .command("uninstall")
+  .description("Remove the autostart unit")
+  .action(async () => {
+    const before = await serviceInfo()
+    const info = await uninstallService()
+    printService(info)
+    if (before.enableCommand) {
+      console.log("")
+      console.log("If the service was enabled, stop it with:")
+      console.log(`  ${before.disableCommand ?? "the supervisor's disable command"}`)
+    }
+  })
+
 program
   .command("doctor")
   .description("Check config, identity and opencode connectivity")
   .action(async () => {
     const home = resolveHome()
     const identity = await loadOrCreateIdentity(home)
-    const target = await resolveOpencodeTarget()
     const { config } = await loadLocal()
     console.log(`host id: ${identity.hostId}`)
     console.log(`fingerprint: ${fingerprintOfPublicKey(identity.publicKey)}`)
-    console.log(`opencode: ${target.url} (${target.version ?? "unknown"})`)
+    try {
+      const target = await resolveOpencodeTarget()
+      console.log(`opencode: ${target.url} (${target.version ?? "unknown"})`)
+    } catch (error) {
+      console.log(`opencode: not running · ${error instanceof Error ? error.message : String(error)}`)
+    }
     console.log(`direct: ${config.direct ? `${config.direct.hostname}:${config.direct.port}` : "off"}`)
     console.log(`relay: ${config.relay ? `${config.relay.url} room=${config.relay.room}` : "off"}`)
     console.log(`config: ${home}`)
@@ -513,8 +564,10 @@ type StatusResult = {
   startedAt: number
   direct?: DirectStatus
   relay: { url: string; room: string; state?: string } | null
-  opencodeUrl: string
+  opencodeUrl?: string
   opencodeVersion?: string
+  opencodeAvailable: boolean
+  opencodeError?: string
   clients: number
   logPath: string
   version: string
@@ -545,18 +598,34 @@ async function runForeground(options: StartOptions): Promise<void> {
 
   const currentDirect = host.direct()
   const currentRelay = host.relay()
+  const initialOpencode = host.opencode()
   const state: HostState = {
     pid: process.pid,
     startedAt: Date.now(),
     ...(currentDirect ? { direct: currentDirect } : {}),
     relay: currentRelay ? { url: currentRelay.url, room: currentRelay.room, state: currentRelay.state } : null,
-    opencodeUrl: host.target.url,
-    ...(host.target.version ? { opencodeVersion: host.target.version } : {}),
+    ...(initialOpencode.target ? { opencodeUrl: initialOpencode.target.url } : {}),
+    ...(initialOpencode.target?.version ? { opencodeVersion: initialOpencode.target.version } : {}),
+    opencodeAvailable: initialOpencode.available,
+    ...(initialOpencode.error ? { opencodeError: initialOpencode.error } : {}),
     socketPath: socketPath(),
     logPath: logPath(),
     version: HOST_VERSION,
   }
   await writeState(state)
+
+  // Keep the persisted snapshot in sync even while no control request arrives,
+  // so `ocremote status` reflects opencode starting or stopping afterwards.
+  host.onOpencodeChange((next) => {
+    if (next.target) state.opencodeUrl = next.target.url
+    else delete state.opencodeUrl
+    if (next.target?.version) state.opencodeVersion = next.target.version
+    else delete state.opencodeVersion
+    state.opencodeAvailable = next.available
+    if (next.error) state.opencodeError = next.error
+    else delete state.opencodeError
+    void writeState(state).catch(() => undefined)
+  })
 
   let controlServer: Bun.Server<unknown> | undefined
   let shuttingDown = false
@@ -576,8 +645,13 @@ async function runForeground(options: StartOptions): Promise<void> {
   const snapshot = async (): Promise<StatusResult> => {
     const direct = host.direct()
     const relay = host.relay()
+    const opencode = host.opencode()
     const result: StatusResult = {
       ...state,
+      ...(opencode.target ? { opencodeUrl: opencode.target.url } : {}),
+      ...(opencode.target?.version ? { opencodeVersion: opencode.target.version } : {}),
+      ...(opencode.error ? { opencodeError: opencode.error } : {}),
+      opencodeAvailable: opencode.available,
       relay: relay ? { url: relay.url, room: relay.room, state: relay.state } : null,
       clients: host.clients().length,
     }
@@ -609,8 +683,13 @@ async function runForeground(options: StartOptions): Promise<void> {
               ...(typeof body.directUrl === "string" ? { directUrl: body.directUrl } : {}),
             })
             const result: PairResult[] = routes.map((route) => {
+              // Direct offers are shortened by the host's own HTTP listener;
+              // relay offers arrive already shortened by the relay (the offer
+              // embeds a ~300 char enrollment link and would otherwise make the
+              // QR grow past 100 modules). Keep whichever one applies.
               const shortUrl =
-                route.kind === "direct" ? host.shortenOffer(route.offer, httpOrigin(route.url)) : undefined
+                route.shortUrl ??
+                (route.kind === "direct" ? host.shortenOffer(route.offer, httpOrigin(route.url)) : undefined)
               return {
                 ...route,
                 ...(shortUrl ? { shortUrl } : {}),
@@ -669,7 +748,14 @@ async function runForeground(options: StartOptions): Promise<void> {
   })
 
   console.log(`ocremote ${HOST_VERSION}`)
-  console.log(`opencode  ${host.target.url} (${host.target.version ?? "unknown"})`)
+  const startOpencode = host.opencode()
+  console.log(
+    `opencode  ${
+      startOpencode.available && startOpencode.target
+        ? `${startOpencode.target.url} (${startOpencode.target.version ?? "unknown"})`
+        : `not connected · ${startOpencode.error ?? "waiting for opencode"}`
+    }`,
+  )
   printTransports(host)
   const caps = (await host.asr.capabilities()) as { available?: boolean; models?: Array<{ id: string }> }
   console.log(
@@ -827,10 +913,30 @@ function printStatus(state: StatusResult): void {
   if (direct) console.log(`direct    ${directUrl(direct)}`)
   if (state.relay) console.log(`relay     ${state.relay.url} · room ${state.relay.room}`)
   if (!direct && !state.relay) console.log("routes    none")
-  console.log(`opencode  ${state.opencodeUrl} (${state.opencodeVersion ?? "unknown"})`)
+  console.log(
+    `opencode  ${
+      state.opencodeAvailable && state.opencodeUrl
+        ? `${state.opencodeUrl} (${state.opencodeVersion ?? "unknown"})`
+        : `not connected · ${state.opencodeError ?? "waiting for opencode"}`
+    }`,
+  )
   console.log(`clients   ${state.clients}`)
   console.log(`uptime    ${duration(Date.now() - state.startedAt)}`)
   console.log(`log       ${state.logPath}`)
+}
+
+function printService(info: ServiceInfo): void {
+  if (info.kind === "unsupported") {
+    console.log(`autostart   unsupported on ${process.platform}`)
+    console.log("Run the host under your own supervisor, for example: ocremote start --foreground")
+    return
+  }
+  console.log(`autostart   ${info.installed ? "installed" : "not installed"} (${info.kind})`)
+  if (info.path) console.log(`unit        ${info.path}`)
+  if (info.enableCommand) console.log(`enable      ${info.enableCommand}`)
+  if (info.disableCommand) console.log(`disable     ${info.disableCommand}`)
+  if (info.statusCommand) console.log(`status      ${info.statusCommand}`)
+  if (info.logCommand) console.log(`logs        ${info.logCommand}`)
 }
 
 function printTransports(host: Host): void {

@@ -19,11 +19,13 @@ import {
   type RelayConfig,
 } from "./config.ts"
 import { addPendingPair, hashPairCode } from "./pairing.ts"
-import { resolveOpencodeTarget, type OpencodeTarget } from "./opencode.ts"
+import { OpencodeMonitor, type OpencodeState } from "./opencode.ts"
+import { browseRoot } from "./pathService.ts"
 import { HostModelManager } from "./asr/modelManager.ts"
 import { HostAsr, type AsrService } from "./asr/service.ts"
 import { RelayHostClient, type RelayState } from "./relay.ts"
 import { ConnectionSession, type ClientInfo, type HostContext } from "./session.ts"
+import { HOST_VERSION } from "./daemon.ts"
 
 export type HostOptions = {
   homeDir?: string
@@ -43,6 +45,10 @@ export type HostOptions = {
   modelBaseUrl?: string
   asrModelId?: string
   asr?: AsrService
+  /** How often to re-probe opencode while it is unreachable. */
+  opencodeProbeMs?: number
+  /** Root directory phones may browse when creating sessions. */
+  browseRoot?: string
 }
 
 export type DirectStatus = {
@@ -70,9 +76,13 @@ export type PairRoute = {
 export type Host = {
   identity: Identity
   config: HostConfig
-  target: OpencodeTarget
   modelsDir: string
   asr: AsrService
+  /** Live opencode registration/probe state; the host runs without opencode. */
+  opencode(): OpencodeState
+  onOpencodeChange(listener: (state: OpencodeState) => void): () => void
+  /** Re-probes opencode immediately (used by status and diagnostics). */
+  refreshOpencode(): Promise<OpencodeState>
   /** Current local direct listener, or undefined when direct is off. */
   direct(): DirectStatus | undefined
   relay(): RelayStatus | undefined
@@ -99,10 +109,14 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     hostId: identity.hostId,
     name: options.name ?? process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
   })
-  const target = await resolveOpencodeTarget({
+  // The host must come up even when opencode is not running. The monitor keeps
+  // probing and reports availability to paired phones.
+  const monitor = new OpencodeMonitor({
     ...(options.opencodeUrl ? { url: options.opencodeUrl } : {}),
     ...(options.opencodePassword ? { password: options.opencodePassword } : {}),
+    ...(options.opencodeProbeMs ? { intervalMs: options.opencodeProbeMs } : {}),
   })
+  await monitor.start()
 
   const modelManager = new HostModelManager({
     ...(options.modelsDir ? { modelsDir: options.modelsDir } : {}),
@@ -121,11 +135,15 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
 
   const pairPages = new Map<string, PairPage>()
   const sessions = new WeakMap<object, ConnectionSession>()
+  // Every authenticated session, so opencode availability changes can be
+  // pushed to phones without waiting for their next poll.
+  const liveSessions = new Set<ConnectionSession>()
 
   const ctx: HostContext = {
     identity,
     config,
-    target,
+    opencode: () => monitor.state,
+    browseRoot: options.browseRoot ?? browseRoot(),
     asr,
     lanUrls: [],
     clients: {
@@ -149,6 +167,26 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
 
   const persist = async (): Promise<void> => saveConfig(home, config)
 
+  // Push opencode availability so the phone can show "host online, opencode
+  // offline" without polling. Phones that connect later get it in `welcome`.
+  monitor.onChange((state) => {
+    for (const session of liveSessions) {
+      if (session.isClosed) {
+        liveSessions.delete(session)
+        continue
+      }
+      session.push({
+        t: "opencode.state",
+        state: {
+          available: state.available,
+          version: state.target?.version ?? "unknown",
+          ...(state.target ? { baseUrl: state.target.url } : {}),
+          ...(state.error ? { error: state.error } : {}),
+        },
+      })
+    }
+  })
+
   const stopDirect = async (): Promise<void> => {
     const server = directServer
     directServer = undefined
@@ -168,7 +206,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
       port: direct.port,
       fetch(request, current) {
         const url = new URL(request.url)
-        if (url.pathname === "/health") return Response.json({ ok: true, v: 2, version: "0.1.6" })
+        if (url.pathname === "/health") return Response.json({ ok: true, v: 2, version: HOST_VERSION })
         if (url.pathname.startsWith("/p/")) {
           const id = url.pathname.slice("/p/".length)
           const page = pairPages.get(id)
@@ -195,6 +233,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
             ...(ws.remoteAddress ? { remoteAddress: ws.remoteAddress } : {}),
           })
           sessions.set(ws, session)
+          liveSessions.add(session)
         },
         message(ws, message) {
           const session = sessions.get(ws)
@@ -203,7 +242,9 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
           else session.onBinary(new Uint8Array(message))
         },
         close(ws) {
-          sessions.get(ws)?.close()
+          const session = sessions.get(ws)
+          session?.close()
+          if (session) liveSessions.delete(session)
           sessions.delete(ws)
         },
       },
@@ -246,9 +287,16 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     const client = new RelayHostClient({
       config: next,
       ...(caPath ?? previousCa ? { caPath: caPath ?? previousCa } : {}),
-      createSession: (socket) => new ConnectionSession(socket, ctx, { transport: "relay" }),
+      createSession: (socket) => {
+        const session = new ConnectionSession(socket, ctx, { transport: "relay" })
+        liveSessions.add(session)
+        return session
+      },
       onState: (state, detail) => {
         relayState = state
+        for (const session of liveSessions) {
+          if (session.isClosed) liveSessions.delete(session)
+        }
         if (state === "reconnecting" || state === "closed") {
           console.warn(`[relay] ${state}${detail ? `: ${detail}` : ""}`)
         }
@@ -294,8 +342,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     }
   }
 
-  const phoneDirectUrl = (override?: string): string | undefined => {
-    if (override) return override
+  const phoneDirectUrl = (override?: string): string | undefined => {    if (override) return override
     if (!directStatus) return undefined
     if (isLoopbackHostname(directStatus.hostname)) return undefined
     const candidate = directPairUrl(directStatus.hostname, directStatus.port)
@@ -329,9 +376,17 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
   const host: Host = {
     identity,
     config,
-    target,
     modelsDir: modelManager.modelsDir,
     asr,
+    opencode() {
+      return monitor.state
+    },
+    onOpencodeChange(listener) {
+      return monitor.onChange(listener)
+    },
+    async refreshOpencode() {
+      return monitor.refresh()
+    },
     direct() {
       return directStatus ? { ...directStatus, urls: [...directStatus.urls] } : undefined
     },
@@ -367,22 +422,29 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
         // connect time, and never fall back to a stale cached invite.
         const invite = await relayInvite()
         const { code, pending } = addPendingPair(config, scope, ttlMs)
+        const offer = buildOffer(code, pending.expiresAt, [
+          {
+            kind: "relay",
+            url: relayConfig.url,
+            room: relayConfig.room,
+            relayKey: relayConfig.relayKey,
+            priority: 0,
+            invite,
+          },
+        ])
+        // A relay-only offer embeds the whole enrollment link (~300 chars), so
+        // the QR would grow past 100 modules and wrap in an 80-column terminal.
+        // Publish it on the relay and carry a short URL instead. Older relays
+        // without the capability fall back to the full offer.
+        const shortUrl = await relayClient?.publishPairOffer(offer).catch(() => undefined)
         routes.push({
           kind: "relay",
-          offer: buildOffer(code, pending.expiresAt, [
-            {
-              kind: "relay",
-              url: relayConfig.url,
-              room: relayConfig.room,
-              relayKey: relayConfig.relayKey,
-              priority: 0,
-              invite,
-            },
-          ]),
+          offer,
           url: relayConfig.url,
           room: relayConfig.room,
           hasInvite: true,
           expiresAt: pending.expiresAt,
+          ...(shortUrl ? { shortUrl } : {}),
         })
       }
       if (routes.length === 0) throw new Error("no phone-reachable transport is enabled")
@@ -425,6 +487,7 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     async close() {
       if (closed) return
       closed = true
+      monitor.close()
       asr.close()
       relayClient?.close()
       relayClient = undefined

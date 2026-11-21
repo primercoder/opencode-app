@@ -22,6 +22,7 @@ import { pairWithOffer, resolvePairingInput, type PairingStage } from "@/service
 import { enrollRelayClient } from "@/services/relay"
 import { loadRelayAccess, normalizeRelayUrl } from "@/storage/relay"
 import { HostError, type RelayAuthResolver } from "@/transport/hostRuntime"
+import { ensureConnection } from "@/transport/runtimes"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
 
 export default function AddHostScreen() {
@@ -74,7 +75,13 @@ export default function AddHostScreen() {
         return
       }
       const { host } = await pairWithOffer(offer, setStage, relay.auth ? { relayAuth: relay.auth } : {})
-      router.replace({ pathname: "/hosts/[hostId]", params: { hostId: host.id } })
+      // A freshly added host must not drop the user into an empty session
+      // screen. Persist it, return to the host list, and bring the transport
+      // up in the background so the new row shows "connecting → connected"
+      // instead of sitting at "not connected" until the user taps it.
+      void ensureConnection(host.id).catch(() => undefined)
+      if (router.canDismiss()) router.dismissTo("/")
+      else router.replace("/")
     } catch (cause) {
       const failure = cause instanceof HostError ? cause : null
       setError(pairingMessage(failure, t))

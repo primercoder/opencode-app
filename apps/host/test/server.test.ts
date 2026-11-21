@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parsePairingOffer } from "@ocremote/protocol"
@@ -275,7 +275,145 @@ describe("host LAN server", () => {
     const info = await client.request("GET", "/api/info")
     expect(JSON.parse(info.body).version).toBe("after-cancel")
   })
+
+  test("starts without opencode and connects once it appears", async () => {
+    const home = await mkdtemp(join(tmpdir(), "ocremote-host-noopencode-"))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+
+    // Nothing is listening on this port yet: the host must still start.
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("x") })
+    const port = probe.port as number
+    probe.stop(true)
+
+    const host = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${port}`,
+      opencodePassword: "test-password",
+      opencodeProbeMs: 150,
+    })
+    cleanups.push(() => host.close())
+
+    expect(host.opencode().available).toBe(false)
+    expect(host.direct()).toBeDefined()
+
+    const client = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
+    cleanups.push(() => client.close())
+    const paired = await client.pair(await host.issuePairCode())
+    expect(paired.opencode.available).toBe(false)
+
+    // Requests fail with a dedicated code instead of hanging.
+    await expect(client.request("GET", "/api/info")).rejects.toThrow(/opencode is not running|OPENCODE_OFFLINE/iu)
+
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch() {
+        return Response.json({ version: "late-2.3.2" })
+      },
+    })
+    cleanups.push(() => opencode.stop(true))
+
+    const available = await waitFor(() => host.opencode().available, 5_000)
+    expect(available).toBe(true)
+    const info = await client.request("GET", "/api/info")
+    expect(info.status).toBe(200)
+    expect(JSON.parse(info.body).version).toBe("late-2.3.2")
+  })
+
+  test("answers host directory routes without opencode", async () => {
+    const home = await mkdtemp(join(tmpdir(), "ocremote-host-dirs-"))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+    await mkdir(join(home, "code", "project"), { recursive: true })
+
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("x") })
+    const opencodePort = probe.port as number
+    probe.stop(true)
+
+    const host = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${opencodePort}`,
+      opencodePassword: "x",
+      opencodeProbeMs: 60_000,
+      browseRoot: home,
+    })
+    cleanups.push(() => host.close())
+
+    const client = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
+    cleanups.push(() => client.close())
+    await client.pair(await host.issuePairCode())
+    expect(host.opencode().available).toBe(false)
+
+    const runtime = await client.request("GET", "/host/runtime")
+    const runtimeBody = JSON.parse(runtime.body) as { home: string; opencode: { available: boolean } }
+    expect(runtimeBody.home).toBe(home)
+    expect(runtimeBody.opencode.available).toBe(false)
+
+    const listing = await client.request("GET", `/host/dirs?path=${encodeURIComponent(home)}`)
+    const listingBody = JSON.parse(listing.body) as {
+      relative: string
+      entries: Array<{ name: string; relative: string }>
+    }
+    expect(listingBody.relative).toBe("")
+    expect(listingBody.entries.map((entry) => entry.name)).toEqual(["code"])
+
+    const nested = await client.request("GET", `/host/dirs?path=${encodeURIComponent("code")}`)
+    expect(JSON.parse(nested.body).relative).toBe("code")
+
+    const checked = await client.request("GET", `/host/dirs/check?path=${encodeURIComponent("code/project")}`)
+    expect(JSON.parse(checked.body)).toMatchObject({ valid: true, directory: true, relative: "code/project" })
+
+    await expect(client.request("GET", `/host/dirs?path=${encodeURIComponent("/etc")}`)).rejects.toThrow(/家目录/u)
+
+    // Regular opencode routes still fail clearly while it is down.
+    await expect(client.request("GET", "/api/session?limit=1")).rejects.toThrow(/OPENCODE_OFFLINE|not running/iu)
+  })
+
+  test("reports opencode going away without dropping clients", async () => {
+    const home = await mkdtemp(join(tmpdir(), "ocremote-host-opencode-down-"))
+    cleanups.push(() => rm(home, { recursive: true, force: true }))
+
+    const opencode = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        return Response.json({ version: "short-lived" })
+      },
+    })
+    const host = await startHost({
+      homeDir: home,
+      hostname: "127.0.0.1",
+      port: 0,
+      opencodeUrl: `http://127.0.0.1:${opencode.port}`,
+      opencodePassword: "x",
+      opencodeProbeMs: 150,
+    })
+    cleanups.push(() => host.close())
+
+    const client = await connectClient(`ws://127.0.0.1:${host.direct()!.port}/ws`, host.identity.publicKey)
+    cleanups.push(() => client.close())
+    await client.pair(await host.issuePairCode())
+    expect(host.opencode().available).toBe(true)
+
+    opencode.stop(true)
+    expect(await waitFor(() => !host.opencode().available, 5_000)).toBe(true)
+    // The client session survives; only opencode requests are rejected.
+    expect(host.clients()).toHaveLength(1)
+    await expect(client.request("GET", "/api/info")).rejects.toThrow(/OPENCODE_OFFLINE|not running/iu)
+  })
 })
+
+async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (check()) return true
+    await Bun.sleep(50)
+  }
+  return check()
+}
 
 type Client = Awaited<ReturnType<typeof connectClient>>
 
@@ -327,17 +465,32 @@ async function connectClient(url: string, hostPublicKey: Uint8Array) {
     ws.send(encodeProtectedRecord("binary", frame, keys.send))
   }
   const receiveControl = async () => {
-    const data = await next()
-    if (typeof data === "string") throw new Error("expected binary protected record")
-    const record = decodeProtectedRecord(data, keys.receive)
-    const frame = decodeFrame(record.data)
-    if (frame.kind !== "control") throw new Error("expected control frame")
-    return frame.value
+    while (true) {
+      const data = await next()
+      if (typeof data === "string") throw new Error("expected binary protected record")
+      const record = decodeProtectedRecord(data, keys.receive)
+      const frame = decodeFrame(record.data)
+      if (frame.kind !== "control") throw new Error("expected control frame")
+      // Unsolicited state pushes are not part of a request/response exchange.
+      if (frame.value.t === "opencode.state") continue
+      return frame.value
+    }
   }
   const receiveFor = async (id: number) => {
     while (true) {
       const value = await receiveControl()
       if (typeof value.id !== "number" || value.id === id) return value
+    }
+  }
+  /** Waits for one unsolicited `opencode.state` push. */
+  const receiveOpencodeState = async () => {
+    while (true) {
+      const data = await next()
+      if (typeof data === "string") throw new Error("expected binary protected record")
+      const record = decodeProtectedRecord(data, keys.receive)
+      const frame = decodeFrame(record.data)
+      if (frame.kind !== "control") continue
+      if (frame.value.t === "opencode.state") return frame.value as Record<string, unknown>
     }
   }
 
@@ -346,6 +499,7 @@ async function connectClient(url: string, hostPublicKey: Uint8Array) {
     closed,
     sendControl,
     receiveFor,
+    receiveOpencodeState,
     async pair(code: string) {
       sendControl({
         t: "hello",

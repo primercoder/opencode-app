@@ -52,7 +52,7 @@
           <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub 仓库" rel="noreferrer">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" /></svg>
           </a>
-          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.9 <span class="arrow">↓</span></a>
+          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 0.1.10 <span class="arrow">↓</span></a>
           <button class="nav-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="site-menu">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
           </button>
@@ -63,7 +63,7 @@
     <main id="main">
       <section class="page-hero">
         <div class="wrap">
-          <p class="eyebrow"><span class="dot"></span>QUICK START · 0.1.9</p>
+          <p class="eyebrow"><span class="dot"></span>QUICK START · 0.1.10</p>
           <h1>三步连上你的 opencode。</h1>
           <p class="lede">主机端和 opencode 跑在同一台电脑；手机负责操作；中继端只有跨网络时才需要。下面所有命令都以 Linux x64 为例，arm64 替换文件名即可。</p>
         </div>
@@ -88,13 +88,13 @@
               <p>解压主机包，运行开始命令。主机端会读取本机 opencode 服务注册信息，opencode 密码不会离开电脑。</p>
               <div class="code-block">
                 <div class="code-head"><i></i><i></i><i></i><span>HOST · LINUX X64</span><button class="copy" type="button" data-copy-target="host-x64">复制</button></div>
-                <pre id="host-x64">tar xzf ocremote-host-0.1.6-linux-x64.tar.gz
+                <pre id="host-x64">tar xzf ocremote-host-0.1.8-linux-x64.tar.gz
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
 ./ocremote pair</pre>
               </div>
-              <p>arm64 主机包使用 <code>ocremote-host-0.1.6-linux-arm64.tar.gz</code>。默认后台运行，管理命令是 <code>./ocremote status</code>、<code>clients</code>、<code>stop</code>。</p>
+              <p>arm64 主机包使用 <code>ocremote-host-0.1.8-linux-arm64.tar.gz</code>。默认后台运行，管理命令是 <code>./ocremote status</code>、<code>clients</code>、<code>stop</code>。</p>
             </article>
 
             <article class="step">
@@ -103,7 +103,7 @@ cd ocremote
               <p>真机安装 <code>android-arm64-v8a.apk</code>，x86_64 模拟器安装 <code>android-x86_64.apk</code>。打开 App，点 <strong>+</strong>，扫描主机二维码或粘贴配对链接。</p>
               <div class="code-block">
                 <div class="code-head"><i></i><i></i><i></i><span>ANDROID</span><button class="copy" type="button" data-copy-target="phone-install">复制</button></div>
-                <pre id="phone-install">adb install ocremote-0.1.9-android-arm64-v8a.apk</pre>
+                <pre id="phone-install">adb install ocremote-0.1.10-android-arm64-v8a.apk</pre>
               </div>
               <p>连接前核对手机上显示的主机指纹。配对码一次性有效，默认 5 分钟过期；配对成功后设备令牌保存在 Android SecureStore。</p>
             </article>

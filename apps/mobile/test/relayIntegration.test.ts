@@ -74,6 +74,20 @@ describe("relay v4 end to end", () => {
     const secondRoutes = await host.pairingRoutes()
     expect(firstRoutes.map((route) => route.kind)).toEqual(["relay"])
     expect(secondRoutes.map((route) => route.kind)).toEqual(["relay"])
+
+    // A relay-only offer embeds the whole enrollment link (~900 chars), which
+    // used to push the QR past 100 modules and wrap in an 80-column terminal.
+    // The host publishes it on the relay and the QR carries a short URL.
+    const shortUrl = firstRoutes[0]!.shortUrl
+    if (!shortUrl) throw new Error("relay pairing route did not include a short URL")
+    expect(shortUrl).toContain("/p/")
+    expect(shortUrl.length).toBeLessThan(120)
+    expect(firstRoutes[0]!.offer.length).toBeGreaterThan(shortUrl.length * 4)
+    const fetched = await fetch(shortUrl)
+    expect(fetched.status).toBe(200)
+    expect(fetched.headers.get("cache-control")).toBe("no-store")
+    expect(await fetched.text()).toBe(firstRoutes[0]!.offer)
+
     const offer = parsePairingOffer(firstRoutes[0]!.offer)
     const secondOffer = parsePairingOffer(secondRoutes[0]!.offer)
     const relayTransport = offer.transports.find((transport) => transport.kind === "relay")

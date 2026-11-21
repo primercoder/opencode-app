@@ -51,6 +51,9 @@ export type OpencodeInfo = {
   version: string
   api: string
   baseUrl?: string
+  /** False when the host is up but opencode itself is not running. */
+  available?: boolean
+  error?: string
 }
 
 export type PairedDevice = {
@@ -70,6 +73,8 @@ export type HostAsrCapabilities = {
 export type HostSession = {
   host: HostInfo
   opencode: OpencodeInfo
+  /** Root directory the phone may browse for new sessions. */
+  home?: string
   capabilities: string[]
   lanUrls: string[]
   asr?: {
@@ -78,6 +83,14 @@ export type HostSession = {
   }
   device?: PairedDevice
   token?: string
+}
+
+/** Live opencode availability pushed by the host between requests. */
+export type OpencodeState = {
+  available: boolean
+  version?: string
+  baseUrl?: string
+  error?: string
 }
 
 export type AsrResult = {
@@ -671,9 +684,40 @@ export class HostRuntime {
       case "error":
         this.handleErrorFrame(value)
         return
+      case "opencode.state":
+        this.handleOpencodeState(value)
+        return
       default:
         this.emit(value)
     }
+  }
+
+  /**
+   * The host pushes availability changes so the workspace can show "host
+   * online, opencode offline" immediately instead of waiting for a failed
+   * request. It is also emitted as an event so other screens can refresh.
+   */
+  private handleOpencodeState(value: OcrpControlFrame): void {
+    const state = isRecord(value.state) ? value.state : value
+    const next: OpencodeState = {
+      available: state.available === true,
+      ...(typeof state.version === "string" ? { version: state.version } : {}),
+      ...(typeof state.baseUrl === "string" ? { baseUrl: state.baseUrl } : {}),
+      ...(typeof state.error === "string" ? { error: state.error } : {}),
+    }
+    if (this.session) {
+      const previous = this.session
+      const opencode: OpencodeInfo = {
+        ...previous.opencode,
+        version: next.version ?? previous.opencode.version,
+        available: next.available,
+        ...(next.baseUrl ? { baseUrl: next.baseUrl } : {}),
+        ...(next.error ? { error: next.error } : {}),
+      }
+      if (!next.error) delete opencode.error
+      this.session = { ...previous, opencode }
+    }
+    this.emit({ type: "host.opencode", state: next })
   }
 
   private handleWelcome(value: OcrpControlFrame): void {
@@ -1123,7 +1167,10 @@ function parseSession(value: OcrpControlFrame): HostSession {
       version: stringValue(opencode.version),
       api: stringValue(opencode.api),
       ...(typeof opencode.baseUrl === "string" ? { baseUrl: opencode.baseUrl } : {}),
+      ...(typeof opencode.available === "boolean" ? { available: opencode.available } : {}),
+      ...(typeof opencode.error === "string" ? { error: opencode.error } : {}),
     },
+    ...(typeof value.home === "string" ? { home: value.home } : {}),
     capabilities: Array.isArray(value.capabilities) ? value.capabilities.filter((item): item is string => typeof item === "string") : [],
     lanUrls: Array.isArray(value.lanUrls) ? value.lanUrls.filter((item): item is string => typeof item === "string") : [],
     ...(isRecord(value.asr)

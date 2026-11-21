@@ -160,6 +160,27 @@ export class SessionStreamController {
     }
   }
 
+  /**
+   * True while there is anything to animate: buffered characters, a text block
+   * that may still go idle, or an entry waiting to be removed. The screen stops
+   * its timer when this is false, so an idle transcript costs no frames.
+   */
+  hasWork(now = Date.now()): boolean {
+    for (const entry of this.entries.values()) {
+      if (hasPending(entry)) return true
+      if (entry.finishedAt && now - entry.finishedAt <= REMOVE_DELAY_MS) return true
+      if (!entry.finishedAt) {
+        for (const segment of entry.segments) {
+          if (segment.kind === "tool") continue
+          if (!segment.closed && !segment.idle && segment.lastDeltaAt > 0 && now - segment.lastDeltaAt <= IDLE_TEXT_MS) {
+            return true
+          }
+        }
+      }
+    }
+    return this.dirty
+  }
+
   /** Drain buffers and report whether the visible snapshot changed. */
   pump(now = Date.now()): boolean {
     if (this.lastPump === 0) this.lastPump = now

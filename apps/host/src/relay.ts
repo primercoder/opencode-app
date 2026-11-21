@@ -324,12 +324,41 @@ export class RelayHostClient {
    * link. No invite is requested at startup or reconnect time.
    */
   requestClientInvite(timeoutMs = 4_000): Promise<string> {
+    if (!this.caps.has("clientInvite")) {
+      return Promise.reject(new RelayError("RELAY_UNSUPPORTED", "relay does not issue phone invites"))
+    }
+    return this.requestLink(
+      (id) => ({ t: "relay.invite", v: 3, kind: "client", id }),
+      timeoutMs,
+      "relay did not return a phone invite in time",
+    )
+  }
+
+  /**
+   * Publishes the full pairing offer on the relay and returns the short URL
+   * that belongs in the QR code. A relay-only offer embeds a ~300 character
+   * enrollment link, which makes the QR grow past 100 modules and wrap in an
+   * 80-column terminal; a short URL keeps it at 29 modules.
+   */
+  publishPairOffer(offer: string, timeoutMs = 4_000): Promise<string> {
+    if (!this.caps.has("pairShorten")) {
+      return Promise.reject(new RelayError("RELAY_UNSUPPORTED", "relay cannot shorten pairing offers"))
+    }
+    return this.requestLink(
+      (id) => ({ t: "relay.pair", v: 3, id, offer }),
+      timeoutMs,
+      "relay did not publish the pairing offer in time",
+    )
+  }
+
+  private requestLink(
+    frame: (id: string) => Record<string, unknown>,
+    timeoutMs: number,
+    timeoutMessage: string,
+  ): Promise<string> {
     const socket = this.socket
     if (!socket || socket.readyState !== WebSocket.OPEN || !this.authenticated) {
       return Promise.reject(new RelayError("RELAY_OFFLINE", "relay is not connected"))
-    }
-    if (!this.caps.has("clientInvite")) {
-      return Promise.reject(new RelayError("RELAY_UNSUPPORTED", "relay does not issue phone invites"))
     }
     if (!this.sendCipher) {
       return Promise.reject(new RelayError("RELAY_OFFLINE", "relay is not authenticated"))
@@ -346,7 +375,7 @@ export class RelayHostClient {
       id,
       promise,
       timer: setTimeout(() => {
-        this.rejectInvite(id, new RelayError("RELAY_TIMEOUT", "relay did not return a phone invite in time"))
+        this.rejectInvite(id, new RelayError("RELAY_TIMEOUT", timeoutMessage))
       }, timeoutMs),
       resolve: (link) => {
         clearTimeout(waiter.timer)
@@ -360,12 +389,7 @@ export class RelayHostClient {
       },
     }
     this.inviteRequests.set(id, waiter)
-    socket.send(
-      encodeRelayControl(
-        this.sendCipher,
-        JSON.stringify({ t: "relay.invite", v: 3, kind: "client", id }),
-      ),
-    )
+    socket.send(encodeRelayControl(this.sendCipher, JSON.stringify(frame(id))))
     return promise
   }
 
@@ -489,6 +513,13 @@ export class RelayHostClient {
       const id = stringValue(value.id)
       if (link) this.resolveInvite(id, link)
       else this.rejectInvite(id, new RelayError("RELAY_BAD_REQUEST", "relay returned an empty phone invite"))
+      return
+    }
+    if (value.t === "relay.pair") {
+      const url = stringValue(value.url)
+      const id = stringValue(value.id)
+      if (url) this.resolveInvite(id, url)
+      else this.rejectInvite(id, new RelayError("RELAY_BAD_REQUEST", "relay returned an empty pairing URL"))
       return
     }
     if (value.t === "relay.error" && this.inviteRequests.size > 0) {

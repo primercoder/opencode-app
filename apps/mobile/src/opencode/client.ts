@@ -28,6 +28,38 @@ export type ServerInfo = {
   urls?: string[]
 }
 
+export type HostRuntimeInfo = {
+  home: string
+  opencode: {
+    available: boolean
+    version?: string
+    baseUrl?: string
+    error?: string
+  }
+}
+
+export type DirectoryEntry = {
+  name: string
+  path: string
+  /** Path relative to the browse root, e.g. "code/app". Empty at the root. */
+  relative: string
+}
+
+export type DirectoryListing = {
+  home: string
+  path: string
+  relative: string
+  entries: DirectoryEntry[]
+}
+
+export type DirectoryCheck = {
+  valid: boolean
+  directory: boolean
+  path?: string
+  relative?: string
+  error?: string
+}
+
 export type ProjectInfo = {
   id: string
   canonical: string
@@ -323,6 +355,26 @@ export class OpencodeClient {
     return result.data
   }
 
+  /**
+   * Host-served runtime info. Unlike `/api/info` this works while opencode is
+   * not running, so the workspace can tell "host offline" from "opencode
+   * offline".
+   */
+  async hostRuntime(): Promise<HostRuntimeInfo> {
+    return this.raw<HostRuntimeInfo>("GET", "/host/runtime")
+  }
+
+  /** Lists directories under the browse root (the home directory). */
+  async listDirectories(path?: string): Promise<DirectoryListing> {
+    const query = path ? `?path=${encodeURIComponent(path)}` : ""
+    return this.raw<DirectoryListing>("GET", `/host/dirs${query}`)
+  }
+
+  /** Validates a typed directory without creating anything. */
+  async checkDirectory(path: string): Promise<DirectoryCheck> {
+    return this.raw<DirectoryCheck>("GET", `/host/dirs/check?path=${encodeURIComponent(path)}`)
+  }
+
   async readFile(
     directory: string,
     path: string,
@@ -476,10 +528,16 @@ export function sessionUpdatedAt(session: SessionInfo): number {
 }
 
 export function sessionBusy(session: SessionInfo): boolean {
+  // A final outcome wins over stale busy timestamps. Missing a single
+  // `session.idle` event used to leave the header, activity pill and stop
+  // button spinning forever.
+  if (session.outcome && FINAL_OUTCOMES.has(session.outcome.toLowerCase())) return false
   const busy = toMillis(session.time?.busy)
   const idle = toMillis(session.time?.idle)
   return busy > 0 && busy >= idle
 }
+
+const FINAL_OUTCOMES = new Set(["succeeded", "failed", "cancelled", "interrupted", "error"])
 
 export function toMillis(value: number | string | undefined): number {
   if (typeof value === "number") return value

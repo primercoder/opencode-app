@@ -10,6 +10,7 @@ import {
   HostRuntime,
   type ConnectionState,
   type HostSession,
+  type OpencodeState,
   type RelayAuthResolver,
 } from "@/transport/hostRuntime"
 
@@ -171,6 +172,21 @@ async function openConnection(hostId: string): Promise<HostRuntime> {
     useConnections.getState().patch(hostId, patch)
   })
 
+  // The host pushes opencode availability; mirror it into the connection store
+  // so the header can distinguish "host offline" from "opencode offline".
+  runtime.subscribe((event) => {
+    if (!isOpencodeStateEvent(event)) return
+    const current = useConnections.getState().byHost[hostId]?.session
+    if (!current) return
+    const opencode = { ...current.opencode }
+    opencode.available = event.state.available
+    if (event.state.version) opencode.version = event.state.version
+    if (event.state.baseUrl) opencode.baseUrl = event.state.baseUrl
+    if (event.state.error) opencode.error = event.state.error
+    else delete opencode.error
+    useConnections.getState().patch(hostId, { session: { ...current, opencode } })
+  })
+
   useConnections.getState().patch(hostId, { status: "connecting" })
 
   try {
@@ -240,6 +256,14 @@ function transportKind(transports: Transport[], activeCandidate: string | undefi
     return transport.url === activeCandidate
   })
   return match?.kind
+}
+
+function isOpencodeStateEvent(
+  event: unknown,
+): event is { type: "host.opencode"; state: OpencodeState } {
+  if (typeof event !== "object" || event === null) return false
+  const value = event as { type?: unknown; state?: unknown }
+  return value.type === "host.opencode" && typeof value.state === "object" && value.state !== null
 }
 
 export type { ConnectionState, HostSession }

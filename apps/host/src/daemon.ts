@@ -3,15 +3,18 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { RelayConfig } from "./config.ts"
 
-export const HOST_VERSION = "0.1.6"
+export const HOST_VERSION = "0.1.8"
 
 export type HostState = {
   pid: number
   startedAt: number
   direct?: { hostname: string; port: number; urls: string[] }
   relay: { url: string; room: string; state?: string } | null
-  opencodeUrl: string
+  /** Last probed opencode URL; absent while opencode is not running. */
+  opencodeUrl?: string
   opencodeVersion?: string
+  opencodeAvailable?: boolean
+  opencodeError?: string
   socketPath: string
   logPath: string
   version: string

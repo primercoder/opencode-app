@@ -5,10 +5,34 @@ export type RunningActivity =
   | { kind: "shell"; key: string; label: string; sessionId: string }
   | { kind: "subagent"; key: string; label: string; sessionId: string }
 
-export function runningActivities(messages: SessionMessage[], children: SessionInfo[]): RunningActivity[] {
+/** A background shell older than this is assumed to have died silently. */
+const SHELL_STALE_MS = 10 * 60_000
+const TOOL_STALE_MS = 3 * 60_000
+
+/**
+ * Lists what should be shown as a background task.
+ *
+ * A tool block only counts while the agent is actually working: opencode keeps
+ * a tool's `state.status` at "running" in the stored message when the final
+ * update is lost, which used to leave "1 task running" and a dead stop button
+ * on an idle session forever. Background shells may legitimately outlive the
+ * turn, so they are kept while reasonably recent.
+ */
+export function runningActivities(
+  messages: SessionMessage[],
+  children: SessionInfo[],
+  options: { busy?: boolean; now?: number } = {},
+): RunningActivity[] {
   const activities: RunningActivity[] = []
+  const now = options.now ?? Date.now()
+  const busy = options.busy ?? false
+
   for (const message of messages) {
     if (message.type === "shell" && message.status === "running") {
+      if (!busy) {
+        const started = toMillis(message.time?.created)
+        if (started > 0 && now - started > SHELL_STALE_MS) continue
+      }
       activities.push({
         kind: "shell",
         key: message.id,
@@ -21,6 +45,13 @@ export function runningActivities(messages: SessionMessage[], children: SessionI
       if (block.type !== "tool") continue
       const status = block.state?.status ?? "running"
       if (status !== "running" && status !== "streaming" && status !== "pending") continue
+      if (!busy) {
+        const started = toMillis(block.time?.created) || toMillis(message.time?.created)
+        if (started > 0 && now - started > TOOL_STALE_MS) continue
+        // A live tool without a timestamp while the turn already ended is a
+        // leftover from a lost update.
+        if (started === 0) continue
+      }
       activities.push({
         kind: "tool",
         key: `${message.id}:${block.id}`,
@@ -29,6 +60,7 @@ export function runningActivities(messages: SessionMessage[], children: SessionI
       })
     }
   }
+
   for (const child of children) {
     if (!sessionBusy(child)) continue
     activities.push({
@@ -77,4 +109,17 @@ export function formatTokens(value: number): string {
 export function lastMessageAt(messages: SessionMessage[]): number {
   const last = messages[messages.length - 1]
   return toMillis(last?.time?.created)
+}
+
+/**
+ * Marks a session as finished locally so the header, activity pill and stop
+ * button disappear immediately after the user stops a turn, even if the
+ * follow-up refresh fails.
+ */
+export function markSessionStopped(session: SessionInfo, now = Date.now()): SessionInfo {
+  return {
+    ...session,
+    outcome: "cancelled",
+    time: { ...session.time, busy: toMillis(session.time?.busy), idle: now },
+  }
 }

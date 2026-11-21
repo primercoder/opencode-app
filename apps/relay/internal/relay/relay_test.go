@@ -363,6 +363,115 @@ func linkToken(t *testing.T, link string) (string, string) {
 	return token, kind
 }
 
+func TestHostPublishesShortPairingURL(t *testing.T) {
+	server, _, httpServer := testServer(t)
+	host := dialOpenHost(t, httpServer, server, "host_pair_page", "desktop")
+
+	hasShortenCap := false
+	for _, cap := range host.welcome.Caps {
+		if cap == "pairShorten" {
+			hasShortenCap = true
+		}
+	}
+	if !hasShortenCap {
+		t.Fatalf("host welcome must advertise pairShorten: %+v", host.welcome.Caps)
+	}
+
+	offer := "ocremote://pair#" + strings.Repeat("A", 300)
+	sendControl(t, host, map[string]any{"t": "relay.pair", "id": "pair-page-1", "offer": offer})
+
+	var reply struct {
+		T   string `json:"t"`
+		ID  string `json:"id"`
+		URL string `json:"url"`
+	}
+	readControl(t, host, &reply)
+	if reply.T != "relay.pair" || reply.ID != "pair-page-1" {
+		t.Fatalf("unexpected pair reply: %+v", reply)
+	}
+	if !strings.Contains(reply.URL, "/p/") {
+		t.Fatalf("pair reply is not a short URL: %s", reply.URL)
+	}
+	if len(reply.URL) > 120 {
+		t.Fatalf("short URL should be far shorter than the offer, got %d chars: %s", len(reply.URL), reply.URL)
+	}
+
+	// The phone fetches the URL and receives the exact offer back.
+	response, err := http.Get(reply.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("pairing page status = %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != offer {
+		t.Fatalf("pairing page returned %d chars, want the %d char offer", len(body), len(offer))
+	}
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("pairing page must not be cached: %q", response.Header.Get("Cache-Control"))
+	}
+
+	// Unknown ids and oversized offers are rejected instead of being stored.
+	missing, err := http.Get(strings.TrimSuffix(reply.URL, reply.URL[strings.LastIndex(reply.URL, "/")+1:]) + "p_does_not_exist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer missing.Body.Close()
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown pairing page status = %d", missing.StatusCode)
+	}
+}
+
+func TestPairPageExpiresAndRejectsOversizedOffers(t *testing.T) {
+	server, _, httpServer := testServer(t)
+	host := dialOpenHost(t, httpServer, server, "host_pair_expire", "desktop")
+
+	sendControl(t, host, map[string]any{"t": "relay.pair", "id": "big", "offer": strings.Repeat("A", pairOfferMaxBytes+1)})
+	var rejected struct {
+		T    string `json:"t"`
+		Code string `json:"code"`
+		ID   string `json:"id"`
+	}
+	readControl(t, host, &rejected)
+	if rejected.T != "relay.error" || rejected.Code != "RELAY_BAD_REQUEST" {
+		t.Fatalf("oversized offer should be rejected: %+v", rejected)
+	}
+
+	sendControl(t, host, map[string]any{"t": "relay.pair", "id": "short", "offer": "ocremote://pair#abc"})
+	var reply struct {
+		URL string `json:"url"`
+	}
+	readControl(t, host, &reply)
+	id := reply.URL[strings.LastIndex(reply.URL, "/")+1:]
+
+	// Expire it in place; the page must stop serving and drop the entry.
+	server.pairMu.Lock()
+	page := server.pairPages[id]
+	page.expiresAt = time.Now().Add(-time.Second)
+	server.pairPages[id] = page
+	server.pairMu.Unlock()
+
+	response, err := http.Get(reply.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expired pairing page status = %d", response.StatusCode)
+	}
+	server.pairMu.Lock()
+	_, stillThere := server.pairPages[id]
+	server.pairMu.Unlock()
+	if stillThere {
+		t.Fatal("expired pairing page should be dropped")
+	}
+}
+
 func TestInviteIsOneTime(t *testing.T) {
 	server, store, httpServer := testServer(t)
 	token := mustInvite(t, store, KindHost)

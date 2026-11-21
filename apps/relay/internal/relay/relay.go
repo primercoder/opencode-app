@@ -60,7 +60,23 @@ type Server struct {
 	cfg   Config
 	mu    sync.Mutex
 	rooms map[string]*room
+
+	// Pairing offers published by hosts so the QR only carries a short URL.
+	// Entries are transient: they expire with the pairing code and are never
+	// written to disk.
+	pairMu    sync.Mutex
+	pairPages map[string]pairPage
 }
+
+type pairPage struct {
+	offer     string
+	expiresAt time.Time
+}
+
+// pairPageTTL matches the host's pairing page lifetime.
+const pairPageTTL = 10 * time.Minute
+const pairPageLimit = 64
+const pairOfferMaxBytes = 16 * 1024
 
 type room struct {
 	id            string
@@ -78,12 +94,15 @@ type frame struct {
 }
 
 type peer struct {
-	server     *Server
-	room       *room
-	role       string
-	subjectID  string
-	id         uint32
-	conn       *websocket.Conn
+	server    *Server
+	room      *room
+	role      string
+	subjectID string
+	id        uint32
+	conn      *websocket.Conn
+	// Origin the phone can reach, captured from the handshake request so host
+	// control frames can hand back a fetchable URL for pairing pages.
+	pairBase   string
 	sendCipher *noise.CipherState
 	recvCipher *noise.CipherState
 	cipherMu   sync.Mutex
@@ -113,7 +132,7 @@ func New(cfg Config) *Server {
 	if len(cfg.RelayKey.Public) != 32 || len(cfg.RelayKey.Private) != 32 {
 		panic("relay: Config.RelayKey must be a 32-byte X25519 keypair")
 	}
-	return &Server{cfg: cfg, rooms: make(map[string]*room)}
+	return &Server{cfg: cfg, rooms: make(map[string]*room), pairPages: make(map[string]pairPage)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -133,6 +152,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = io.WriteString(w, `{"error":"relay v2 requires an enrollment invite; see /v1/info"}`+"\n")
 	})
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/p/", s.handlePairPage)
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		rooms := len(s.rooms)
@@ -169,6 +189,57 @@ func (s *Server) publicWSURL(r *http.Request) string {
 	return scheme + "://" + r.Host + "/ws"
 }
 
+// publicHTTPURL is the origin the phone can reach to fetch a pairing page.
+// A published wss:// URL becomes https://, ws:// becomes http://.
+func (s *Server) publicHTTPURL(r *http.Request) string {
+	if s.cfg.PublicURL != "" {
+		return httpOriginOf(s.cfg.PublicURL)
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+func httpOriginOf(wsURL string) string {
+	origin := strings.TrimSuffix(strings.TrimSuffix(wsURL, "/ws"), "/")
+	switch {
+	case strings.HasPrefix(origin, "wss://"):
+		return "https://" + strings.TrimPrefix(origin, "wss://")
+	case strings.HasPrefix(origin, "ws://"):
+		return "http://" + strings.TrimPrefix(origin, "ws://")
+	default:
+		return origin
+	}
+}
+
+func (s *Server) handlePairPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/p/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	s.pairMu.Lock()
+	page, ok := s.pairPages[id]
+	if ok && !page.expiresAt.After(time.Now()) {
+		delete(s.pairPages, id)
+		ok = false
+	}
+	s.pairMu.Unlock()
+	if !ok {
+		http.Error(w, "pairing offer not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, page.offer)
+}
+
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -191,10 +262,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(s.cfg.MaxFrame + 4)
 
 	p := &peer{
-		server: s,
-		conn:   conn,
-		out:    make(chan frame, s.cfg.QueueSize),
-		done:   make(chan struct{}),
+		server:   s,
+		conn:     conn,
+		pairBase: s.publicHTTPURL(r),
+		out:      make(chan frame, s.cfg.QueueSize),
+		done:     make(chan struct{}),
 	}
 
 	hs, err := newRelayHandshake(s.cfg.RelayKey)
@@ -290,7 +362,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if p.role == KindHost {
 		// Phone invites are created only when the host explicitly requests one
 		// for a pairing code. Connecting/reconnecting must not mint unused links.
-		welcome["caps"] = []string{"clientInvite"}
+		// pairShorten lets the host publish its offer so the QR carries a short
+		// URL instead of the full (relay-invite-bearing) pairing link.
+		welcome["caps"] = []string{"clientInvite", "pairShorten"}
 	} else {
 		welcome["clientId"] = p.id
 		welcome["hostOnline"] = true
@@ -412,11 +486,27 @@ func mustJSON(value any) []byte {
 
 func (s *Server) handleHostControl(p *peer, data []byte) {
 	var message struct {
-		T    string `json:"t"`
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		T     string `json:"t"`
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Offer string `json:"offer"`
 	}
-	if err := json.Unmarshal(data, &message); err != nil || message.T != "relay.invite" {
+	if err := json.Unmarshal(data, &message); err != nil {
+		response := map[string]any{
+			"t":       "relay.error",
+			"code":    "RELAY_BAD_REQUEST",
+			"message": "host control frame is not valid JSON",
+		}
+		p.sendJSON(response)
+		return
+	}
+
+	switch message.T {
+	case "relay.invite":
+		s.handleInviteRequest(p, message.ID, message.Name)
+	case "relay.pair":
+		s.handlePairPublish(p, message.ID, message.Offer)
+	default:
 		response := map[string]any{
 			"t":       "relay.error",
 			"code":    "RELAY_BAD_REQUEST",
@@ -426,9 +516,77 @@ func (s *Server) handleHostControl(p *peer, data []byte) {
 			response["id"] = message.ID
 		}
 		p.sendJSON(response)
+	}
+}
+
+// handlePairPublish stores a host's offer and replies with the short URL the
+// QR code should carry. The offer itself stays in relay memory for the life of
+// the pairing code.
+func (s *Server) handlePairPublish(p *peer, id string, offer string) {
+	if strings.TrimSpace(offer) == "" {
+		response := map[string]any{
+			"t":       "relay.error",
+			"code":    "RELAY_BAD_REQUEST",
+			"message": "pairing offer is required",
+		}
+		if id != "" {
+			response["id"] = id
+		}
+		p.sendJSON(response)
 		return
 	}
-	name := strings.TrimSpace(message.Name)
+	if len(offer) > pairOfferMaxBytes {
+		response := map[string]any{
+			"t":       "relay.error",
+			"code":    "RELAY_BAD_REQUEST",
+			"message": "pairing offer is too large",
+		}
+		if id != "" {
+			response["id"] = id
+		}
+		p.sendJSON(response)
+		return
+	}
+	now := time.Now()
+	pairID := randomID("p_")
+	s.pairMu.Lock()
+	if len(s.pairPages) >= pairPageLimit {
+		for key, page := range s.pairPages {
+			if page.expiresAt.After(now) {
+				continue
+			}
+			delete(s.pairPages, key)
+		}
+		for len(s.pairPages) >= pairPageLimit {
+			var oldestKey string
+			var oldest time.Time
+			for key, page := range s.pairPages {
+				if oldestKey == "" || page.expiresAt.Before(oldest) {
+					oldestKey, oldest = key, page.expiresAt
+				}
+			}
+			if oldestKey == "" {
+				break
+			}
+			delete(s.pairPages, oldestKey)
+		}
+	}
+	s.pairPages[pairID] = pairPage{offer: offer, expiresAt: now.Add(pairPageTTL)}
+	s.pairMu.Unlock()
+
+	response := map[string]any{
+		"t":    "relay.pair",
+		"url":  p.pairBase + "/p/" + pairID,
+		"room": p.room.id,
+	}
+	if id != "" {
+		response["id"] = id
+	}
+	p.sendJSON(response)
+}
+
+func (s *Server) handleInviteRequest(p *peer, id string, rawName string) {
+	name := strings.TrimSpace(rawName)
 	if name == "" {
 		name = "phone"
 	}
@@ -446,8 +604,8 @@ func (s *Server) handleHostControl(p *peer, data []byte) {
 			"code":    code,
 			"message": text,
 		}
-		if message.ID != "" {
-			response["id"] = message.ID
+		if id != "" {
+			response["id"] = id
 		}
 		p.sendJSON(response)
 		return
@@ -459,8 +617,8 @@ func (s *Server) handleHostControl(p *peer, data []byte) {
 		"invite": link,
 		"room":   p.room.id,
 	}
-	if message.ID != "" {
-		response["id"] = message.ID
+	if id != "" {
+		response["id"] = id
 	}
 	p.sendJSON(response)
 }

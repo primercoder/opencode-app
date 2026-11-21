@@ -35,6 +35,8 @@ import {
   type AgentInfo,
   type AssistantContent,
   type CommandInfo,
+  type DirectoryCheck,
+  type DirectoryListing,
   type FormInfo,
   type InboxItem,
   type McpServer,
@@ -47,7 +49,8 @@ import {
 } from "@/opencode/client"
 import type { FormAnswers } from "@/opencode/forms"
 import { appendReviewText, buildReviewPrompt, type ReviewComment } from "@/opencode/review"
-import { contextUsage, formatTokens, runningActivities, type RunningActivity } from "@/features/session/activity"
+import { contextUsage, formatTokens, markSessionStopped, runningActivities, type RunningActivity } from "@/features/session/activity"
+import { describeError, isMissingSession } from "@/features/session/errors"
 import {
   CORE_COMMANDS,
   findCoreCommand,
@@ -63,6 +66,14 @@ import {
   writeSessionCache,
   type SessionSnapshot,
 } from "@/features/session/sessionCache"
+import {
+  compensateOffset,
+  MAX_GAP_PAGES,
+  mergeMessages,
+  messageIds,
+  pageLeavesGap,
+  shouldFollow,
+} from "@/features/session/sync"
 import { SessionStreamController, STREAM_FRAME_MS } from "@/features/session/streamController"
 import { invalidateSessionIndex } from "@/features/sessions/useSessionIndex"
 import { visiblePrimaryAgents } from "@/lib/agents"
@@ -104,6 +115,8 @@ type StagedSkill = {
 const EMPTY_MESSAGES: SessionMessage[] = []
 
 const NO_REVIEW_COMMENTS: ReviewComment[] = []
+/** How often content deltas trigger a whole-transcript reconcile. */
+const CONTENT_REFRESH_MS = 2_000
 
 export default function WorkspaceScreen() {
   const insets = useSafeAreaInsets()
@@ -144,6 +157,16 @@ export default function WorkspaceScreen() {
   const [olderCursor, setOlderCursor] = useState<string | undefined>(undefined)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [showJump, setShowJump] = useState(false)
+  const [following, setFollowing] = useState(true)
+  const [opencodeOnline, setOpencodeOnline] = useState<boolean | undefined>(undefined)
+  const [opencodeError, setOpencodeError] = useState<string | null>(null)
+  const [directoryInput, setDirectoryInput] = useState("")
+  const [directoryQuery, setDirectoryQuery] = useState("")
+  const [directoryListing, setDirectoryListing] = useState<DirectoryListing | null>(null)
+  const [directoryError, setDirectoryError] = useState<string | null>(null)
+  const [directoryCheck, setDirectoryCheck] = useState<DirectoryCheck | null>(null)
+  const [directoryChecking, setDirectoryChecking] = useState(false)
+  const [directoryOpen, setDirectoryOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerDragging, setDrawerDragging] = useState(false)
   const drawerProgress = useRef(new Animated.Value(0)).current
@@ -180,6 +203,14 @@ export default function WorkspaceScreen() {
   const oldestMessageIdRef = useRef<string | undefined>(undefined)
   const olderCursorRef = useRef<string | undefined>(undefined)
   const loadOlderRef = useRef<() => void>(() => undefined)
+  const streamStartRef = useRef<(() => void) | undefined>(undefined)
+  const messagesRef = useRef<SessionMessage[] | null>(null)
+  const messageIdsRef = useRef<Set<string>>(new Set())
+  const scrollHeightRef = useRef({ content: 0, viewport: 0 })
+  const followingRef = useRef(true)
+  const jumpingRef = useRef(false)
+  const pendingScrollRef = useRef<number | undefined>(undefined)
+  const skipCompensateRef = useRef(false)
   const statusGesture = useRef({ x: 0, y: 0, scrolled: false })
 
   const setDraftFor = useCallback(
@@ -265,7 +296,9 @@ export default function WorkspaceScreen() {
   const sessionIdRef = useRef(sessionId)
   const messagesSessionIdRef = useRef<string | undefined>(undefined)
   sessionIdRef.current = sessionId
+  messagesRef.current = messages
   const messagesForSession = messagesSessionIdRef.current === sessionId ? messages : null
+  messageIdsRef.current = messageIds(messagesForSession ?? [])
 
   useEffect(() => {
     if (!hydrated) void hydrate()
@@ -349,6 +382,48 @@ export default function WorkspaceScreen() {
       .catch(() => setPhoneModelReady(false))
   }, [])
 
+  // Host runtime: the phone needs the browse root and whether opencode is up.
+  // It is asked whenever the transport becomes ready, because opencode can be
+  // restarted (or started late) while the host itself stays up.
+  useEffect(() => {
+    if (!ready) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const runtime = await ensureConnection(hostId)
+        const info = await new OpencodeClient(runtime).hostRuntime()
+        if (cancelled) return
+        setOpencodeOnline(info.opencode.available)
+        setOpencodeError(info.opencode.error ?? null)
+      } catch {
+        // Older hosts have no /host/runtime; fall back to the handshake state.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [hostId, ready])
+
+  // Mirror the opencode availability announced by the host handshake and by
+  // the `opencode.state` push. This is what separates "host offline" from
+  // "host online, opencode not started".
+  const handshakeOpencode = connection?.session?.opencode
+  useEffect(() => {
+    if (!handshakeOpencode) return
+    if (typeof handshakeOpencode.available === "boolean") setOpencodeOnline(handshakeOpencode.available)
+    setOpencodeError(handshakeOpencode.error ?? null)
+  }, [handshakeOpencode])
+
+  useEffect(() => {
+    if (!ready) return
+    return subscribeHostEvents(hostId, (event) => {
+      if (event.type !== "host.opencode") return
+      const state = asRecord((event as { state?: unknown }).state)
+      setOpencodeOnline(state.available === true)
+      setOpencodeError(typeof state.error === "string" ? state.error : null)
+    })
+  }, [hostId, ready])
+
   const hostTranscribe =
     connection?.session?.asr?.host?.available === true
       ? async (wav: Uint8Array, durationMs: number): Promise<string> => {
@@ -417,13 +492,30 @@ export default function WorkspaceScreen() {
     setLiveState(sessionId ? { sessionId, messages: [] } : { messages: [] })
     if (!ready || !sessionId) return
     streamRef.current.setSession(sessionId)
-    const timer = setInterval(() => {
-      if (streamRef.current.pump()) {
-        setLiveState({ sessionId, messages: streamRef.current.snapshot() })
+    // The frame timer only runs while the controller has something to
+    // animate. Before this it ticked at 30 fps for the whole session, which
+    // kept the phone awake while a turn was idle.
+    let timer: ReturnType<typeof setInterval> | undefined
+    const stop = () => {
+      if (timer) clearInterval(timer)
+      timer = undefined
+    }
+    const tick = () => {
+      const controller = streamRef.current
+      if (controller.pump()) {
+        setLiveState({ sessionId, messages: controller.snapshot() })
       }
-    }, STREAM_FRAME_MS)
+      if (!controller.hasWork()) stop()
+    }
+    const start = () => {
+      if (timer) return
+      timer = setInterval(tick, STREAM_FRAME_MS)
+    }
+    streamStartRef.current = start
+    start()
     return () => {
-      clearInterval(timer)
+      stop()
+      streamStartRef.current = undefined
       streamRef.current.setSession(undefined)
     }
   }, [ready, sessionId])
@@ -474,7 +566,7 @@ export default function WorkspaceScreen() {
         }
       } catch (cause) {
         if (sessionIdRef.current !== id) return
-        setError(cause instanceof Error ? cause.message : t("error"))
+        setError(describeError(cause, t))
       } finally {
         if (sessionIdRef.current === id) setLoadingSession(false)
       }
@@ -547,6 +639,32 @@ export default function WorkspaceScreen() {
     void loadSession(sessionId, { initial: true })
   }, [applyCachedSession, hostId, loadSession, sessionId])
 
+  /** Fetches older pages until the newest page overlaps what we already have. */
+  const healGap = useCallback(
+    async (id: string, client: OpencodeClient, latest: SessionMessage[], existing: SessionMessage[], cursor?: string) => {
+      let known = mergeMessages(existing, [])
+      let next: string | undefined = cursor
+      let fetched = 0
+      let collected = latest
+      while (next && fetched < MAX_GAP_PAGES) {
+        fetched += 1
+        const page = await client.listMessages(id, { limit: 60, cursor: next }).catch(() => undefined)
+        if (!page) break
+        const older = [...page.data].reverse()
+        if (older.length === 0) break
+        collected = [...older, ...collected]
+        if (older.some((message) => messageIdsRef.current.has(message.id))) break
+        next = page.data.length >= 60 ? page.cursor?.next : undefined
+      }
+      if (sessionIdRef.current !== id) return
+      known = mergeMessages(collected, messagesRef.current ?? existing)
+      messagesSessionIdRef.current = id
+      setMessages(known)
+      setOlderCursor((current) => current ?? next)
+    },
+    [],
+  )
+
   const refreshFromEvents = useCallback(
     async (id: string, kinds: Set<string>) => {
       try {
@@ -574,10 +692,20 @@ export default function WorkspaceScreen() {
         }
         if (kinds.has("message")) {
           tasks.push(
-            client.listMessages(id, { limit: 40, order: "desc" }).then((page) => {
+            client.listMessages(id, { limit: 40, order: "desc" }).then(async (page) => {
               if (sessionIdRef.current !== id) return
+              const latest = [...page.data].reverse()
+              const existing = messagesRef.current ?? []
+              // A page that shares no id with the transcript means events were
+              // lost (weak network, reconnect). Walk backwards until the
+              // transcript overlaps, otherwise the phone silently shows a
+              // truncated turn.
+              if (pageLeavesGap(existing, latest)) {
+                await healGap(id, client, latest, existing, page.data.length >= 40 ? page.cursor?.next : undefined)
+                return
+              }
               messagesSessionIdRef.current = id
-              setMessages((current) => mergeMessages([...page.data].reverse(), current ?? []))
+              setMessages((current) => mergeMessages(latest, current ?? []))
             }),
           )
         }
@@ -614,12 +742,13 @@ export default function WorkspaceScreen() {
     let timer: ReturnType<typeof setTimeout> | undefined
     let lastRefresh = 0
     const pendingKinds = new Set<string>()
-    const scheduleRefresh = () => {
+    const scheduleRefresh = (delayMs = 0) => {
       if (timer || !sessionIdRef.current) return
-      // Throttle rather than debounce: token deltas can arrive continuously for
-      // many seconds, and resetting a timer on every delta would postpone the
-      // transcript update until the turn is already over.
-      const wait = Math.max(0, 250 - (Date.now() - lastRefresh))
+      // Token deltas arrive continuously for many seconds. Whole-transcript
+      // refetches on every delta are the biggest battery cost of this screen,
+      // so content events only poll at a low rate; the live stream controller
+      // already renders tokens as they arrive.
+      const wait = Math.max(0, delayMs - (Date.now() - lastRefresh))
       timer = setTimeout(() => {
         timer = undefined
         lastRefresh = Date.now()
@@ -686,6 +815,8 @@ export default function WorkspaceScreen() {
       if (eventSession && eventSession !== sessionIdRef.current) return
 
       streamRef.current.ingest(event)
+      // Wake the presentation timer only when there is output to animate.
+      streamStartRef.current?.()
       // OpenCode 2 streams content as `session.text.delta`,
       // `session.reasoning.*`, `session.tool.*` and `session.step.*` events,
       // not only as `message.*` events. Treat every session event as a content
@@ -709,7 +840,10 @@ export default function WorkspaceScreen() {
               : undefined
       if (!kind) return
       pendingKinds.add(kind)
-      scheduleRefresh()
+      // Content deltas are already rendered by the live stream controller, so
+      // reconciling with the server can wait. Control-plane events (session,
+      // permissions, forms) are small and stay responsive.
+      scheduleRefresh(kind === "message" ? CONTENT_REFRESH_MS : 0)
     })
     return () => {
       unsubscribe()
@@ -719,7 +853,10 @@ export default function WorkspaceScreen() {
 
   useForeground(
     useCallback(() => {
-      void ensureConnection(hostId, { force: true })
+      // Coming back from the background: only reconnect if the socket actually
+      // dropped. A forced reconnect on every foreground switch dropped the SSE
+      // stream and re-fetched everything, which is both slow and power-hungry.
+      void ensureConnection(hostId)
         .then(() => (sessionIdRef.current ? loadSession(sessionIdRef.current) : undefined))
         .catch(() => undefined)
     }, [hostId, loadSession]),
@@ -736,10 +873,11 @@ export default function WorkspaceScreen() {
       if (sessionIdRef.current !== id) return
       messagesSessionIdRef.current = id
       const older = [...page.data].reverse()
+      skipCompensateRef.current = true
       setMessages((current) => mergeMessages(older, current ?? []))
       setOlderCursor(page.data.length >= 60 ? page.cursor?.next : undefined)
     } catch (cause) {
-      if (sessionIdRef.current === id) setError(cause instanceof Error ? cause.message : t("error"))
+      if (sessionIdRef.current === id) setError(describeError(cause, t))
     } finally {
       loadingOlderRef.current = false
       setLoadingOlder(false)
@@ -758,6 +896,27 @@ export default function WorkspaceScreen() {
   ).current
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 10 }).current
 
+  // Following is derived from the resting offset. `onScroll` is throttled, so
+  // the final frame of a drag or a jump can be dropped; recompute on the stop
+  // events as well instead of trusting the last emitted sample.
+  const applyScrollState = (y: number) => {
+    // Follow only at the very bottom. As soon as the user scrolls back, new
+    // streamed output must not drag the visible history around.
+    const nextFollowing = shouldFollow(y)
+    // A programmatic jump animates through the middle of the list, where the
+    // offset still looks "scrolled back". Ignore those frames so the button
+    // does not reappear under the finger that just pressed it.
+    if (jumpingRef.current) {
+      if (!nextFollowing) return
+      jumpingRef.current = false
+    }
+    if (nextFollowing !== followingRef.current) {
+      followingRef.current = nextFollowing
+      setFollowing(nextFollowing)
+    }
+    setShowJump(!nextFollowing && y > 240)
+  }
+
   const handleMessageScroll = (event: {
     nativeEvent: {
       contentOffset: { y: number }
@@ -767,13 +926,67 @@ export default function WorkspaceScreen() {
   }) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
     messageOffsetRef.current = contentOffset.y
+    scrollHeightRef.current = { content: contentSize.height, viewport: layoutMeasurement.height }
     if (sessionId) updateSessionOffset(hostId, sessionId, contentOffset.y)
-    setShowJump(contentOffset.y > 240)
+    applyScrollState(contentOffset.y)
     // Inverted list: scrolling towards older messages increases contentOffset.y.
     // Start fetching before the user actually hits the very top.
     const distanceToOldest = contentSize.height - (contentOffset.y + layoutMeasurement.height)
     if (distanceToOldest < 420) void loadOlder()
   }
+
+  const handleMessageScrollSettled = () => {
+    applyScrollState(messageOffsetRef.current)
+  }
+
+  /**
+   * While the user reads older output, a growing streamed message at the
+   * newest end moves the inverted list under the finger. Shift the offset by
+   * the same amount so the visible text stays put.
+   */
+  const handleContentSizeChange = (_width: number, height: number) => {
+    const previous = scrollHeightRef.current.content
+    scrollHeightRef.current.content = height
+    const restore = restoreOffsetRef.current
+    if (restore !== undefined) {
+      restoreOffsetRef.current = undefined
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToOffset({ offset: restore, animated: false })
+      })
+      return
+    }
+    // Fetching older messages grows the list at the far end, which does not
+    // move the visible window. Compensating for it would push the transcript.
+    if (skipCompensateRef.current) {
+      skipCompensateRef.current = false
+      return
+    }
+    const next = compensateOffset({
+      previousHeight: previous,
+      nextHeight: height,
+      offset: messageOffsetRef.current,
+      following: followingRef.current,
+    })
+    if (next === undefined) return
+    pendingScrollRef.current = next
+    messageOffsetRef.current = next
+    requestAnimationFrame(() => {
+      const offset = pendingScrollRef.current
+      if (offset === undefined) return
+      pendingScrollRef.current = undefined
+      listRef.current?.scrollToOffset({ offset, animated: false })
+    })
+  }
+
+  const jumpToBottom = useCallback(() => {
+    jumpingRef.current = true
+    followingRef.current = true
+    setFollowing(true)
+    setShowJump(false)
+    messageOffsetRef.current = 0
+    if (sessionId) updateSessionOffset(hostId, sessionId, 0)
+    listRef.current?.scrollToOffset({ offset: 0, animated: true })
+  }, [hostId, sessionId])
 
   const selectSession = (id: string) => {
     cacheCurrentSession()
@@ -814,8 +1027,13 @@ export default function WorkspaceScreen() {
         if (cancelled || sessionIdRef.current) return
         setSessionId(last)
         router.setParams({ session: last })
-      } catch {
-        // The remembered session was deleted; keep the blank state.
+      } catch (cause) {
+        if (cancelled) return
+        // The remembered session no longer exists: fall back to the blank
+        // session screen and forget it. A network/opencode failure must not
+        // discard the memory, otherwise a momentarily stopped opencode would
+        // reset the user's last session.
+        if (isMissingSession(cause)) await clearLastSession(hostId)
       }
     })()
     return () => {
@@ -823,22 +1041,112 @@ export default function WorkspaceScreen() {
     }
   }, [hostId, hydrated, params.new, params.session, ready])
 
+  /** Loads one directory level from the host. Works while opencode is down. */
+  const loadDirectory = useCallback(
+    async (path: string) => {
+      setDirectoryError(null)
+      try {
+        const runtime = await ensureConnection(hostId)
+        const listing = await new OpencodeClient(runtime).listDirectories(path)
+        setDirectoryListing(listing)
+        setDirectoryQuery(listing.relative)
+      } catch (cause) {
+        setDirectoryError(describeError(cause, t))
+      }
+    },
+    [hostId, t],
+  )
+
   const openProjectPicker = useCallback(async () => {
     setProjectOpen(true)
     setProjectError(null)
+    setDirectoryError(null)
+    setDirectoryCheck(null)
+    setDirectoryInput("")
+    setDirectoryQuery("")
+    setDirectoryOpen(false)
+    void loadDirectory("")
     if (projects) return
     try {
       const runtime = await ensureConnection(hostId)
       setProjects(await new OpencodeClient(runtime).listProjects())
     } catch (cause) {
-      setProjectError(cause instanceof Error ? cause.message : t("error"))
+      setProjectError(describeError(cause, t))
     }
-  }, [hostId, projects, t])
+  }, [hostId, loadDirectory, projects, t])
+
+  // Debounced check so typing a path tells the user whether it exists without
+  // creating anything. It also fills the drop-down with the typed directory.
+  useEffect(() => {
+    if (!projectOpen) return
+    const value = directoryInput.trim()
+    if (!value) {
+      setDirectoryCheck(null)
+      setDirectoryChecking(false)
+      return
+    }
+    let cancelled = false
+    setDirectoryChecking(true)
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const runtime = await ensureConnection(hostId)
+          const result = await new OpencodeClient(runtime).checkDirectory(value)
+          if (!cancelled) setDirectoryCheck(result)
+        } catch (cause) {
+          if (!cancelled) {
+            setDirectoryCheck({
+              valid: false,
+              directory: false,
+              error: describeError(cause, t),
+            })
+          }
+        } finally {
+          if (!cancelled) setDirectoryChecking(false)
+        }
+      })()
+    }, 320)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [directoryInput, hostId, projectOpen, t])
+
+  const openDirectoryList = useCallback(() => {
+    setDirectoryOpen(true)
+    const target = directoryCheck?.valid && directoryCheck.path ? directoryCheck.path : directoryQuery
+    void loadDirectory(target)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [directoryCheck, directoryQuery, loadDirectory])
 
   useEffect(() => {
     if (params.new !== "1" || !ready) return
     void openProjectPicker()
   }, [params.new, ready, openProjectPicker])
+
+  const createSessionIn = async (directory: string) => {
+    if (creating || !directory.trim()) return
+    setCreating(true)
+    setProjectError(null)
+    setDirectoryError(null)
+    try {
+      if (!opencodeOnline) {
+        setProjectError(t("opencodeOfflineBody"))
+        return
+      }
+      const runtime = await ensureConnection(hostId)
+      const created = await new OpencodeClient(runtime).createSession({ location: { directory } })
+      invalidateSessionIndex(hostId)
+      setProjectOpen(false)
+      setDirectoryOpen(false)
+      setDirectoryInput("")
+      selectSession(created.id)
+    } catch (cause) {
+      setProjectError(describeError(cause, t))
+    } finally {
+      setCreating(false)
+    }
+  }
 
   const createSession = async (project: ProjectInfo) => {
     if (creating) return
@@ -851,7 +1159,7 @@ export default function WorkspaceScreen() {
       setProjectOpen(false)
       selectSession(created.id)
     } catch (cause) {
-      setProjectError(cause instanceof Error ? cause.message : t("error"))
+      setProjectError(describeError(cause, t))
     } finally {
       setCreating(false)
     }
@@ -880,7 +1188,7 @@ export default function WorkspaceScreen() {
           current.filter((selected) => skillList.some((skill) => skill.id === selected.id)),
         )
       } catch (cause) {
-        setOptionError(cause instanceof Error ? cause.message : t("error"))
+        setOptionError(describeError(cause, t))
       } finally {
         setOptionsBusy(false)
       }
@@ -901,7 +1209,7 @@ export default function WorkspaceScreen() {
       const runtime = await ensureConnection(hostId)
       setMcp(await new OpencodeClient(runtime).listMcp(session?.location?.directory))
     } catch (cause) {
-      setOptionError(cause instanceof Error ? cause.message : t("error"))
+      setOptionError(describeError(cause, t))
     }
   }, [hostId, session?.location?.directory, t])
 
@@ -945,7 +1253,7 @@ export default function WorkspaceScreen() {
       await new OpencodeClient(runtime).switchAgent(sessionId, agentId)
       setSession((current) => (current ? { ...current, agent: agentId } : current))
     } catch (cause) {
-      setOptionError(cause instanceof Error ? cause.message : t("error"))
+      setOptionError(describeError(cause, t))
     } finally {
       setOptionsBusy(false)
     }
@@ -965,7 +1273,7 @@ export default function WorkspaceScreen() {
         current ? { ...current, model: { id: model.modelID, providerID: model.providerID } } : current,
       )
     } catch (cause) {
-      setOptionError(cause instanceof Error ? cause.message : t("error"))
+      setOptionError(describeError(cause, t))
     } finally {
       setOptionsBusy(false)
     }
@@ -994,7 +1302,7 @@ export default function WorkspaceScreen() {
           : current,
       )
     } catch (cause) {
-      setOptionError(cause instanceof Error ? cause.message : t("error"))
+      setOptionError(describeError(cause, t))
     } finally {
       setOptionsBusy(false)
     }
@@ -1009,7 +1317,7 @@ export default function WorkspaceScreen() {
       await client.setMcpConnected(server.name, server.status?.status !== "connected", session?.location?.directory)
       await refreshMcp()
     } catch (cause) {
-      setOptionError(cause instanceof Error ? cause.message : t("error"))
+      setOptionError(describeError(cause, t))
     } finally {
       setOptionsBusy(false)
     }
@@ -1020,15 +1328,18 @@ export default function WorkspaceScreen() {
     if (sessionId) await saveSessionVoiceEngine(sessionId, value).catch(() => undefined)
   }
 
+  const sessionBusyNow = session ? sessionBusy(session) : false
   const activities = useMemo(
-    () => (session ? runningActivities(messagesForSession ?? [], children) : []),
-    [children, messagesForSession, session],
+    () =>
+      session
+        ? runningActivities(messagesForSession ?? [], children, { busy: sessionBusyNow || children.some(sessionBusy) })
+        : [],
+    [children, messagesForSession, session, sessionBusyNow],
   )
-  const agentWorking =
-    (session ? sessionBusy(session) : false) ||
-    activities.length > 0 ||
-    children.some(sessionBusy)
-  const active = agentWorking || inbox.length > 0
+  // A background task keeps the header busy, but the session's own turn is the
+  // only thing the main stop button should act on.
+  const agentWorking = sessionBusyNow || children.some(sessionBusy)
+  const active = agentWorking || activities.length > 0 || inbox.length > 0
 
   const send = async () => {
     const text = draft.trim()
@@ -1100,7 +1411,7 @@ export default function WorkspaceScreen() {
       if (queued) notify(t("sessionQueueing"))
       await loadSession(targetSessionId)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("error"))
+      setError(describeError(cause, t))
       setDraftFor(targetSessionId, text)
     } finally {
       setSending(false)
@@ -1109,13 +1420,21 @@ export default function WorkspaceScreen() {
 
   const stop = async () => {
     if (!sessionId) return
+    const target = sessionId
+    // Optimistically clear the running indicators so a slow or failed refresh
+    // cannot leave the stop button and activity pill stuck on screen.
+    setSession((current) => (current && current.id === target ? markSessionStopped(current) : current))
+    setChildren((current) => current.map((child) => (sessionBusy(child) ? markSessionStopped(child) : child)))
+    setLiveState((current) => (current.sessionId === target ? { sessionId: target, messages: [] } : current))
     try {
       const runtime = await ensureConnection(hostId)
-      await new OpencodeClient(runtime).interrupt(sessionId)
-      await loadSession(sessionId)
+      await new OpencodeClient(runtime).interrupt(target)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("error"))
+      setError(describeError(cause, t))
     }
+    // Confirm with the server even after an error: the session may already be
+    // idle, and the refresh is what re-syncs the real state.
+    await loadSession(target).catch(() => undefined)
   }
 
   const confirmStop = () => {
@@ -1131,7 +1450,7 @@ export default function WorkspaceScreen() {
     void ensureConnection(hostId)
       .then((runtime) => new OpencodeClient(runtime).compactSession(sessionId))
       .then(() => loadSession(sessionId))
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : t("error")))
+      .catch((cause: unknown) => setError(describeError(cause, t)))
   }
 
   const toggleSkill = (skill: SkillInfo) => {
@@ -1259,13 +1578,29 @@ export default function WorkspaceScreen() {
 
   const stopActivity = async (activity: RunningActivity) => {
     if (activity.kind === "shell") return
+    const target = activity.kind === "subagent" ? activity.sessionId : sessionId
+    // Clear the pill immediately: a stuck tool or subagent must not survive a
+    // successful stop just because the follow-up refresh is slow.
+    if (activity.kind === "subagent") {
+      setChildren((current) => current.map((child) => (child.id === target ? markSessionStopped(child) : child)))
+    }
     try {
-      const runtime = await ensureConnection(hostId)
-      const target = activity.kind === "subagent" ? activity.sessionId : sessionId
-      if (target) await new OpencodeClient(runtime).interrupt(target)
-      if (sessionId) await loadSession(sessionId)
+      if (target) {
+        const runtime = await ensureConnection(hostId)
+        await new OpencodeClient(runtime).interrupt(target)
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("error"))
+      setError(describeError(cause, t))
+    }
+    if (activity.kind === "subagent") {
+      setActivityOpen(false)
+      if (sessionId) await loadSession(sessionId).catch(() => undefined)
+      return
+    }
+    // Tools belong to the current session; interrupt and also refresh it.
+    if (sessionId) {
+      setSession((current) => (current ? markSessionStopped(current) : current))
+      await loadSession(sessionId).catch(() => undefined)
     }
   }
 
@@ -1276,7 +1611,7 @@ export default function WorkspaceScreen() {
       await new OpencodeClient(runtime).cancelInbox(sessionId, item.id)
       setInbox((current) => current.filter((entry) => entry.id !== item.id))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("error"))
+      setError(describeError(cause, t))
     }
   }
 
@@ -1288,7 +1623,7 @@ export default function WorkspaceScreen() {
       await new OpencodeClient(runtime).replyPermission(sessionId, request.id, decision)
       setPermissions((current) => current.filter((item) => item.id !== request.id))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("error"))
+      setError(describeError(cause, t))
     } finally {
       setDockBusy(false)
     }
@@ -1302,7 +1637,7 @@ export default function WorkspaceScreen() {
       await new OpencodeClient(runtime).replyForm(sessionId, form.id, answer)
       setForms((current) => current.filter((item) => item.id !== form.id))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("error"))
+      setError(describeError(cause, t))
     } finally {
       setDockBusy(false)
     }
@@ -1316,7 +1651,7 @@ export default function WorkspaceScreen() {
       await new OpencodeClient(runtime).cancelForm(sessionId, form.id)
       setForms((current) => current.filter((item) => item.id !== form.id))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t("error"))
+      setError(describeError(cause, t))
     } finally {
       setDockBusy(false)
     }
@@ -1497,6 +1832,38 @@ export default function WorkspaceScreen() {
         </View>
       </View>
 
+      {opencodeOnline === false ? (
+        <View style={styles.opencodeBar}>
+          <Icon name="server" size={14} color={colors.warning} />
+          <Text style={styles.opencodeBarText} numberOfLines={2}>
+            {t("opencodeOffline")}
+            {opencodeError ? ` · ${opencodeError}` : ""}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("retry")}
+            onPress={() => {
+              void (async () => {
+                try {
+                  const runtime = await ensureConnection(hostId)
+                  const info = await new OpencodeClient(runtime).hostRuntime()
+                  setOpencodeOnline(info.opencode.available)
+                  setOpencodeError(info.opencode.error ?? null)
+                  if (info.opencode.available && sessionIdRef.current) {
+                    await loadSession(sessionIdRef.current)
+                  }
+                } catch {
+                  // keep the previous state
+                }
+              })()
+            }}
+            hitSlop={8}
+          >
+            <Text style={styles.opencodeBarAction}>{t("retry")}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       {!ready ? (
         <View style={styles.connectionState}>
           {connecting ? (
@@ -1530,14 +1897,17 @@ export default function WorkspaceScreen() {
         </View>
       ) : (
         <View style={{ flex: 1 }}>
-          {loadingSession && messages === null ? (
-            <View style={styles.loadingState}>
-              <ActivityIndicator color={colors.accent} />
-              <Text style={styles.connectionText}>{t("syncingSession")}</Text>
-            </View>
-          ) : (
-            <FlatList
-              key={sessionId}
+          {/* The jump control anchors to this wrapper, not to the whole column:
+              anything anchored to the column bottom would sit behind the composer. */}
+          <View style={{ flex: 1 }}>
+            {loadingSession && messages === null ? (
+              <View style={styles.loadingState}>
+                <ActivityIndicator color={colors.accent} />
+                <Text style={styles.connectionText}>{t("syncingSession")}</Text>
+              </View>
+            ) : (
+              <FlatList
+                key={sessionId}
                 ref={listRef}
                 inverted
                 data={displayMessages}
@@ -1550,18 +1920,13 @@ export default function WorkspaceScreen() {
                 onViewableItemsChanged={onViewableItemsChanged}
                 viewabilityConfig={viewabilityConfig}
                 onScroll={handleMessageScroll}
+                onScrollEndDrag={handleMessageScrollSettled}
+                onMomentumScrollEnd={handleMessageScrollSettled}
                 scrollEventThrottle={80}
                 // Selecting text focuses the native TextView; without this
                 // Android scrolls the transcript on the first selection.
                 scrollsChildToFocus={false}
-                onContentSizeChange={() => {
-                  const offset = restoreOffsetRef.current
-                  if (offset === undefined) return
-                  restoreOffsetRef.current = undefined
-                  requestAnimationFrame(() => {
-                    listRef.current?.scrollToOffset({ offset, animated: false })
-                  })
-                }}
+                onContentSizeChange={handleContentSizeChange}
                 removeClippedSubviews={false}
                 ListFooterComponent={
                   olderCursor ? (
@@ -1576,20 +1941,20 @@ export default function WorkspaceScreen() {
                   <Text style={styles.emptyMessages}>{t("noMessages")}</Text>
                 }
               />
-          )}
+            )}
 
-          {showJump ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                setShowJump(false)
-                listRef.current?.scrollToOffset({ offset: 0, animated: true })
-              }}
-              style={[styles.jump, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            >
-              <Icon name="chevronDown" size={16} color={colors.muted} />
-            </Pressable>
-          ) : null}
+            {showJump ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("jumpToBottom")}
+                onPress={jumpToBottom}
+                style={[styles.jump, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              >
+                <Icon name="chevronDown" size={16} color={colors.muted} />
+                {following ? null : <View style={[styles.jumpDot, { backgroundColor: colors.accent }]} />}
+              </Pressable>
+            ) : null}
+          </View>
 
           {agentWorking || activities.length > 0 ? (
             // Keep the slot mounted for the whole turn. Background tasks appear
@@ -1926,7 +2291,132 @@ export default function WorkspaceScreen() {
         visible={projectOpen}
         title={t("chooseProject")}
         onClose={() => setProjectOpen(false)}
+        height={panelHeight}
       >
+        <View style={styles.directoryBar}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("newSessionDirectory")}
+            onPress={openDirectoryList}
+            style={({ pressed }) => [styles.directoryArrow, pressed && { opacity: 0.6 }]}
+          >
+            <Icon name="chevronDown" size={16} color={colors.muted} />
+          </Pressable>
+          <TextInput
+            value={directoryInput}
+            onChangeText={(value) => {
+              setDirectoryInput(value)
+              setDirectoryOpen(false)
+            }}
+            placeholder={t("directoryPlaceholder")}
+            placeholderTextColor={colors.faint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.directoryInput}
+          />
+          <Button
+            label={t("newSession")}
+            size="sm"
+            disabled={
+              creating ||
+              !directoryInput.trim() ||
+              directoryChecking ||
+              directoryCheck?.valid !== true
+            }
+            onPress={() => {
+              const target = directoryCheck?.valid && directoryCheck.path ? directoryCheck.path : directoryInput.trim()
+              void createSessionIn(target)
+            }}
+          />
+        </View>
+
+        {directoryInput.trim() ? (
+          <Text
+            style={[
+              styles.directoryHint,
+              directoryCheck?.valid
+                ? { color: colors.success }
+                : directoryCheck
+                  ? { color: colors.danger }
+                  : undefined,
+            ]}
+            numberOfLines={2}
+          >
+            {directoryChecking
+              ? t("directoryChecking")
+              : directoryCheck?.valid
+                ? `${t("newSessionDirectory")} · ~/${directoryCheck.relative ?? ""}`
+                : directoryCheck?.error
+                  ? t("directoryInvalid", { message: directoryCheck.error })
+                  : ""}
+          </Text>
+        ) : null}
+
+        {directoryOpen ? (
+          <View style={styles.directoryTree}>
+            <View style={styles.directoryTreeHead}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("directoryUp")}
+                disabled={!directoryListing?.relative}
+                onPress={() => {
+                  const relative = directoryListing?.relative ?? ""
+                  const parent = relative.split("/").slice(0, -1).join("/")
+                  void loadDirectory(parent)
+                }}
+                style={({ pressed }) => [
+                  styles.directoryUp,
+                  !directoryListing?.relative && { opacity: 0.35 },
+                  pressed && { opacity: 0.6 },
+                ]}
+              >
+                <Icon name="back" size={14} color={colors.muted} />
+                <Text style={styles.directoryUpText}>{t("directoryUp")}</Text>
+              </Pressable>
+              <Text style={styles.directoryPath} numberOfLines={1}>
+                ~/{directoryListing?.relative ?? ""}
+              </Text>
+            </View>
+            {directoryError ? (
+              <Text style={[styles.directoryHint, { color: colors.danger }]}>{directoryError}</Text>
+            ) : directoryListing === null ? (
+              <Text style={styles.sheetMuted}>{t("loadingDirectory")}</Text>
+            ) : directoryListing.entries.length === 0 ? (
+              <Text style={styles.sheetMuted}>{t("directoryEmpty")}</Text>
+            ) : (
+              directoryListing.entries.map((entry) => (
+                <Pressable
+                  key={entry.path}
+                  accessibilityRole="button"
+                  onPress={() => void loadDirectory(entry.path)}
+                  style={({ pressed }) => [styles.directoryRow, pressed && { opacity: 0.7 }]}
+                >
+                  <Icon name="folder" size={15} color={colors.muted} />
+                  <Text style={styles.directoryRowText} numberOfLines={1}>
+                    {entry.name}
+                  </Text>
+                  <Icon name="chevronRight" size={13} color={colors.faint} />
+                </Pressable>
+              ))
+            )}
+            <Pressable
+              accessibilityRole="button"
+              disabled={creating || !directoryListing || !opencodeOnline}
+              onPress={() => void createSessionIn(directoryListing?.path ?? directoryQuery)}
+              style={({ pressed }) => [
+                styles.directoryUse,
+                { borderColor: colors.border, backgroundColor: colors.accentSoft },
+                (creating || !directoryListing || !opencodeOnline) && { opacity: 0.42 },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Icon name="plus" size={14} color={colors.accent} />
+              <Text style={styles.directoryUseText}>{t("createInDirectory")}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <View style={styles.panelDivider} />
         {projectError ? <Text style={{ fontSize: 12.5, color: colors.danger, marginBottom: 8 }}>{projectError}</Text> : null}
         {projects === null ? (
           <Text style={styles.sheetMuted}>{t("loadingProjects")}</Text>
@@ -2772,15 +3262,6 @@ function eventSessionID(event: OpencodeEvent): string | undefined {
   return undefined
 }
 
-function mergeMessages(incoming: SessionMessage[], existing: SessionMessage[]): SessionMessage[] {
-  const byId = new Map<string, SessionMessage>()
-  for (const message of existing) {
-    if (!message.id.startsWith("local_")) byId.set(message.id, message)
-  }
-  for (const message of incoming) byId.set(message.id, message)
-  return [...byId.values()].sort((left, right) => toMillis(left.time?.created) - toMillis(right.time?.created))
-}
-
 function both(left: string | undefined, right: string | undefined): boolean {
   return Boolean(left && right)
 }
@@ -2804,6 +3285,21 @@ const workspaceStyles = (colors: Palette) =>
     headerSubtitle: { fontSize: 11, color: colors.muted },
     headerActions: { flexDirection: "row", alignItems: "center" },
     connectionState: { flex: 1, alignItems: "center", justifyContent: "center", padding: 28, gap: 10 },
+    opencodeBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      marginHorizontal: 12,
+      marginTop: 8,
+      paddingHorizontal: 11,
+      paddingVertical: 8,
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+    },
+    opencodeBarText: { flex: 1, fontSize: 11.5, lineHeight: 16, color: colors.muted },
+    opencodeBarAction: { fontSize: 11.5, fontWeight: "600", color: colors.accent },
     connectionTitle: { fontSize: 19, fontWeight: "700", color: colors.text, textAlign: "center" },
     emptyTitle: { fontSize: 19, fontWeight: "600", color: colors.text },
     connectionText: { fontSize: 13, lineHeight: 20, color: colors.muted, textAlign: "center", maxWidth: 320 },
@@ -2824,6 +3320,7 @@ const workspaceStyles = (colors: Palette) =>
       alignItems: "center",
       justifyContent: "center",
     },
+    jumpDot: { position: "absolute", top: 7, right: 7, width: 7, height: 7, borderRadius: 4 },
     activitySlot: {
       position: "relative",
       height: 44,
@@ -2957,6 +3454,79 @@ const workspaceStyles = (colors: Palette) =>
     statusText: { fontSize: 11.5, color: colors.muted },
     statusSeparator: { fontSize: 11.5, color: colors.faint },
     sheetMuted: { fontSize: 12.5, lineHeight: 18, color: colors.faint, marginTop: 4 },
+    directoryBar: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      marginTop: 4,
+      marginBottom: 2,
+    },
+    directoryArrow: {
+      width: 34,
+      height: 40,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+    },
+    directoryInput: {
+      flex: 1,
+      height: 40,
+      paddingHorizontal: 11,
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      fontSize: 13,
+      fontFamily: "monospace",
+      color: colors.text,
+    },
+    directoryHint: { fontSize: 11.5, lineHeight: 17, color: colors.faint, marginTop: 4 },
+    directoryTree: { marginTop: 8, gap: 1 },
+    directoryTreeHead: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingBottom: 4,
+    },
+    directoryUp: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 3,
+      paddingVertical: 3,
+      paddingHorizontal: 4,
+    },
+    directoryUpText: { fontSize: 11.5, color: colors.muted },
+    directoryPath: {
+      flex: 1,
+      textAlign: "right",
+      fontSize: 11,
+      fontFamily: "monospace",
+      color: colors.faint,
+    },
+    directoryRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingVertical: 9,
+      paddingHorizontal: 4,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    directoryRowText: { flex: 1, fontSize: 13.5, color: colors.text },
+    directoryUse: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      marginTop: 10,
+      paddingVertical: 10,
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+    },
+    directoryUseText: { fontSize: 13, fontWeight: "600", color: colors.accent },
     optionRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
     optionTitle: { fontSize: 14.5, fontWeight: "500", color: colors.text },
     optionBody: { fontSize: 11.5, color: colors.faint, marginTop: 2 },
