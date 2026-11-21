@@ -174,6 +174,8 @@ const zh = {
   loadingDirectory: "正在读取目录…",
   homeDirectory: "家目录",
   createInDirectory: "在该目录新建会话",
+  expandDirectory: "展开",
+  collapseDirectory: "收起",
 
   // chat
   messagePlaceholder: "输入消息，/ 命令，! 执行命令…",
@@ -582,6 +584,8 @@ const en: Record<Key, string> = {
   loadingDirectory: "Reading directory…",
   homeDirectory: "Home",
   createInDirectory: "New session in this directory",
+  expandDirectory: "Expand",
+  collapseDirectory: "Collapse",
 
   messagePlaceholder: "Message, / command, ! shell…",
   command: "Command",

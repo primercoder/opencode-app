@@ -40,7 +40,10 @@ export function BottomSheet(props: {
     >
       <KeyboardAvoidingView
         style={{ flex: 1, justifyContent: "flex-end" }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        // Android handles the keyboard via windowSoftInputMode adjustResize;
+        // "height" behavior here squeezes the fixed-height sheet and pushes
+        // its header off-screen when a text input gains focus.
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <Pressable style={[StyleSheet.absoluteFill, { backgroundColor: colors.overlap }]} onPress={props.onClose} />
         <View

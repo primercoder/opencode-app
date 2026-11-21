@@ -161,12 +161,13 @@ export default function WorkspaceScreen() {
   const [opencodeOnline, setOpencodeOnline] = useState<boolean | undefined>(undefined)
   const [opencodeError, setOpencodeError] = useState<string | null>(null)
   const [directoryInput, setDirectoryInput] = useState("")
-  const [directoryQuery, setDirectoryQuery] = useState("")
-  const [directoryListing, setDirectoryListing] = useState<DirectoryListing | null>(null)
+  const [dirHome, setDirHome] = useState<string | undefined>(undefined)
+  const [treeListings, setTreeListings] = useState<Record<string, DirectoryListing>>({})
+  const [treeLoading, setTreeLoading] = useState<Record<string, boolean>>({})
+  const [expandedDirs, setExpandedDirs] = useState<string[]>([])
   const [directoryError, setDirectoryError] = useState<string | null>(null)
   const [directoryCheck, setDirectoryCheck] = useState<DirectoryCheck | null>(null)
   const [directoryChecking, setDirectoryChecking] = useState(false)
-  const [directoryOpen, setDirectoryOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerDragging, setDrawerDragging] = useState(false)
   const drawerProgress = useRef(new Animated.Value(0)).current
@@ -1042,19 +1043,34 @@ export default function WorkspaceScreen() {
   }, [hostId, hydrated, params.new, params.session, ready])
 
   /** Loads one directory level from the host. Works while opencode is down. */
-  const loadDirectory = useCallback(
+  const loadTreeListing = useCallback(
     async (path: string) => {
-      setDirectoryError(null)
+      if (treeListings[path]) return
+      setTreeLoading((current) => ({ ...current, [path]: true }))
       try {
         const runtime = await ensureConnection(hostId)
         const listing = await new OpencodeClient(runtime).listDirectories(path)
-        setDirectoryListing(listing)
-        setDirectoryQuery(listing.relative)
+        setTreeListings((current) => ({ ...current, [path]: listing }))
+        setDirHome(listing.home)
       } catch (cause) {
         setDirectoryError(describeError(cause, t))
+      } finally {
+        setTreeLoading((current) => ({ ...current, [path]: false }))
       }
     },
-    [hostId, t],
+    [hostId, t, treeListings],
+  )
+
+  const toggleDir = useCallback(
+    (path: string) => {
+      if (expandedDirs.includes(path)) {
+        setExpandedDirs((current) => current.filter((item) => item !== path))
+        return
+      }
+      void loadTreeListing(path)
+      setExpandedDirs((current) => (current.includes(path) ? current : [...current, path]))
+    },
+    [expandedDirs, loadTreeListing],
   )
 
   const openProjectPicker = useCallback(async () => {
@@ -1063,9 +1079,17 @@ export default function WorkspaceScreen() {
     setDirectoryError(null)
     setDirectoryCheck(null)
     setDirectoryInput("")
-    setDirectoryQuery("")
-    setDirectoryOpen(false)
-    void loadDirectory("")
+    setExpandedDirs([])
+    setTreeListings({})
+    setTreeLoading({})
+    try {
+      const runtime = await ensureConnection(hostId)
+      const info = await new OpencodeClient(runtime).hostRuntime()
+      setDirHome(info.home)
+    } catch {
+      // The tree falls back to the localized placeholder until a listing
+      // reports the real home.
+    }
     if (projects) return
     try {
       const runtime = await ensureConnection(hostId)
@@ -1073,7 +1097,7 @@ export default function WorkspaceScreen() {
     } catch (cause) {
       setProjectError(describeError(cause, t))
     }
-  }, [hostId, loadDirectory, projects, t])
+  }, [hostId, projects, t])
 
   // Debounced check so typing a path tells the user whether it exists without
   // creating anything. It also fills the drop-down with the typed directory.
@@ -1112,13 +1136,6 @@ export default function WorkspaceScreen() {
     }
   }, [directoryInput, hostId, projectOpen, t])
 
-  const openDirectoryList = useCallback(() => {
-    setDirectoryOpen(true)
-    const target = directoryCheck?.valid && directoryCheck.path ? directoryCheck.path : directoryQuery
-    void loadDirectory(target)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [directoryCheck, directoryQuery, loadDirectory])
-
   useEffect(() => {
     if (params.new !== "1" || !ready) return
     void openProjectPicker()
@@ -1138,7 +1155,6 @@ export default function WorkspaceScreen() {
       const created = await new OpencodeClient(runtime).createSession({ location: { directory } })
       invalidateSessionIndex(hostId)
       setProjectOpen(false)
-      setDirectoryOpen(false)
       setDirectoryInput("")
       selectSession(created.id)
     } catch (cause) {
@@ -1146,6 +1162,65 @@ export default function WorkspaceScreen() {
     } finally {
       setCreating(false)
     }
+  }
+
+  /**
+   * Renders the directory tree depth-first. `path === ""` is the home row:
+   * it starts collapsed, and expanding it lists the home directory's children.
+   * Every row carries its own plus button so a session can be created in any
+   * directory while browsing, not just the one being navigated into.
+   */
+  const renderDirRows = (path: string, name: string, depth: number): React.ReactNode => {
+    const expanded = expandedDirs.includes(path)
+    const listing = treeListings[path]
+    const loading = treeLoading[path] === true
+    const children = expanded ? listing?.entries ?? [] : []
+    const row = (
+      <View style={[styles.directoryRow, depth > 0 && { marginLeft: depth * 14 }]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={expanded ? `${name} ${t("collapseDirectory")}` : `${name} ${t("expandDirectory")}`}
+          onPress={() => toggleDir(path)}
+          hitSlop={6}
+          style={({ pressed }) => [styles.directoryChevron, pressed && { opacity: 0.6 }]}
+        >
+          <Icon name={expanded ? "chevronDown" : "chevronRight"} size={14} color={loading ? colors.faint : colors.muted} />
+        </Pressable>
+        <Icon name="folder" size={15} color={colors.muted} />
+        <Text style={styles.directoryRowText} numberOfLines={1}>
+          {name}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${t("createInDirectory")} ${path || dirHome ?? ""}`}
+          disabled={creating || !opencodeOnline}
+          onPress={() => void createSessionIn(path)}
+          hitSlop={6}
+          style={({ pressed }) => [
+            styles.directoryAdd,
+            (creating || !opencodeOnline) && { opacity: 0.35 },
+            pressed && { opacity: 0.6 },
+          ]}
+        >
+          {creating ? <ActivityIndicator size="small" color={colors.accent} /> : <Icon name="plus" size={16} color={colors.accent} />}
+        </Pressable>
+      </View>
+    )
+    if (!expanded) return row
+    return (
+      <View key={path || "__home__"}>
+        {row}
+        {listing === undefined ? (
+          loading ? (
+            <Text style={[styles.sheetMuted, { marginLeft: (depth + 1) * 14 }]}>{t("loadingDirectory")}</Text>
+          ) : null
+        ) : children.length === 0 ? (
+          <Text style={[styles.sheetMuted, { marginLeft: (depth + 1) * 14 }]}>{t("directoryEmpty")}</Text>
+        ) : (
+          children.map((entry) => renderDirRows(entry.path, entry.name, depth + 1))
+        )}
+      </View>
+    )
   }
 
   const createSession = async (project: ProjectInfo) => {
@@ -2294,29 +2369,18 @@ export default function WorkspaceScreen() {
         height={panelHeight}
       >
         <View style={styles.directoryBar}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("newSessionDirectory")}
-            onPress={openDirectoryList}
-            style={({ pressed }) => [styles.directoryArrow, pressed && { opacity: 0.6 }]}
-          >
-            <Icon name="chevronDown" size={16} color={colors.muted} />
-          </Pressable>
           <TextInput
             value={directoryInput}
-            onChangeText={(value) => {
-              setDirectoryInput(value)
-              setDirectoryOpen(false)
-            }}
-            placeholder={t("directoryPlaceholder")}
+            onChangeText={(value) => setDirectoryInput(value)}
+            placeholder={dirHome ?? t("directoryPlaceholder")}
             placeholderTextColor={colors.faint}
             autoCapitalize="none"
             autoCorrect={false}
             style={styles.directoryInput}
           />
-          <Button
-            label={t("newSession")}
-            size="sm"
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("newSession")}
             disabled={
               creating ||
               !directoryInput.trim() ||
@@ -2327,7 +2391,17 @@ export default function WorkspaceScreen() {
               const target = directoryCheck?.valid && directoryCheck.path ? directoryCheck.path : directoryInput.trim()
               void createSessionIn(target)
             }}
-          />
+            style={({ pressed }) => [
+              styles.directoryAddButton,
+              (creating ||
+                !directoryInput.trim() ||
+                directoryChecking ||
+                directoryCheck?.valid !== true) && { opacity: 0.35 },
+              pressed && { opacity: 0.6 },
+            ]}
+          >
+            <Icon name="plus" size={19} color={colors.accent} />
+          </Pressable>
         </View>
 
         {directoryInput.trim() ? (
@@ -2352,69 +2426,11 @@ export default function WorkspaceScreen() {
           </Text>
         ) : null}
 
-        {directoryOpen ? (
-          <View style={styles.directoryTree}>
-            <View style={styles.directoryTreeHead}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("directoryUp")}
-                disabled={!directoryListing?.relative}
-                onPress={() => {
-                  const relative = directoryListing?.relative ?? ""
-                  const parent = relative.split("/").slice(0, -1).join("/")
-                  void loadDirectory(parent)
-                }}
-                style={({ pressed }) => [
-                  styles.directoryUp,
-                  !directoryListing?.relative && { opacity: 0.35 },
-                  pressed && { opacity: 0.6 },
-                ]}
-              >
-                <Icon name="back" size={14} color={colors.muted} />
-                <Text style={styles.directoryUpText}>{t("directoryUp")}</Text>
-              </Pressable>
-              <Text style={styles.directoryPath} numberOfLines={1}>
-                ~/{directoryListing?.relative ?? ""}
-              </Text>
-            </View>
-            {directoryError ? (
-              <Text style={[styles.directoryHint, { color: colors.danger }]}>{directoryError}</Text>
-            ) : directoryListing === null ? (
-              <Text style={styles.sheetMuted}>{t("loadingDirectory")}</Text>
-            ) : directoryListing.entries.length === 0 ? (
-              <Text style={styles.sheetMuted}>{t("directoryEmpty")}</Text>
-            ) : (
-              directoryListing.entries.map((entry) => (
-                <Pressable
-                  key={entry.path}
-                  accessibilityRole="button"
-                  onPress={() => void loadDirectory(entry.path)}
-                  style={({ pressed }) => [styles.directoryRow, pressed && { opacity: 0.7 }]}
-                >
-                  <Icon name="folder" size={15} color={colors.muted} />
-                  <Text style={styles.directoryRowText} numberOfLines={1}>
-                    {entry.name}
-                  </Text>
-                  <Icon name="chevronRight" size={13} color={colors.faint} />
-                </Pressable>
-              ))
-            )}
-            <Pressable
-              accessibilityRole="button"
-              disabled={creating || !directoryListing || !opencodeOnline}
-              onPress={() => void createSessionIn(directoryListing?.path ?? directoryQuery)}
-              style={({ pressed }) => [
-                styles.directoryUse,
-                { borderColor: colors.border, backgroundColor: colors.accentSoft },
-                (creating || !directoryListing || !opencodeOnline) && { opacity: 0.42 },
-                pressed && { opacity: 0.7 },
-              ]}
-            >
-              <Icon name="plus" size={14} color={colors.accent} />
-              <Text style={styles.directoryUseText}>{t("createInDirectory")}</Text>
-            </Pressable>
-          </View>
+        {directoryError ? (
+          <Text style={[styles.directoryHint, { color: colors.danger }]}>{directoryError}</Text>
         ) : null}
+
+        <View style={styles.directoryTree}>{renderDirRows("", dirHome ? basename(dirHome) : t("homeDirectory"), 0)}</View>
 
         <View style={styles.panelDivider} />
         {projectError ? <Text style={{ fontSize: 12.5, color: colors.danger, marginBottom: 8 }}>{projectError}</Text> : null}
@@ -3461,20 +3477,11 @@ const workspaceStyles = (colors: Palette) =>
       marginTop: 4,
       marginBottom: 2,
     },
-    directoryArrow: {
-      width: 34,
-      height: 40,
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: 10,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-    },
     directoryInput: {
       flex: 1,
-      height: 40,
+      height: 42,
       paddingHorizontal: 11,
+      paddingVertical: 0,
       borderRadius: 10,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
@@ -3485,48 +3492,40 @@ const workspaceStyles = (colors: Palette) =>
     },
     directoryHint: { fontSize: 11.5, lineHeight: 17, color: colors.faint, marginTop: 4 },
     directoryTree: { marginTop: 8, gap: 1 },
-    directoryTreeHead: {
-      flexDirection: "row",
+    directoryChevron: {
+      width: 26,
+      height: 26,
       alignItems: "center",
-      gap: 8,
-      paddingBottom: 4,
+      justifyContent: "center",
+      borderRadius: 7,
     },
-    directoryUp: {
-      flexDirection: "row",
+    directoryAdd: {
+      width: 30,
+      height: 30,
       alignItems: "center",
-      gap: 3,
-      paddingVertical: 3,
-      paddingHorizontal: 4,
+      justifyContent: "center",
+      borderRadius: 8,
+      backgroundColor: colors.accentSoft,
     },
-    directoryUpText: { fontSize: 11.5, color: colors.muted },
-    directoryPath: {
-      flex: 1,
-      textAlign: "right",
-      fontSize: 11,
-      fontFamily: "monospace",
-      color: colors.faint,
+    directoryAddButton: {
+      width: 40,
+      height: 40,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
     },
     directoryRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 8,
-      paddingVertical: 9,
+      gap: 6,
+      paddingVertical: 8,
       paddingHorizontal: 4,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.border,
+      minHeight: 36,
     },
     directoryRowText: { flex: 1, fontSize: 13.5, color: colors.text },
-    directoryUse: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 6,
-      marginTop: 10,
-      paddingVertical: 10,
-      borderRadius: 10,
-      borderWidth: StyleSheet.hairlineWidth,
-    },
-    directoryUseText: { fontSize: 13, fontWeight: "600", color: colors.accent },
     optionRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
     optionTitle: { fontSize: 14.5, fontWeight: "500", color: colors.text },
     optionBody: { fontSize: 11.5, color: colors.faint, marginTop: 2 },
