@@ -1546,7 +1546,10 @@ export default function WorkspaceScreen() {
   }
 
   const confirmStop = () => {
-    if (!agentWorking || readOnly) return
+    // Must match the conditions that show a stop button: `active` also covers
+    // sessions that are idle but still report a background task, where the
+    // stricter agentWorking check silently swallowed the tap.
+    if (!active || readOnly || !sessionId) return
     Alert.alert(t("stopTaskTitle"), t("stopTaskBody"), [
       { text: t("cancel"), style: "cancel" },
       { text: t("stop"), style: "destructive", onPress: () => void stop() },
@@ -1923,6 +1926,13 @@ export default function WorkspaceScreen() {
           </View>
         </View>
         <View style={styles.headerActions}>
+          {/* Global stop: always reachable in the header while a turn or a
+              background task runs, instead of only inside the activity slot. */}
+          {active && !readOnly && sessionId ? (
+            <IconButton label={t("stopTaskTitle")} onPress={confirmStop}>
+              <Icon name="stop" size={20} color={colors.danger} />
+            </IconButton>
+          ) : null}
           <IconButton
             label={t("review")}
             disabled={!sessionId || opencodeOnline === false}
@@ -2540,18 +2550,7 @@ export default function WorkspaceScreen() {
       <BottomSheet visible={activityOpen} title={t("backgroundTasks")} onClose={() => setActivityOpen(false)}>
         {activities.length === 0 ? <Text style={styles.sheetMuted}>{t("backgroundNone")}</Text> : null}
         {activities.map((activity) => (
-          <View key={activity.key} style={styles.optionRow}>
-            <Icon name={activity.kind === "subagent" ? "spark" : activity.kind === "shell" ? "terminal" : "activity"} size={17} color={colors.muted} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.optionTitle} numberOfLines={1}>
-                {activity.label}
-              </Text>
-              <Text style={styles.optionBody}>{activity.kind}</Text>
-            </View>
-            {activity.kind !== "shell" ? (
-              <Button label={t("backgroundStop")} size="sm" variant="outline" onPress={() => void stopActivity(activity)} />
-            ) : null}
-          </View>
+          <ActivityRow key={activity.key} activity={activity} onStop={() => void stopActivity(activity)} stopLabel={t("backgroundStop")} />
         ))}
         {active ? (
           <View style={{ marginTop: 10 }}>
@@ -2985,6 +2984,75 @@ function VoiceOption(props: {
 function RunningDot() {
   const { colors } = useTheme()
   return <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.warning }} />
+}
+
+/**
+ * One background task in the sheet. Tapping the row expands the details the
+ * task itself carries: current status, how long it has been running, what it
+ * is operating on (tool input summary, shell command, subagent agent), and the
+ * live error when the tool reports one.
+ */
+function ActivityRow(props: {
+  activity: RunningActivity
+  onStop: () => void
+  stopLabel: string
+}) {
+  const { colors } = useTheme()
+  const t = useT()
+  const styles = useThemedStyles(workspaceStyles)
+  const [expanded, setExpanded] = useState(false)
+  const icon = props.activity.kind === "subagent" ? "spark" : props.activity.kind === "shell" ? "terminal" : "activity"
+  const status = props.activity.kind === "subagent" ? undefined : props.activity.status
+  const elapsed = props.activity.started ? Math.max(0, Date.now() - props.activity.started) : undefined
+  const elapsedLabel =
+    elapsed === undefined
+      ? undefined
+      : elapsed < 60_000
+        ? `${Math.round(elapsed / 1000)}s`
+        : `${Math.floor(elapsed / 60_000)}m ${Math.round((elapsed % 60_000) / 1000)}s`
+  const lines: string[] = []
+  if (status) lines.push(`${t("activityStatus")}: ${status}`)
+  if (elapsedLabel) lines.push(`${t("activityElapsed")}: ${elapsedLabel}`)
+  if (props.activity.detail) lines.push(props.activity.detail)
+  if (props.activity.kind === "tool" && props.activity.error) lines.push(`${t("activityError")}: ${props.activity.error}`)
+  return (
+    <View style={styles.optionRow}>
+      <Icon name={icon} size={17} color={colors.muted} />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        onPress={() => setExpanded((current) => !current)}
+        style={{ flex: 1 }}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Text style={styles.optionTitle} numberOfLines={1}>
+            {props.activity.label}
+          </Text>
+          <Icon name={expanded ? "chevronDown" : "chevronRight"} size={13} color={colors.faint} />
+        </View>
+        <Text style={styles.optionBody}>{props.activity.kind}</Text>
+        {expanded && lines.length > 0 ? (
+          <View style={{ marginTop: 6, gap: 3 }}>
+            {lines.map((line, index) => (
+              <Text
+                key={index}
+                style={[styles.activityDetail, props.activity.kind === "tool" && props.activity.error && index === lines.length - 1 && { color: colors.danger }]}
+                numberOfLines={4}
+              >
+                {line}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+      </Pressable>
+      {/* A background shell cannot be interrupted through the session API
+          (stopActivity is a no-op for shells), so it gets no stop button
+          instead of one that silently does nothing. */}
+      {props.activity.kind !== "shell" ? (
+        <Button label={props.stopLabel} size="sm" variant="outline" onPress={props.onStop} />
+      ) : null}
+    </View>
+  )
 }
 
 function VoicePanel(props: {
@@ -3604,6 +3672,16 @@ const workspaceStyles = (colors: Palette) =>
     optionRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
     optionTitle: { fontSize: 14.5, fontWeight: "500", color: colors.text },
     optionBody: { fontSize: 11.5, color: colors.faint, marginTop: 2 },
+    activityDetail: {
+      fontSize: 12,
+      lineHeight: 17,
+      fontFamily: "monospace",
+      color: colors.muted,
+      backgroundColor: colors.surface,
+      borderRadius: 8,
+      paddingVertical: 4,
+      paddingHorizontal: 8,
+    },
     backRow: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 6 },
     panelDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginVertical: 5 },
     panelAction: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, paddingHorizontal: 2 },

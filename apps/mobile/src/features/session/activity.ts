@@ -1,13 +1,59 @@
 import { sessionBusy, toMillis, type ModelInfo, type SessionInfo, type SessionMessage } from "@/opencode/client"
 
 export type RunningActivity =
-  | { kind: "tool"; key: string; label: string; sessionId: string }
-  | { kind: "shell"; key: string; label: string; sessionId: string }
-  | { kind: "subagent"; key: string; label: string; sessionId: string }
+  | {
+      kind: "tool"
+      key: string
+      label: string
+      sessionId: string
+      status?: string
+      started?: number
+      /** Short, single-line summary of the tool input (file path, command...). */
+      detail?: string
+      error?: string
+    }
+  | {
+      kind: "shell"
+      key: string
+      label: string
+      sessionId: string
+      status?: string
+      started?: number
+      detail?: string
+    }
+  | {
+      kind: "subagent"
+      key: string
+      label: string
+      sessionId: string
+      started?: number
+      detail?: string
+    }
 
 /** A background shell older than this is assumed to have died silently. */
 const SHELL_STALE_MS = 10 * 60_000
 const TOOL_STALE_MS = 3 * 60_000
+
+/** Flattens a tool input into a one-line detail string for the task sheet. */
+function toolDetail(input: unknown): string | undefined {
+  if (input === null || input === undefined) return undefined
+  if (typeof input === "string") {
+    const first = input.split("\n").find((line) => line.trim())
+    return first?.slice(0, 160)
+  }
+  if (typeof input !== "object") return undefined
+  const record = input as Record<string, unknown>
+  const preferred = ["filePath", "path", "file", "command", "cmd", "url", "pattern", "query", "description"]
+  for (const key of preferred) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim()) {
+      return `${key}: ${value.trim().slice(0, 140)}`
+    }
+  }
+  const first = Object.entries(record).find(([, value]) => typeof value === "string" && value.trim())
+  if (first) return `${first[0]}: ${(first[1] as string).trim().slice(0, 140)}`
+  return undefined
+}
 
 /**
  * Lists what should be shown as a background task.
@@ -38,6 +84,9 @@ export function runningActivities(
         key: message.id,
         label: message.command ?? "shell",
         sessionId: message.shellID ?? message.id,
+        status: message.status,
+        started: toMillis(message.time?.created) || undefined,
+        detail: message.description ?? message.command,
       })
     }
     if (message.type !== "assistant") continue
@@ -57,6 +106,10 @@ export function runningActivities(
         key: `${message.id}:${block.id}`,
         label: block.name || "tool",
         sessionId: block.id,
+        status,
+        started: toMillis(block.time?.created) || toMillis(message.time?.created) || undefined,
+        detail: toolDetail(block.state?.input),
+        error: block.state?.error?.message,
       })
     }
   }
@@ -68,6 +121,8 @@ export function runningActivities(
       key: child.id,
       label: child.title?.trim() || child.agent || "subagent",
       sessionId: child.id,
+      started: toMillis(child.time?.busy) || toMillis(child.time?.created) || undefined,
+      detail: child.agent ? `agent: ${child.agent}` : undefined,
     })
   }
   return activities
