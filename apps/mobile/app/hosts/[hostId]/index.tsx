@@ -67,7 +67,6 @@ import {
   type SessionSnapshot,
 } from "@/features/session/sessionCache"
 import {
-  compensateOffset,
   MAX_GAP_PAGES,
   mergeMessages,
   messageIds,
@@ -115,8 +114,6 @@ type StagedSkill = {
 const EMPTY_MESSAGES: SessionMessage[] = []
 
 const NO_REVIEW_COMMENTS: ReviewComment[] = []
-/** How often content deltas trigger a whole-transcript reconcile. */
-const CONTENT_REFRESH_MS = 2_000
 
 export default function WorkspaceScreen() {
   const insets = useSafeAreaInsets()
@@ -132,6 +129,15 @@ export default function WorkspaceScreen() {
   const host = useHosts((state) => state.hosts.find((item) => item.id === hostId))
   const connection = useConnections((state) => (hostId ? state.byHost[hostId] : undefined))
   const ready = connection?.status === "ready"
+  // Once the screen has been ready, a later drop must NOT swap the whole
+  // workspace for the offline screen: the auto-reconnect cycle used to unmount
+  // the transcript on every attempt, which both flickered a full-screen
+  // "connecting" state and reset the scroll to the newest message.
+  const [everReady, setEverReady] = useState(false)
+  useEffect(() => {
+    if (ready) setEverReady(true)
+  }, [ready])
+  const dropped = !ready && everReady
   const readOnly = connection?.session?.device?.scope === "read"
 
   const [sessionId, setSessionId] = useState<string | undefined>(typeof params.session === "string" ? params.session : undefined)
@@ -207,11 +213,15 @@ export default function WorkspaceScreen() {
   const streamStartRef = useRef<(() => void) | undefined>(undefined)
   const messagesRef = useRef<SessionMessage[] | null>(null)
   const messageIdsRef = useRef<Set<string>>(new Set())
+  const newestMessageIdRef = useRef<string | undefined>(undefined)
   const scrollHeightRef = useRef({ content: 0, viewport: 0 })
   const followingRef = useRef(true)
   const jumpingRef = useRef(false)
-  const pendingScrollRef = useRef<number | undefined>(undefined)
-  const skipCompensateRef = useRef(false)
+  // The jump button dot means "new output arrived while you were scrolled
+  // away". It used to light up on any upward scroll and persisted across
+  // sessions, which read as phantom unread content.
+  const [hasNewContent, setHasNewContent] = useState(false)
+  const lastSeenNewestRef = useRef<string | undefined>(undefined)
   const statusGesture = useRef({ x: 0, y: 0, scrolled: false })
 
   const setDraftFor = useCallback(
@@ -741,22 +751,19 @@ export default function WorkspaceScreen() {
   useEffect(() => {
     if (!ready || !hostId) return
     let timer: ReturnType<typeof setTimeout> | undefined
-    let lastRefresh = 0
     const pendingKinds = new Set<string>()
     const scheduleRefresh = (delayMs = 0) => {
       if (timer || !sessionIdRef.current) return
-      // Token deltas arrive continuously for many seconds. Whole-transcript
-      // refetches on every delta are the biggest battery cost of this screen,
-      // so content events only poll at a low rate; the live stream controller
-      // already renders tokens as they arrive.
-      const wait = Math.max(0, delayMs - (Date.now() - lastRefresh))
+      // Refresh immediately: batching only merges events that land in the
+      // same tick, so bursts cost one fetch while single events stay live.
+      // A previous 2s content throttle traded latency for battery and made
+      // the transcript feel stale; smooth sync wins per product feedback.
       timer = setTimeout(() => {
         timer = undefined
-        lastRefresh = Date.now()
         const kinds = new Set(pendingKinds)
         pendingKinds.clear()
         if (sessionIdRef.current) void refreshFromEvents(sessionIdRef.current, kinds)
-      }, wait)
+      }, Math.max(0, delayMs))
     }
     const unsubscribe = subscribeHostEvents(hostId, (event) => {
       const type = event.type
@@ -844,7 +851,10 @@ export default function WorkspaceScreen() {
       // Content deltas are already rendered by the live stream controller, so
       // reconciling with the server can wait. Control-plane events (session,
       // permissions, forms) are small and stay responsive.
-      scheduleRefresh(kind === "message" ? CONTENT_REFRESH_MS : 0)
+      // Content events refresh immediately: the live stream controller renders
+      // tokens, but the authoritative server state should land without a
+      // multi-second lag. Smooth sync beats the old 2s battery throttle.
+      scheduleRefresh(0)
     })
     return () => {
       unsubscribe()
@@ -874,7 +884,6 @@ export default function WorkspaceScreen() {
       if (sessionIdRef.current !== id) return
       messagesSessionIdRef.current = id
       const older = [...page.data].reverse()
-      skipCompensateRef.current = true
       setMessages((current) => mergeMessages(older, current ?? []))
       setOlderCursor(page.data.length >= 60 ? page.cursor?.next : undefined)
     } catch (cause) {
@@ -914,6 +923,16 @@ export default function WorkspaceScreen() {
     if (nextFollowing !== followingRef.current) {
       followingRef.current = nextFollowing
       setFollowing(nextFollowing)
+      if (nextFollowing) {
+        // Back at the newest end: everything is seen, and the jump animation
+        // must not re-light the dot with the offset captured mid-flight.
+        lastSeenNewestRef.current = newestMessageIdRef.current
+        setHasNewContent(false)
+      } else {
+        // Leaving the bottom arms the marker with what is currently visible.
+        lastSeenNewestRef.current = newestMessageIdRef.current
+        setHasNewContent(false)
+      }
     }
     setShowJump(!nextFollowing && y > 240)
   }
@@ -941,12 +960,26 @@ export default function WorkspaceScreen() {
   }
 
   /**
-   * While the user reads older output, a growing streamed message at the
-   * newest end moves the inverted list under the finger. Shift the offset by
-   * the same amount so the visible text stays put.
+   * A user drag interrupts a running jump animation. Without clearing the
+   * jump flag the very stable "tap jump, immediately swipe up" repro left the
+   * flag stuck forever and every later scroll frame was ignored, so the
+   * jump-to-bottom button never appeared again.
+   */
+  const handleScrollDragStart = () => {
+    if (jumpingRef.current) {
+      jumpingRef.current = false
+      requestAnimationFrame(() => applyScrollState(messageOffsetRef.current))
+    }
+  }
+
+  /**
+   * Streamed growth at the newest end is anchored natively via
+   * `maintainVisibleContentPosition`, so no JS-side offset compensation runs
+   * here. The two mechanisms would fight: the native anchor holds the visible
+   * text in place, then a manual scrollToOffset would shift it again, which is
+   * exactly the residual bounce reported while reading history.
    */
   const handleContentSizeChange = (_width: number, height: number) => {
-    const previous = scrollHeightRef.current.content
     scrollHeightRef.current.content = height
     const restore = restoreOffsetRef.current
     if (restore !== undefined) {
@@ -954,29 +987,7 @@ export default function WorkspaceScreen() {
       requestAnimationFrame(() => {
         listRef.current?.scrollToOffset({ offset: restore, animated: false })
       })
-      return
     }
-    // Fetching older messages grows the list at the far end, which does not
-    // move the visible window. Compensating for it would push the transcript.
-    if (skipCompensateRef.current) {
-      skipCompensateRef.current = false
-      return
-    }
-    const next = compensateOffset({
-      previousHeight: previous,
-      nextHeight: height,
-      offset: messageOffsetRef.current,
-      following: followingRef.current,
-    })
-    if (next === undefined) return
-    pendingScrollRef.current = next
-    messageOffsetRef.current = next
-    requestAnimationFrame(() => {
-      const offset = pendingScrollRef.current
-      if (offset === undefined) return
-      pendingScrollRef.current = undefined
-      listRef.current?.scrollToOffset({ offset, animated: false })
-    })
   }
 
   const jumpToBottom = useCallback(() => {
@@ -1768,6 +1779,20 @@ export default function WorkspaceScreen() {
     return mergeAssistantRuns([...combined, ...liveById.values()]).reverse()
   }, [liveMessages, messages, sessionId])
   oldestMessageIdRef.current = displayMessages[displayMessages.length - 1]?.id
+  newestMessageIdRef.current = displayMessages[0]?.id
+  // The jump-button dot tracks the newest message id: it lights up only when
+  // the newest content actually changed while scrolled away, and resets on
+  // session switches so one session's output never marks another as unread.
+  useEffect(() => {
+    if (followingRef.current) {
+      lastSeenNewestRef.current = newestMessageIdRef.current
+      setHasNewContent(false)
+      return
+    }
+    if (newestMessageIdRef.current && newestMessageIdRef.current !== lastSeenNewestRef.current) {
+      setHasNewContent(true)
+    }
+  }, [displayMessages, sessionId])
   const currentModel = useMemo(() => {
     const modelId = session?.model?.id ?? defaultModel?.modelID
     const providerId = session?.model?.providerID ?? defaultModel?.providerID
@@ -1929,6 +1954,15 @@ export default function WorkspaceScreen() {
         </View>
       </View>
 
+      {dropped ? (
+        <View style={[styles.opencodeBar, { borderTopWidth: StyleSheet.hairlineWidth }]}>
+          <ActivityIndicator size="small" color={colors.accent} />
+          <Text style={styles.opencodeBarText} numberOfLines={1}>
+            {t("reconnectingBanner")}
+          </Text>
+        </View>
+      ) : null}
+
       {opencodeOnline === false ? (
         <View style={styles.opencodeBar}>
           <Icon name="server" size={14} color={colors.warning} />
@@ -1961,7 +1995,7 @@ export default function WorkspaceScreen() {
         </View>
       ) : null}
 
-      {!ready ? (
+      {!ready && !dropped ? (
         <View style={styles.connectionState}>
           {connecting ? (
             <>
@@ -2017,9 +2051,21 @@ export default function WorkspaceScreen() {
                 onViewableItemsChanged={onViewableItemsChanged}
                 viewabilityConfig={viewabilityConfig}
                 onScroll={handleMessageScroll}
+                onScrollBeginDrag={handleScrollDragStart}
                 onScrollEndDrag={handleMessageScrollSettled}
                 onMomentumScrollEnd={handleMessageScrollSettled}
-                scrollEventThrottle={80}
+                scrollEventThrottle={16}
+                // Native anchoring: while the user reads history, streamed
+                // output growing at the newest end is held in place by the
+                // platform instead of a JS-side offset dance, which removes
+                // the residual bounce of the manual compensation.
+                maintainVisibleContentPosition={{
+                  // Index 0 is the newest message; never anchor on it so new
+                  // messages inserted above the viewport do not move it.
+                  minIndexForVisible: 1,
+                  // Near the newest end, follow new output automatically.
+                  autoscrollToTopThreshold: 24,
+                }}
                 // Selecting text focuses the native TextView; without this
                 // Android scrolls the transcript on the first selection.
                 scrollsChildToFocus={false}
@@ -2048,7 +2094,7 @@ export default function WorkspaceScreen() {
                 style={[styles.jump, { backgroundColor: colors.surface, borderColor: colors.border }]}
               >
                 <Icon name="chevronDown" size={16} color={colors.muted} />
-                {following ? null : <View style={[styles.jumpDot, { backgroundColor: colors.accent }]} />}
+                {hasNewContent && !following ? <View style={[styles.jumpDot, { backgroundColor: colors.accent }]} /> : null}
               </Pressable>
             ) : null}
           </View>
