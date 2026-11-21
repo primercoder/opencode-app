@@ -54,14 +54,14 @@ Release assets name the operating system and CPU architecture in the filename.
 
 | Asset | OS | CPU / target | Use |
 |---|---|---|---|
-| `ocremote-0.1.10-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
-| `ocremote-0.1.10-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
-| `ocremote-host-0.1.8-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
-| `ocremote-host-0.1.8-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
-| `ocremote-relay-0.4.2-linux-amd64` | Linux | x86_64 | Relay binary |
-| `ocremote-relay-0.4.2-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
-| `ocremote-relay-0.4.2-linux-arm64` | Linux | arm64 | Relay binary |
-| `ocremote-relay-0.4.2-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
+| `ocremote-1.0.0-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
+| `ocremote-1.0.0-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
+| `ocremote-host-1.0.0-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
+| `ocremote-host-1.0.0-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
+| `ocremote-relay-1.0.0-linux-amd64` | Linux | x86_64 | Relay binary |
+| `ocremote-relay-1.0.0-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
+| `ocremote-relay-1.0.0-linux-arm64` | Linux | arm64 | Relay binary |
+| `ocremote-relay-1.0.0-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
 
 `SHA256SUMS` verifies every asset. The release APKs are currently signed with
 the Expo debug keystore; replace it with a production keystore before
@@ -72,7 +72,7 @@ distributing them to end users.
 ### Same LAN: direct only
 
 ```bash
-tar xzf ocremote-host-0.1.8-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-1.0.0-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -110,11 +110,11 @@ phones. Routes are independent and can be changed while the host runs:
 
 Use the APK matching the device:
 
-- `ocremote-0.1.10-android-arm64-v8a.apk` for real Android devices.
-- `ocremote-0.1.10-android-x86_64.apk` for an x86_64 emulator.
+- `ocremote-1.0.0-android-arm64-v8a.apk` for real Android devices.
+- `ocremote-1.0.0-android-x86_64.apk` for an x86_64 emulator.
 
 ```bash
-adb install ocremote-0.1.10-android-arm64-v8a.apk
+adb install ocremote-1.0.0-android-arm64-v8a.apk
 ```
 
 ### Add a host
@@ -184,7 +184,7 @@ box and is never sent automatically.
 The Linux x64/arm64 archives are self-contained (Bun and sherpa-onnx included):
 
 ```bash
-tar xzf ocremote-host-0.1.8-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-1.0.0-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ```
@@ -427,9 +427,9 @@ bunx expo run:android
 
 cd apps/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-0.4.2-linux-amd64 ./cmd/relay
+  -o ../../dist/ocremote-relay-1.0.0-linux-amd64 ./cmd/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-0.4.2-linux-arm64 ./cmd/relay
+  -o ../../dist/ocremote-relay-1.0.0-linux-arm64 ./cmd/relay
 
 cd apps/mobile
 bunx expo prebuild --platform android --clean
