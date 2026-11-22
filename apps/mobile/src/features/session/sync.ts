@@ -1,4 +1,4 @@
-import { toMillis, type SessionInfo, type SessionMessage } from "@/opencode/client"
+import { sessionBusy, toMillis, type SessionInfo, type SessionMessage } from "@/opencode/client"
 
 /**
  * Session sync helpers shared by the workspace. They are pure so gap-filling,
@@ -13,17 +13,14 @@ export function isFinalOutcome(outcome: string | undefined): boolean {
 }
 
 /**
- * A session counts as running only while opencode says it is busy *and* the
- * turn has no final outcome. A missed or reordered event used to leave the
- * header, activity pill and stop button stuck forever because only the busy
- * timestamps were consulted.
+ * A session counts as running only while opencode says it is busy. Uses the
+ * plain timestamp comparison from `sessionBusy`: the stored `outcome` lags
+ * behind a new turn (opencode keeps the previous turn's outcome), so
+ * consulting it here marked running sessions as idle.
  */
 export function sessionRunning(session: SessionInfo | null | undefined): boolean {
   if (!session) return false
-  if (isFinalOutcome(session.outcome)) return false
-  const busy = toMillis(session.time?.busy)
-  const idle = toMillis(session.time?.idle)
-  return busy > 0 && busy >= idle
+  return sessionBusy(session)
 }
 
 /** Merges pages by id, keeping local optimistic messages until they arrive. */
@@ -83,13 +80,12 @@ export function compensateOffset(input: {
   return input.offset + delta
 }
 
-/** Sessions whose final outcome arrived but timestamps still look busy. */
+/**
+ * Kept as a pass-through: timestamps are trusted as-is. The previous
+ * outcome-based "idle >= busy" normalization rewrote live sessions into an
+ * idle state because opencode leaves the previous turn's outcome on the
+ * session record while a new turn is running.
+ */
 export function normalizeSession(session: SessionInfo): SessionInfo {
-  if (!isFinalOutcome(session.outcome)) return session
-  const time = session.time
-  if (!time) return session
-  const busy = toMillis(time.busy)
-  const idle = toMillis(time.idle)
-  if (!(busy > idle)) return session
-  return { ...session, time: { ...time, idle: Math.max(idle, busy) } }
+  return session
 }

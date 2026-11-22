@@ -27,12 +27,18 @@ describe("session running state", () => {
     expect(sessionRunning(session({ time: { busy: 100, idle: 200 } }))).toBe(false)
   })
 
-  test("a final outcome wins over stale busy timestamps", () => {
-    // This is the bug: the idle event was lost, so busy stayed newer.
+  test("a stored outcome does not mask a running turn", () => {
+    // opencode keeps the previous turn's outcome ("succeeded") on the session
+    // while a new turn is running, so timestamps alone decide.
     for (const outcome of ["succeeded", "failed", "cancelled", "interrupted", "SUCCEEDED"]) {
       const value = session({ outcome, time: { busy: 500, idle: 100 } })
-      expect(sessionRunning(value)).toBe(false)
+      expect(sessionRunning(value)).toBe(true)
       expect(isFinalOutcome(value.outcome)).toBe(true)
+    }
+    // Once idle is newer than busy the session really is finished.
+    for (const outcome of ["succeeded", "failed", "cancelled"]) {
+      const value = session({ outcome, time: { busy: 100, idle: 500 } })
+      expect(sessionRunning(value)).toBe(false)
     }
   })
 
@@ -41,11 +47,9 @@ describe("session running state", () => {
     expect(sessionRunning(session({ outcome: "running", time: { busy: 100, idle: 500 } }))).toBe(false)
   })
 
-  test("normalizeSession advances idle for finished turns only", () => {
-    const finished = normalizeSession(session({ outcome: "succeeded", time: { busy: 500, idle: 100 } }))
-    expect(finished.time?.idle).toBe(500)
-    const running = normalizeSession(session({ time: { busy: 500, idle: 100 } }))
-    expect(running.time?.idle).toBe(100)
+  test("normalizeSession keeps timestamps untouched", () => {
+    const value = session({ outcome: "succeeded", time: { busy: 500, idle: 100 } })
+    expect(normalizeSession(value)).toBe(value)
   })
 })
 

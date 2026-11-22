@@ -528,10 +528,12 @@ export function sessionUpdatedAt(session: SessionInfo): number {
 }
 
 export function sessionBusy(session: SessionInfo): boolean {
-  // A final outcome wins over stale busy timestamps. Missing a single
-  // `session.idle` event used to leave the header, activity pill and stop
-  // button spinning forever.
-  if (session.outcome && FINAL_OUTCOMES.has(session.outcome.toLowerCase())) return false
+  // Pure timestamp check, matching opencode's own view: busy wins while it is
+  // not older than idle. A stored `outcome` must NOT short-circuit this —
+  // opencode keeps the previous turn's outcome ("succeeded") on the session
+  // when a new turn starts, so outcome-first logic marked every session that
+  // had ever finished a turn as idle, breaking busy state for any session
+  // that was already running before the phone connected.
   const busy = toMillis(session.time?.busy)
   const idle = toMillis(session.time?.idle)
   return busy > 0 && busy >= idle

@@ -1926,13 +1926,6 @@ export default function WorkspaceScreen() {
           </View>
         </View>
         <View style={styles.headerActions}>
-          {/* Global stop: always reachable in the header while a turn or a
-              background task runs, instead of only inside the activity slot. */}
-          {active && !readOnly && sessionId ? (
-            <IconButton label={t("stopTaskTitle")} onPress={confirmStop}>
-              <Icon name="stop" size={20} color={colors.danger} />
-            </IconButton>
-          ) : null}
           <IconButton
             label={t("review")}
             disabled={!sessionId || opencodeOnline === false}
@@ -2054,7 +2047,15 @@ export default function WorkspaceScreen() {
                 data={displayMessages}
                 keyExtractor={(item) => item.id}
                 renderItem={({ item }) => <MessageView message={item} />}
-                contentContainerStyle={styles.messages}
+                contentContainerStyle={[
+                  styles.messages,
+                  // Short conversations anchor to the visual top instead of
+                  // clustering at the bottom edge. The list is inverted, so
+                  // layout "flex-end" maps to the top of the screen; with
+                  // overflowing content flexGrow is a no-op and scrolling
+                  // behaves exactly as before.
+                  { flexGrow: 1, justifyContent: "flex-end" },
+                ]}
                 keyboardShouldPersistTaps="handled"
                 onEndReached={() => void loadOlder()}
                 onEndReachedThreshold={0.4}
@@ -2109,9 +2110,9 @@ export default function WorkspaceScreen() {
             ) : null}
           </View>
 
-          {agentWorking || activities.length > 0 ? (
-            // Keep the slot mounted for the whole turn. Background tasks appear
-            // and disappear inside it, so the transcript never shifts vertically.
+          {/* Reserve the row height for the whole turn so the transcript
+              never jumps when the pill or the stop button appear. */}
+          {sessionId ? (
             <View style={styles.activitySlot}>
               {activities.length > 0 ? (
                 <Pressable
@@ -2135,7 +2136,7 @@ export default function WorkspaceScreen() {
                   onPress={confirmStop}
                   style={({ pressed }) => [styles.stopTaskButton, pressed && { opacity: 0.72 }]}
                 >
-                  <Icon name="stop" size={17} color="#FFFFFF" />
+                  <Icon name="stop" size={22} color="#FFFFFF" />
                 </Pressable>
               ) : null}
             </View>
@@ -2547,7 +2548,7 @@ export default function WorkspaceScreen() {
         )}
       </BottomSheet>
 
-      <BottomSheet visible={activityOpen} title={t("backgroundTasks")} onClose={() => setActivityOpen(false)}>
+      <BottomSheet visible={activityOpen} title={t("backgroundTasks")} onClose={() => setActivityOpen(false)} height={panelHeight}>
         {activities.length === 0 ? <Text style={styles.sheetMuted}>{t("backgroundNone")}</Text> : null}
         {activities.map((activity) => (
           <ActivityRow key={activity.key} activity={activity} onStop={() => void stopActivity(activity)} stopLabel={t("backgroundStop")} />
@@ -3485,7 +3486,7 @@ const workspaceStyles = (colors: Palette) =>
       height: 44,
       justifyContent: "center",
       paddingLeft: 14,
-      paddingRight: 54,
+      paddingRight: 64,
       zIndex: 4,
     },
     activityPill: {
@@ -3503,10 +3504,10 @@ const workspaceStyles = (colors: Palette) =>
     stopTaskButton: {
       position: "absolute",
       right: 14,
-      top: 3,
-      width: 38,
-      height: 38,
-      borderRadius: 19,
+      top: 0,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: colors.danger,

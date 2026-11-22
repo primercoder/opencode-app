@@ -110,7 +110,14 @@ export const MessageView = memo(function MessageView({ message }: { message: Ses
               showCursor={streaming && index === groups.length - 1}
             />
           ) : (
-            <ActivityGroup key={`activity-${index}`} blocks={group.blocks} live={live} />
+            <ActivityGroup
+              key={`activity-${index}`}
+              blocks={group.blocks}
+              // Only the trailing group of a live turn animates. Earlier
+              // groups are already-finished thinking/tools and must not
+              // spin; their real tool status still drives the header.
+              live={live && index === groups.length - 1}
+            />
           ),
         )}
         {message.error?.message ? (
