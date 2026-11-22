@@ -21,7 +21,7 @@ import (
 	"ocremote/relay/internal/relay"
 )
 
-const version = "1.0.3"
+const version = "1.0.4"
 
 func main() {
 	var err error
@@ -70,11 +70,11 @@ Usage:
   ocremote-relay [options]              start the relay (foreground)
   ocremote-relay --daemon               start in the background and return
   ocremote-relay stop                   stop the background relay
-  ocremote-relay service status         user-level autostart service state
-  ocremote-relay service install        install/update the user service from
-                                        the current flags (systemd --user on
-                                        Linux, LaunchAgent on macOS)
-  ocremote-relay service uninstall      remove the user service
+  ocremote-relay service status         system-level autostart service state
+  ocremote-relay service install        install/update the system service from
+                                        the current flags (systemd on Linux,
+                                        LaunchDaemon on macOS; needs root)
+  ocremote-relay service uninstall      remove the system service
   ocremote-relay admin <command>        inspect or revoke subjects
   ocremote-relay version
 
@@ -99,13 +99,14 @@ Admin commands:
   revoke <subjectId>      revoke a host or phone identity
 
 Service examples:
-  # Install as a per-user autostart service (updates the unit and restarts
-  # it when it is already running), then let the user manager start it
-  ocremote-relay service install --listen 0.0.0.0:8443 \
+  # Install as a system-level autostart service (needs root; updates the unit
+  # and restarts it when it is already running). The relay survives logout and
+  # starts before any user logs in.
+  sudo ocremote-relay service install --listen 0.0.0.0:8443 \
     --public-url ws://203.0.113.10:8443/ws
-  systemctl --user enable --now ocremote-relay
+  systemctl enable --now ocremote-relay
   ocremote-relay service status
-  ocremote-relay service uninstall
+  sudo ocremote-relay service uninstall
 
 Background examples:
   ocremote-relay --daemon          # start detached
@@ -146,7 +147,7 @@ Environment:
 
 // serveConfig collects everything a relay run needs. It is shared by the
 // foreground/daemon flow and by `service install`, which freezes the current
-// flags into the user unit.
+// flags into the system unit.
 type serveConfig struct {
 	dataDir     string
 	listen      string

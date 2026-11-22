@@ -121,6 +121,19 @@ func TestServeConfigExecArgsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRequireRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; cannot verify the refusal path")
+	}
+	err := requireRoot()
+	if err == nil {
+		t.Fatal("non-root must be refused for system service management")
+	}
+	if !strings.Contains(err.Error(), "root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestSystemdUnitAndLaunchdPlistFreezeFlags(t *testing.T) {
 	cfg := &serveConfig{
 		dataDir:    "/var/lib/ocremote-relay",
@@ -138,7 +151,7 @@ func TestSystemdUnitAndLaunchdPlistFreezeFlags(t *testing.T) {
 		"--max-hosts 4",
 		"Restart=on-failure",
 		"RestartSec=3",
-		"WantedBy=default.target",
+		"WantedBy=multi-user.target",
 	} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("unit missing %q:\n%s", want, unit)
@@ -174,18 +187,20 @@ func TestSystemdQuoteAndXMLEscape(t *testing.T) {
 }
 
 func TestServiceInstallUpdatesRunningUnit(t *testing.T) {
-	// Simulated on this machine: XDG_CONFIG_HOME redirect + a fake systemctl
-	// that records calls and reports the unit active.
+	// Simulated on this machine: the unit directory is redirected away from
+	// /etc/systemd/system and a fake systemctl records calls and reports the
+	// unit active.
 	fakeBin := t.TempDir()
 	log := filepath.Join(fakeBin, "calls.log")
 	fake := "#!/bin/sh\nfor a in \"$@\"; do echo -n \"$a \" >> " + log + "; done\necho >> " + log + "\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "systemctl"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	configHome := t.TempDir()
+	unitDir := t.TempDir()
+	origDir := systemdSystemDir
+	systemdSystemDir = unitDir
+	t.Cleanup(func() { systemdSystemDir = origDir })
 	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("HOME", t.TempDir())
 
 	exe, err := os.Executable()
 	if err != nil {

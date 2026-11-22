@@ -16,8 +16,8 @@ import (
 
 // Process-lifetime plumbing: pid-file singleton, background daemonization and
 // user-level service management. The relay must behave like the host CLI:
-// `--daemon` detaches, `service install` writes a user unit (systemd --user on
-// Linux, a LaunchAgent on macOS) that keeps the *foreground* process alive, so
+// `--daemon` detaches, `service install` writes a system-level unit (systemd
+// on Linux, a LaunchDaemon on macOS) that keeps the *foreground* process alive, so
 // autostart recovery belongs to the supervisor and is never nested inside a
 // daemonized process.
 
@@ -169,7 +169,7 @@ func runStop(args []string) error {
 func hintNotRunning(dataDir string) error {
 	hint := ""
 	if _, err := os.Stat(systemdUnitPath()); err == nil {
-		hint = "\nIt may be running as a service: systemctl --user stop " + serviceUnit
+		hint = "\nIt may be running as a service: systemctl stop " + serviceUnit
 	}
 	return fmt.Errorf("relay is not running (no live pid file in %s)%s", dataDir, hint)
 }
@@ -196,21 +196,27 @@ func currentServiceKind() serviceKindValue {
 }
 
 func systemdUnitPath() string {
-	return filepath.Join(configHome(), "systemd", "user", serviceUnit)
+	// System-level unit: owned by PID 1 and independent of any login session.
+	// A user (session-scoped) unit dies when the installing user logs out
+	// unless lingering is enabled, which took the relay down on root-logout
+	// servers. Requires root to install.
+	// systemdSystemDir is a var so tests can redirect it away from /etc.
+	return filepath.Join(systemdSystemDir, serviceUnit)
 }
 
 func launchdPlistPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist")
+	// LaunchDaemon (system-wide, runs before any user logs in) instead of a
+	// per-user agent, for the same reason as the systemd unit above.
+	// launchdDaemonDir is a var so tests can redirect it away from /Library.
+	return filepath.Join(launchdDaemonDir, launchdLabel+".plist")
 }
 
-func configHome() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return xdg
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config")
-}
+var (
+	// Real install targets are /etc/systemd/system and /Library/LaunchDaemons;
+	// tests override these instead of writing to the host system.
+	systemdSystemDir = "/etc/systemd/system"
+	launchdDaemonDir = "/Library/LaunchDaemons"
+)
 
 func runService(args []string) error {
 	if len(args) == 0 {
@@ -235,22 +241,22 @@ func runServiceStatus(args []string) error {
 		path := systemdUnitPath()
 		_, err := os.Stat(path)
 		installed := err == nil
-		fmt.Printf("kind       systemd (user)\nunit       %s\ninstalled  %v\n", path, installed)
+		fmt.Printf("kind       systemd (system)\nunit       %s\ninstalled  %v\n", path, installed)
 		if installed {
-			fmt.Printf("\nenable:    systemctl --user daemon-reload && systemctl --user enable --now %s\ndisable:   systemctl --user disable --now %s\nstatus:    systemctl --user status %s\nlogs:      journalctl --user -u %s -f\n", serviceUnit, serviceUnit, serviceUnit, serviceUnit)
+			fmt.Printf("\nenable:    systemctl daemon-reload && systemctl enable --now %s\ndisable:   systemctl disable --now %s\nstatus:    systemctl status %s\nlogs:      journalctl -u %s -f\n", serviceUnit, serviceUnit, serviceUnit, serviceUnit)
 		}
 		return nil
 	case serviceLaunchd:
 		path := launchdPlistPath()
 		_, err := os.Stat(path)
 		installed := err == nil
-		fmt.Printf("kind       launchd\nplist      %s\ninstalled  %v\n", path, installed)
+		fmt.Printf("kind       launchd (system daemon)\nplist      %s\ninstalled  %v\n", path, installed)
 		if installed {
 			fmt.Printf("\nenable:    launchctl load -w %s\ndisable:   launchctl unload -w %s\nstatus:    launchctl list | grep %s\n", path, path, launchdLabel)
 		}
 		return nil
 	default:
-		return fmt.Errorf("user services are not supported on %s; run the relay under your own supervisor", currentPlatform())
+		return fmt.Errorf("system services are not supported on %s; run the relay under your own supervisor", currentPlatform())
 	}
 }
 
@@ -264,6 +270,11 @@ func runServiceInstall(args []string) error {
 		return err
 	}
 	if err := cfg.validate(); err != nil {
+		return err
+	}
+	// System-level units live outside any user session and are written under
+	// /etc or /Library, so installing needs root from the start.
+	if err := requireRoot(); err != nil {
 		return err
 	}
 	exe, err := os.Executable()
@@ -294,13 +305,13 @@ func runServiceInstall(args []string) error {
 		// Apply the new configuration: reload units; restart when running.
 		reloaded, running, applyErr := systemctlApply()
 		if applyErr != nil && !reloaded {
-			return fmt.Errorf("systemctl --user failed (is a user session running?): %w", applyErr)
+			return fmt.Errorf("systemctl failed: %w", applyErr)
 		}
 		fmt.Printf("service installed: %s\n", path)
 		if running {
 			fmt.Println("service was running; restarted with the new configuration")
 		} else if reloaded {
-			fmt.Printf("enable:    systemctl --user enable --now %s\n", serviceUnit)
+			fmt.Printf("enable:    systemctl enable --now %s\n", serviceUnit)
 		}
 		return nil
 	case serviceLaunchd:
@@ -315,11 +326,14 @@ func runServiceInstall(args []string) error {
 		fmt.Printf("enable:    launchctl load -w %s\n", path)
 		return nil
 	default:
-		return fmt.Errorf("user services are not supported on %s; run the relay under your own supervisor", currentPlatform())
+		return fmt.Errorf("system services are not supported on %s; run the relay under your own supervisor", currentPlatform())
 	}
 }
 
 func runServiceUninstall(args []string) error {
+	if err := requireRoot(); err != nil {
+		return err
+	}
 	kind := currentServiceKind()
 	switch kind {
 	case serviceSystemd:
@@ -331,7 +345,7 @@ func runServiceUninstall(args []string) error {
 		}
 		_, _, _ = systemctlApply() // best-effort reload after removal
 		fmt.Printf("service removed: %s\n", path)
-		fmt.Printf("if it was enabled, also run: systemctl --user disable --now %s\n", serviceUnit)
+		fmt.Printf("if it was enabled, also run: systemctl disable --now %s\n", serviceUnit)
 		return nil
 	case serviceLaunchd:
 		path := launchdPlistPath()
@@ -344,22 +358,32 @@ func runServiceUninstall(args []string) error {
 		fmt.Printf("if it was loaded, also run: launchctl unload -w %s\n", path)
 		return nil
 	default:
-		return fmt.Errorf("user services are not supported on %s", currentPlatform())
+		return fmt.Errorf("system services are not supported on %s", currentPlatform())
 	}
 }
 
-// systemctlApply reloads the user manager and reports whether the relay unit
+// requireRoot gates the commands that write system-level service definitions.
+// /etc/systemd/system and /Library/LaunchDaemons are outside any user session,
+// so a non-root attempt would fail halfway through.
+func requireRoot() error {
+	if os.Geteuid() == 0 {
+		return nil
+	}
+	return fmt.Errorf("system service management requires root: rerun with sudo")
+}
+
+// systemctlApply reloads the system manager and reports whether the relay unit
 // is currently running; on a running unit it restarts it so a re-install
 // updates the live configuration.
 func systemctlApply() (reloaded bool, wasRunning bool, err error) {
-	rel := exec.Command("systemctl", "--user", "daemon-reload")
+	rel := exec.Command("systemctl", "daemon-reload")
 	if loadErr := rel.Run(); loadErr != nil {
 		return false, false, loadErr
 	}
-	check := exec.Command("systemctl", "--user", "is-active", "--quiet", serviceUnit)
+	check := exec.Command("systemctl", "is-active", "--quiet", serviceUnit)
 	running := check.Run() == nil
 	if running {
-		rst := exec.Command("systemctl", "--user", "restart", serviceUnit)
+		rst := exec.Command("systemctl", "restart", serviceUnit)
 		if rstErr := rst.Run(); rstErr != nil {
 			return true, true, rstErr
 		}
@@ -379,12 +403,15 @@ ExecStart=%s
 WorkingDirectory=%s
 Restart=on-failure
 RestartSec=3
-# Noise NK authenticates every peer; no extra hardening is required for the
-# relay to run under the installing user's account.
+# System-level hardening. The data dir is intentionally NOT locked down
+# (ProtectHome/ProtectSystem=strict would break data dirs under /home or
+# /root, which is the common root-server layout): the relay only needs its
+# own data dir plus network, and holds no privileges after start.
 NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 `, systemdQuote(append([]string{exe, "serve"}, cfg.execArgs()...)), cfg.dataDir)
 }
 

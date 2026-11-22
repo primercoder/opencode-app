@@ -54,14 +54,14 @@ Release assets name the operating system and CPU architecture in the filename.
 
 | Asset | OS | CPU / target | Use |
 |---|---|---|---|
-| `ocremote-1.0.3-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
-| `ocremote-1.0.3-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
-| `ocremote-host-1.0.3-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
-| `ocremote-host-1.0.3-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
-| `ocremote-relay-1.0.3-linux-amd64` | Linux | x86_64 | Relay binary |
-| `ocremote-relay-1.0.3-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
-| `ocremote-relay-1.0.3-linux-arm64` | Linux | arm64 | Relay binary |
-| `ocremote-relay-1.0.3-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
+| `ocremote-1.0.4-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
+| `ocremote-1.0.4-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
+| `ocremote-host-1.0.4-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
+| `ocremote-host-1.0.4-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
+| `ocremote-relay-1.0.4-linux-amd64` | Linux | x86_64 | Relay binary |
+| `ocremote-relay-1.0.4-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
+| `ocremote-relay-1.0.4-linux-arm64` | Linux | arm64 | Relay binary |
+| `ocremote-relay-1.0.4-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
 
 `SHA256SUMS` verifies every asset. The release APKs are currently signed with
 the Expo debug keystore; replace it with a production keystore before
@@ -72,7 +72,7 @@ distributing them to end users.
 ### Same LAN: direct only
 
 ```bash
-tar xzf ocremote-host-1.0.3-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-1.0.4-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -110,11 +110,11 @@ phones. Routes are independent and can be changed while the host runs:
 
 Use the APK matching the device:
 
-- `ocremote-1.0.3-android-arm64-v8a.apk` for real Android devices.
-- `ocremote-1.0.3-android-x86_64.apk` for an x86_64 emulator.
+- `ocremote-1.0.4-android-arm64-v8a.apk` for real Android devices.
+- `ocremote-1.0.4-android-x86_64.apk` for an x86_64 emulator.
 
 ```bash
-adb install ocremote-1.0.3-android-arm64-v8a.apk
+adb install ocremote-1.0.4-android-arm64-v8a.apk
 ```
 
 ### Add a host
@@ -184,7 +184,7 @@ box and is never sent automatically.
 The Linux x64/arm64 archives are self-contained (Bun and sherpa-onnx included):
 
 ```bash
-tar xzf ocremote-host-1.0.3-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-1.0.4-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ```
@@ -365,16 +365,19 @@ logs to `<data-dir>/relay.log`:
 One relay per data directory (pid-file singleton); a second start fails with
 `another relay is already running`.
 
-Autostart ships as a per-user service (systemd `--user` on Linux, a LaunchAgent
-on macOS). `install` freezes the current flags into the unit; re-running
-install while the service is running updates the configuration and restarts:
+Autostart ships as a **system-level service** (written to `/etc/systemd/system`
+on Linux, a LaunchDaemon on macOS), owned by PID 1 and independent of any
+login session — the relay keeps running after you log out of SSH and starts on
+boot. `service install` freezes the current flags into the unit; re-running
+install while the service is running updates the configuration and restarts.
+Installing and uninstalling require root:
 
 ```bash
-./ocremote-relay service install --data-dir ./data \
+sudo ./ocremote-relay service install --data-dir ./data \
   --listen 0.0.0.0:8443 --public-url ws://<public-ip>:8443/ws
-systemctl --user enable --now ocremote-relay.service   # enable autostart
+systemctl enable --now ocremote-relay.service   # enable autostart
 ./ocremote-relay service status      # state + enable/disable/log commands
-./ocremote-relay service uninstall   # remove the service
+sudo ./ocremote-relay service uninstall   # remove the service
 ```
 
 Inside the unit the relay runs in the foreground with `Restart=on-failure`
@@ -457,9 +460,9 @@ bunx expo run:android
 
 cd apps/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-1.0.3-linux-amd64 ./cmd/relay
+  -o ../../dist/ocremote-relay-1.0.4-linux-amd64 ./cmd/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-1.0.3-linux-arm64 ./cmd/relay
+  -o ../../dist/ocremote-relay-1.0.4-linux-arm64 ./cmd/relay
 
 cd apps/mobile
 bunx expo prebuild --platform android --clean

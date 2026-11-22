@@ -26,14 +26,14 @@ Release 资源文件名包含操作系统和 CPU 架构。
 
 | 文件 | 平台 | 架构 | 用途 |
 |---|---|---|---|
-| `ocremote-1.0.3-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
-| `ocremote-1.0.3-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
-| `ocremote-host-1.0.3-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
-| `ocremote-host-1.0.3-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
-| `ocremote-relay-1.0.3-linux-amd64` | Linux | x86_64 | 中继二进制 |
-| `ocremote-relay-1.0.3-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
-| `ocremote-relay-1.0.3-linux-arm64` | Linux | arm64 | 中继二进制 |
-| `ocremote-relay-1.0.3-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
+| `ocremote-1.0.4-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
+| `ocremote-1.0.4-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
+| `ocremote-host-1.0.4-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
+| `ocremote-host-1.0.4-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
+| `ocremote-relay-1.0.4-linux-amd64` | Linux | x86_64 | 中继二进制 |
+| `ocremote-relay-1.0.4-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
+| `ocremote-relay-1.0.4-linux-arm64` | Linux | arm64 | 中继二进制 |
+| `ocremote-relay-1.0.4-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
 
 `SHA256SUMS` 可校验全部资源。当前 APK 仍使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。
 
@@ -42,7 +42,7 @@ Release 资源文件名包含操作系统和 CPU 架构。
 ### 同一局域网：只开直连
 
 ```bash
-tar xzf ocremote-host-1.0.3-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-1.0.4-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -79,7 +79,7 @@ cd ocremote
 ### 安装与配对
 
 ```bash
-adb install ocremote-1.0.3-android-arm64-v8a.apk
+adb install ocremote-1.0.4-android-arm64-v8a.apk
 ```
 
 1. 打开 OC Remote，点右上角 **+**。
@@ -127,7 +127,7 @@ adb install ocremote-1.0.3-android-arm64-v8a.apk
 ### 安装与运行
 
 ```bash
-tar xzf ocremote-host-1.0.3-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-1.0.4-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ```
@@ -293,14 +293,14 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 
 同一数据目录同时只允许一个中继（pid 文件单例）；重复启动会报 `another relay is already running`。
 
-开机自启用用户级服务（Linux 为 systemd `--user`，macOS 为 LaunchAgent），install 时当前启动参数会被固化进服务单元；服务已运行时再次 install 会更新配置并自动重启：
+开机自启用**系统级服务**（Linux 写入 `/etc/systemd/system`，macOS 为 LaunchDaemon），由 PID 1 托管，不依赖任何登录会话——退出 SSH 或 root 登出后中继继续运行，开机也会自动启动。install 时当前启动参数会被固化进服务单元；服务已运行时再次 install 会更新配置并自动重启。安装与卸载需要 root：
 
 ```bash
-./ocremote-relay service install --data-dir ./data \
+sudo ./ocremote-relay service install --data-dir ./data \
   --listen 0.0.0.0:8443 --public-url ws://<公网IP>:8443/ws
-systemctl --user enable --now ocremote-relay.service   # 启用开机自启
+systemctl enable --now ocremote-relay.service   # 启用开机自启
 ./ocremote-relay service status      # 查看状态与 enable/disable/logs 命令
-./ocremote-relay service uninstall   # 移除服务
+sudo ./ocremote-relay service uninstall   # 移除服务
 ```
 
 服务单元内为前台进程 + `Restart=on-failure`（macOS 为 `KeepAlive`），崩溃自动恢复由 systemd/launchd 负责。
