@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { RelayConfig } from "./config.ts"
 
-export const HOST_VERSION = "1.0.2"
+export const HOST_VERSION = "1.0.3"
 
 export type HostState = {
   pid: number

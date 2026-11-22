@@ -21,7 +21,7 @@ import (
 	"ocremote/relay/internal/relay"
 )
 
-const version = "1.0.2"
+const version = "1.0.3"
 
 func main() {
 	var err error

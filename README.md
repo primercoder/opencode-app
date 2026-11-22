@@ -26,14 +26,14 @@ Release 资源文件名包含操作系统和 CPU 架构。
 
 | 文件 | 平台 | 架构 | 用途 |
 |---|---|---|---|
-| `ocremote-1.0.2-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
-| `ocremote-1.0.2-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
-| `ocremote-host-1.0.2-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
-| `ocremote-host-1.0.2-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
-| `ocremote-relay-1.0.2-linux-amd64` | Linux | x86_64 | 中继二进制 |
-| `ocremote-relay-1.0.2-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
-| `ocremote-relay-1.0.2-linux-arm64` | Linux | arm64 | 中继二进制 |
-| `ocremote-relay-1.0.2-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
+| `ocremote-1.0.3-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
+| `ocremote-1.0.3-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
+| `ocremote-host-1.0.3-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
+| `ocremote-host-1.0.3-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
+| `ocremote-relay-1.0.3-linux-amd64` | Linux | x86_64 | 中继二进制 |
+| `ocremote-relay-1.0.3-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
+| `ocremote-relay-1.0.3-linux-arm64` | Linux | arm64 | 中继二进制 |
+| `ocremote-relay-1.0.3-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
 
 `SHA256SUMS` 可校验全部资源。当前 APK 仍使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。
 
@@ -42,7 +42,7 @@ Release 资源文件名包含操作系统和 CPU 架构。
 ### 同一局域网：只开直连
 
 ```bash
-tar xzf ocremote-host-1.0.2-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-1.0.3-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -79,7 +79,7 @@ cd ocremote
 ### 安装与配对
 
 ```bash
-adb install ocremote-1.0.2-android-arm64-v8a.apk
+adb install ocremote-1.0.3-android-arm64-v8a.apk
 ```
 
 1. 打开 OC Remote，点右上角 **+**。
@@ -127,7 +127,7 @@ adb install ocremote-1.0.2-android-arm64-v8a.apk
 ### 安装与运行
 
 ```bash
-tar xzf ocremote-host-1.0.2-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-1.0.3-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ```
