@@ -21,7 +21,7 @@ import (
 	"ocremote/relay/internal/relay"
 )
 
-const version = "1.0.1"
+const version = "1.0.2"
 
 func main() {
 	var err error
@@ -38,6 +38,10 @@ func main() {
 	case "serve":
 		// Hidden compatibility alias for older service files.
 		err = runServe(os.Args[2:])
+	case "stop":
+		err = runStop(os.Args[2:])
+	case "service":
+		err = runService(os.Args[2:])
 	case "admin":
 		err = runAdmin(os.Args[2:])
 	case "version", "--version", "-v":
@@ -63,7 +67,14 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `ocremote-relay %s — encrypted relay for OC Remote
 
 Usage:
-  ocremote-relay [options]              start the relay
+  ocremote-relay [options]              start the relay (foreground)
+  ocremote-relay --daemon               start in the background and return
+  ocremote-relay stop                   stop the background relay
+  ocremote-relay service status         user-level autostart service state
+  ocremote-relay service install        install/update the user service from
+                                        the current flags (systemd --user on
+                                        Linux, LaunchAgent on macOS)
+  ocremote-relay service uninstall      remove the user service
   ocremote-relay admin <command>        inspect or revoke subjects
   ocremote-relay version
 
@@ -77,6 +88,8 @@ Start options:
   --max-clients <n>       phones per host room (default 3, env RELAY_MAX_CLIENTS)
   --admin-socket <path>   admin Unix socket (default <data-dir>/admin.sock)
   --log-level <level>     debug|info|warn|error (default info)
+  --daemon                detach into the background, write logs to
+                          <data-dir>/relay.log, then return
 
 Admin commands:
   status                  relay state and limits
@@ -84,6 +97,21 @@ Admin commands:
   clients                 registered phone identities
   rooms                   rooms and current occupancy
   revoke <subjectId>      revoke a host or phone identity
+
+Service examples:
+  # Install as a per-user autostart service (updates the unit and restarts
+  # it when it is already running), then let the user manager start it
+  ocremote-relay service install --listen 0.0.0.0:8443 \
+    --public-url ws://203.0.113.10:8443/ws
+  systemctl --user enable --now ocremote-relay
+  ocremote-relay service status
+  ocremote-relay service uninstall
+
+Background examples:
+  ocremote-relay --daemon          # start detached
+  ocremote-relay stop              # graceful stop
+  # Foreground stays the default: systemd, containers and "service install"
+  # units run the relay in the foreground and own restart/autostart.
 
 Examples:
   # Public IP, Noise NK authentication, no certificate needed
@@ -116,79 +144,167 @@ Environment:
 `, version)
 }
 
-func runServe(args []string) error {
-	flags := flag.NewFlagSet("ocremote-relay", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
-	listen := flags.String("listen", env("RELAY_LISTEN", ":8443"), "listen address")
-	publicURL := flags.String("public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
-	certFile := flags.String("tls-cert", env("RELAY_TLS_CERT", ""), "TLS certificate")
-	keyFile := flags.String("tls-key", env("RELAY_TLS_KEY", ""), "TLS private key")
-	maxHosts := flags.Int("max-hosts", envInt("RELAY_MAX_HOSTS", 3), "active hosts")
-	maxClients := flags.Int("max-clients", envInt("RELAY_MAX_CLIENTS", 3), "phones per room")
-	adminSocket := flags.String("admin-socket", env("RELAY_ADMIN_SOCKET", ""), "admin Unix socket")
-	level := flags.String("log-level", env("RELAY_LOG_LEVEL", "info"), "log level")
-	if err := flags.Parse(args); err != nil {
-		return err
+// serveConfig collects everything a relay run needs. It is shared by the
+// foreground/daemon flow and by `service install`, which freezes the current
+// flags into the user unit.
+type serveConfig struct {
+	dataDir     string
+	listen      string
+	publicURL   string
+	certFile    string
+	keyFile     string
+	maxHosts    int
+	maxClients  int
+	adminSocket string
+	logLevel    string
+	daemon      bool
+	daemonized  bool
+	rawArgs     []string
+}
+
+// execArgs renders the flags that must survive a re-exec or a service unit.
+// It intentionally drops --daemon/--daemonized: those describe *how* the
+// process was started, not what it serves.
+func (c *serveConfig) execArgs() []string {
+	args := []string{
+		"--data-dir", c.dataDir,
+		"--listen", c.listen,
+		"--max-hosts", strconv.Itoa(c.maxHosts),
+		"--max-clients", strconv.Itoa(c.maxClients),
+		"--log-level", c.logLevel,
 	}
-	if *maxHosts <= 0 {
+	if c.publicURL != "" {
+		args = append(args, "--public-url", c.publicURL)
+	}
+	if c.certFile != "" {
+		args = append(args, "--tls-cert", c.certFile)
+	}
+	if c.keyFile != "" {
+		args = append(args, "--tls-key", c.keyFile)
+	}
+	if c.adminSocket != "" {
+		args = append(args, "--admin-socket", c.adminSocket)
+	}
+	return args
+}
+
+func (c *serveConfig) validate() error {
+	if c.maxHosts <= 0 {
 		return errors.New("--max-hosts must be greater than zero")
 	}
-	if *maxClients <= 0 {
+	if c.maxClients <= 0 {
 		return errors.New("--max-clients must be greater than zero")
 	}
-	if (*certFile == "") != (*keyFile == "") {
+	if (c.certFile == "") != (c.keyFile == "") {
 		return errors.New("--tls-cert and --tls-key must be provided together")
 	}
+	return nil
+}
 
-	logger := newLogger(*level)
+// parseServeFlags builds the config without touching process state; used by
+// runServe and by `service install`.
+func parseServeFlags(args []string) (*serveConfig, error) {
+	flags := flag.NewFlagSet("ocremote-relay", flag.ContinueOnError)
+	cfg := &serveConfig{rawArgs: args}
+	flags.StringVar(&cfg.dataDir, "data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
+	flags.StringVar(&cfg.listen, "listen", env("RELAY_LISTEN", ":8443"), "listen address")
+	flags.StringVar(&cfg.publicURL, "public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
+	flags.StringVar(&cfg.certFile, "tls-cert", env("RELAY_TLS_CERT", ""), "TLS certificate")
+	flags.StringVar(&cfg.keyFile, "tls-key", env("RELAY_TLS_KEY", ""), "TLS private key")
+	flags.IntVar(&cfg.maxHosts, "max-hosts", envInt("RELAY_MAX_HOSTS", 3), "active hosts")
+	flags.IntVar(&cfg.maxClients, "max-clients", envInt("RELAY_MAX_CLIENTS", 3), "phones per room")
+	flags.StringVar(&cfg.adminSocket, "admin-socket", env("RELAY_ADMIN_SOCKET", ""), "admin Unix socket")
+	flags.StringVar(&cfg.logLevel, "log-level", env("RELAY_LOG_LEVEL", "info"), "log level")
+	flags.BoolVar(&cfg.daemon, "daemon", false, "run in the background and return")
+	// Internal marker appended by daemonize() so the detached child does not
+	// fork again. Hidden from help via a blank description.
+	flags.BoolVar(&cfg.daemonized, "daemonized", false, "")
+	if err := flags.Parse(args); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func runServe(args []string) error {
+	cfg, err := parseServeFlags(args)
+	if err != nil {
+		return err
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	// The daemonized child must never daemonize again.
+	if cfg.daemon && !cfg.daemonized {
+		return daemonize(cfg)
+	}
+
+	// Singleton: a live pid file means another relay owns this data dir.
+	pidPath := pidFilePath(cfg.dataDir)
+	if err := checkPidFile(pidPath); err != nil {
+		return err
+	}
+
+	logger := newLogger(cfg.logLevel)
 	slog.SetDefault(logger)
 
-	if *publicURL == "" {
-		*publicURL = derivePublicURL(*listen, *certFile != "")
-		if strings.Contains(*publicURL, "://127.0.0.1") || strings.Contains(*publicURL, "://localhost") {
-			fmt.Fprintf(os.Stderr, "warning: --public-url is not set; phone invites will use %s. Pass the public IP or domain for remote hosts.\n", *publicURL)
+	if cfg.publicURL == "" {
+		cfg.publicURL = derivePublicURL(cfg.listen, cfg.certFile != "")
+		if strings.Contains(cfg.publicURL, "://127.0.0.1") || strings.Contains(cfg.publicURL, "://localhost") {
+			if !cfg.daemonized {
+				fmt.Fprintf(os.Stderr, "warning: --public-url is not set; phone invites will use %s. Pass the public IP or domain for remote hosts.\n", cfg.publicURL)
+			}
 		}
 	}
-	if *certFile != "" {
+	if cfg.certFile != "" {
 		if _, err := relay.ResolveTLS(relay.TLSOptions{
-			DataDir:  *dataDir,
-			CertFile: *certFile,
-			KeyFile:  *keyFile,
-			Host:     relay.TLSHostFromURL(*publicURL, *listen),
+			DataDir:  cfg.dataDir,
+			CertFile: cfg.certFile,
+			KeyFile:  cfg.keyFile,
+			Host:     relay.TLSHostFromURL(cfg.publicURL, cfg.listen),
 		}); err != nil {
 			return fmt.Errorf("relay TLS: %w", err)
 		}
 	}
 
-	store, err := relay.OpenStore(filepath.Join(*dataDir, "relay.db"))
+	if err := os.MkdirAll(cfg.dataDir, 0o755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+	if err := writePidFile(pidPath); err != nil {
+		return fmt.Errorf("write pid file: %w", err)
+	}
+
+	store, err := relay.OpenStore(filepath.Join(cfg.dataDir, "relay.db"))
 	if err != nil {
+		_ = os.Remove(pidPath)
 		return err
 	}
 	defer store.Close()
 
-	relayKey, err := relay.LoadOrCreateRelayKey(*dataDir)
+	relayKey, err := relay.LoadOrCreateRelayKey(cfg.dataDir)
 	if err != nil {
+		_ = os.Remove(pidPath)
 		return fmt.Errorf("relay identity: %w", err)
 	}
 	server := relay.New(relay.Config{
 		Store:      store,
-		PublicURL:  *publicURL,
+		PublicURL:  cfg.publicURL,
 		RelayKey:   relayKey,
-		MaxHosts:   *maxHosts,
-		MaxClients: *maxClients,
+		MaxHosts:   cfg.maxHosts,
+		MaxClients: cfg.maxClients,
 	})
 
-	socket := *adminSocket
+	socket := cfg.adminSocket
 	if socket == "" {
-		socket = filepath.Join(*dataDir, "admin.sock")
+		socket = filepath.Join(cfg.dataDir, "admin.sock")
 	}
 	httpServer := &http.Server{
-		Addr:              *listen,
+		Addr:              cfg.listen,
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	adminServer, listener, err := server.ServeAdmin(socket)
 	if err != nil {
+		_ = os.Remove(pidPath)
 		return fmt.Errorf("admin socket: %w", err)
 	}
 	defer func() {
@@ -206,29 +322,30 @@ func runServe(args []string) error {
 		_ = httpServer.Shutdown(shutdown)
 		server.Close()
 	}()
+	defer os.Remove(pidPath)
 
 	hosts, _ := store.ActiveHostCount()
 	fmt.Printf("ocremote-relay %s\n", version)
 	fmt.Printf("relay id   %s\n", store.RelayID())
-	fmt.Printf("listen     %s\n", *listen)
-	fmt.Printf("ws url     %s\n", *publicURL)
-	if *certFile == "" {
+	fmt.Printf("listen     %s\n", cfg.listen)
+	fmt.Printf("ws url     %s\n", cfg.publicURL)
+	if cfg.certFile == "" {
 		fmt.Printf("tls        off (Noise NK still encrypts auth and control frames)\n")
 	} else {
-		fmt.Printf("tls        on (%s)\n", *certFile)
+		fmt.Printf("tls        on (%s)\n", cfg.certFile)
 	}
-	fmt.Printf("hosts      %d/%d active\n", hosts, *maxHosts)
-	fmt.Printf("phones     %d per host\n", *maxClients)
-	fmt.Printf("data       %s\n", *dataDir)
+	fmt.Printf("hosts      %d/%d active\n", hosts, cfg.maxHosts)
+	fmt.Printf("phones     %d per host\n", cfg.maxClients)
+	fmt.Printf("data       %s\n", cfg.dataDir)
 	fmt.Printf("admin      %s\n", socket)
 	fmt.Println()
 
-	slog.Info("ocremote relay listening", "addr", *listen, "publicUrl", *publicURL, "relayId", store.RelayID(), "tls", *certFile != "", "maxHosts", *maxHosts, "maxClients", *maxClients)
+	slog.Info("ocremote relay listening", "addr", cfg.listen, "publicUrl", cfg.publicURL, "relayId", store.RelayID(), "tls", cfg.certFile != "", "maxHosts", cfg.maxHosts, "maxClients", cfg.maxClients)
 	slog.Info("relay admin socket ready", "path", socket)
 
 	var serveErr error
-	if *certFile != "" {
-		serveErr = httpServer.ListenAndServeTLS(*certFile, *keyFile)
+	if cfg.certFile != "" {
+		serveErr = httpServer.ListenAndServeTLS(cfg.certFile, cfg.keyFile)
 	} else {
 		serveErr = httpServer.ListenAndServe()
 	}

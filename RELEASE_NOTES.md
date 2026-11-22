@@ -1,4 +1,4 @@
-# OC Remote 1.0.1
+# OC Remote 1.0.2
 
 三端统一版本号，九个 issue 的反馈全部落地：配对与连接体验、目录树、断线恢复、同步容错与滚动稳定性。
 
@@ -6,10 +6,10 @@
 
 | 组件 | 版本 |
 |---|---|
-| 手机 | `1.0.1` |
-| Android versionCode | `14` |
-| 主机 | `1.0.1` |
-| 中继 | `1.0.1` |
+| 手机 | `1.0.2` |
+| Android versionCode | `15` |
+| 主机 | `1.0.2` |
+| 中继 | `1.0.2` |
 
 ## 修复
 
@@ -37,4 +37,4 @@
 - 主机包解压 `./ocremote --version` → `1.0.0`；中继 `--version` → `1.0.0`。
 
 按平台分类的下载列表见项目网站发布页：
-https://github.com/primercoder/opencode-app/releases/tag/v1.0.1
+https://github.com/primercoder/opencode-app/releases/tag/v1.0.2
