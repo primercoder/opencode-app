@@ -299,7 +299,8 @@ is enabled, no relay route is printed.`,
       console.log(JSON.stringify(routes, null, 2))
       return
     }
-    printPairing(routes)
+    const identity = await loadOrCreateIdentity(resolveHome())
+    printPairing(routes, fingerprintOfPublicKey(identity.publicKey))
   })
 
 program
@@ -531,7 +532,11 @@ program
     console.log(`host id: ${identity.hostId}`)
     console.log(`fingerprint: ${fingerprintOfPublicKey(identity.publicKey)}`)
     try {
-      const target = await resolveOpencodeTarget()
+      // Same precedence as the running host: flags/env first, then the saved
+      // config written by `start --opencode-url ...`, then discovery.
+      const target = await resolveOpencodeTarget(
+        config.opencode ? { savedUrl: config.opencode.url, savedPassword: config.opencode.password } : undefined,
+      )
       console.log(`opencode: ${target.url} (${target.version ?? "unknown"})`)
     } catch (error) {
       console.log(`opencode: not running · ${error instanceof Error ? error.message : String(error)}`)
@@ -961,11 +966,15 @@ function printRouteHint(): void {
   console.log("")
 }
 
-function printPairing(routes: PairRoute[]): void {
+function printPairing(routes: PairRoute[], fingerprint: string): void {
   if (routes.length === 0) {
     console.log("no phone-reachable route is enabled")
     return
   }
+  // Same shape as the phone shows: uppercase, grouped by 4. The phone refuses
+  // to connect until both screens show the same groups, so the terminal must
+  // render the fingerprint identically, not as a raw lowercase hex string.
+  const grouped = fingerprint.toUpperCase().match(/.{1,4}/gu)?.join(" ") ?? fingerprint.toUpperCase()
   for (const [index, route] of routes.entries()) {
     if (index > 0) console.log("")
     if (route.kind === "direct") {
@@ -984,7 +993,9 @@ function printPairing(routes: PairRoute[]): void {
     console.log("  pairing link:")
     console.log(`  ${route.offer}`)
     console.log("")
+    console.log(`  Fingerprint: ${grouped}`)
     console.log("  Phone: OC Remote → Add host → Scan this QR or paste the link.")
+    console.log("  Verify the fingerprint groups match the phone before connecting.")
   }
 }
 

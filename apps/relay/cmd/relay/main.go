@@ -21,7 +21,7 @@ import (
 	"ocremote/relay/internal/relay"
 )
 
-const version = "1.0.4"
+const version = "1.0.5"
 
 func main() {
 	var err error
@@ -161,6 +161,30 @@ type serveConfig struct {
 	daemon      bool
 	daemonized  bool
 	rawArgs     []string
+
+	// explicit records which flags the user actually passed on the command
+	// line; only those are persisted back to the config file.
+	explicit map[string]bool
+}
+
+// configFileName lives inside the data directory. The data directory itself
+// cannot come from the file (the file is found through it), so --data-dir and
+// RELAY_DATA_DIR keep their flag/env precedence.
+const configFileName = "relay-config.json"
+
+func configFilePath(dataDir string) string {
+	return filepath.Join(dataDir, configFileName)
+}
+
+type relayFileConfig struct {
+	Listen      string `json:"listen,omitempty"`
+	PublicURL   string `json:"publicUrl,omitempty"`
+	CertFile    string `json:"tlsCert,omitempty"`
+	KeyFile     string `json:"tlsKey,omitempty"`
+	MaxHosts    int    `json:"maxHosts,omitempty"`
+	MaxClients  int    `json:"maxClients,omitempty"`
+	AdminSocket string `json:"adminSocket,omitempty"`
+	LogLevel    string `json:"logLevel,omitempty"`
 }
 
 // execArgs renders the flags that must survive a re-exec or a service unit.
@@ -206,7 +230,7 @@ func (c *serveConfig) validate() error {
 // runServe and by `service install`.
 func parseServeFlags(args []string) (*serveConfig, error) {
 	flags := flag.NewFlagSet("ocremote-relay", flag.ContinueOnError)
-	cfg := &serveConfig{rawArgs: args}
+	cfg := &serveConfig{rawArgs: args, explicit: map[string]bool{}}
 	flags.StringVar(&cfg.dataDir, "data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
 	flags.StringVar(&cfg.listen, "listen", env("RELAY_LISTEN", ":8443"), "listen address")
 	flags.StringVar(&cfg.publicURL, "public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
@@ -223,7 +247,106 @@ func parseServeFlags(args []string) (*serveConfig, error) {
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}
+	// Remember exactly which options the user passed; only those are written
+	// back to the config file so the file keeps reflecting intent.
+	flags.Visit(func(f *flag.Flag) { cfg.explicit[f.Name] = true })
+
+	// Layer the saved config under explicit flags/env: a bare `serve` (the
+	// system service unit) picks up everything the user ever configured, and
+	// passing a flag overrides it for this run and updates the file.
+	if err := cfg.applyFileConfig(); err != nil {
+		return nil, err
+	}
+	if cfg.explicitAny() {
+		if err := cfg.saveFileConfig(); err != nil {
+			return nil, fmt.Errorf("save config: %w", err)
+		}
+	}
 	return cfg, nil
+}
+
+// explicitAny reports whether any serving option (not --daemon/--daemonized)
+// came from the command line.
+func (c *serveConfig) explicitAny() bool {
+	for _, name := range []string{"listen", "public-url", "tls-cert", "tls-key", "max-hosts", "max-clients", "admin-socket", "log-level"} {
+		if c.explicit[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// applyFileConfig merges <data-dir>/relay-config.json beneath the parsed
+// flags: file values only fill options that were not set by flag or env.
+func (c *serveConfig) applyFileConfig() error {
+	data, err := os.ReadFile(configFilePath(c.dataDir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read config: %w", err)
+	}
+	var saved relayFileConfig
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return fmt.Errorf("parse %s: %w", configFilePath(c.dataDir), err)
+	}
+	if !c.explicit["listen"] && !isEnvSet("RELAY_LISTEN") && saved.Listen != "" {
+		c.listen = saved.Listen
+	}
+	if !c.explicit["public-url"] && !isEnvSet("RELAY_PUBLIC_URL") && saved.PublicURL != "" {
+		c.publicURL = saved.PublicURL
+	}
+	if !c.explicit["tls-cert"] && !isEnvSet("RELAY_TLS_CERT") && saved.CertFile != "" {
+		c.certFile = saved.CertFile
+	}
+	if !c.explicit["tls-key"] && !isEnvSet("RELAY_TLS_KEY") && saved.KeyFile != "" {
+		c.keyFile = saved.KeyFile
+	}
+	if !c.explicit["max-hosts"] && !isEnvSet("RELAY_MAX_HOSTS") && saved.MaxHosts > 0 {
+		c.maxHosts = saved.MaxHosts
+	}
+	if !c.explicit["max-clients"] && !isEnvSet("RELAY_MAX_CLIENTS") && saved.MaxClients > 0 {
+		c.maxClients = saved.MaxClients
+	}
+	if !c.explicit["admin-socket"] && !isEnvSet("RELAY_ADMIN_SOCKET") && saved.AdminSocket != "" {
+		c.adminSocket = saved.AdminSocket
+	}
+	if !c.explicit["log-level"] && !isEnvSet("RELAY_LOG_LEVEL") && saved.LogLevel != "" {
+		c.logLevel = saved.LogLevel
+	}
+	return nil
+}
+
+// saveFileConfig persists the effective serving options so future bare runs
+// (and the system service unit, which passes only --data-dir) reuse them.
+func (c *serveConfig) saveFileConfig() error {
+	saved := relayFileConfig{
+		Listen:      c.listen,
+		PublicURL:   c.publicURL,
+		CertFile:    c.certFile,
+		KeyFile:     c.keyFile,
+		MaxHosts:    c.maxHosts,
+		MaxClients:  c.maxClients,
+		AdminSocket: c.adminSocket,
+		LogLevel:    c.logLevel,
+	}
+	data, err := json.MarshalIndent(saved, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(c.dataDir, 0o755); err != nil {
+		return err
+	}
+	tmp := configFilePath(c.dataDir) + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, configFilePath(c.dataDir))
+}
+
+func isEnvSet(name string) bool {
+	_, ok := os.LookupEnv(name)
+	return ok
 }
 
 func runServe(args []string) error {
@@ -357,6 +480,17 @@ func runServe(args []string) error {
 }
 
 func runAdmin(args []string) error {
+	// The Go flag package stops parsing at the first positional argument, so
+	// "admin status --data-dir X" would drop --data-dir and fall back to
+	// ./data. Lift the subcommand out first; flags may then appear anywhere.
+	command := ""
+	if len(args) > 0 {
+		switch args[0] {
+		case "status", "hosts", "clients", "rooms", "revoke":
+			command = args[0]
+			args = args[1:]
+		}
+	}
 	flags := flag.NewFlagSet("admin", flag.ContinueOnError)
 	dataDir := flags.String("data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
 	socket := flags.String("admin-socket", env("RELAY_ADMIN_SOCKET", ""), "admin Unix socket")
@@ -366,10 +500,13 @@ func runAdmin(args []string) error {
 		return err
 	}
 	rest := flags.Args()
-	if len(rest) == 0 {
-		return errors.New("missing admin command (status|hosts|clients|rooms|revoke)")
+	if command == "" {
+		if len(rest) == 0 {
+			return errors.New("missing admin command (status|hosts|clients|rooms|revoke)")
+		}
+		command = rest[0]
+		rest = rest[1:]
 	}
-	command := rest[0]
 	if *socket == "" {
 		*socket = filepath.Join(*dataDir, "admin.sock")
 	}

@@ -109,11 +109,23 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     hostId: identity.hostId,
     name: options.name ?? process.env.OCREMOTE_HOST_NAME ?? "ocremote-host",
   })
+  // Persist explicit opencode settings so later bare `start` runs (and the
+  // service unit) reuse them, mirroring the relay's config file behaviour.
+  if (options.opencodeUrl && options.opencodePassword) {
+    const savedOpencode = config.opencode
+    if (savedOpencode?.url !== options.opencodeUrl || savedOpencode.password !== options.opencodePassword) {
+      config.opencode = { url: options.opencodeUrl, password: options.opencodePassword }
+      await saveConfig(home, config)
+    }
+  }
   // The host must come up even when opencode is not running. The monitor keeps
   // probing and reports availability to paired phones.
   const monitor = new OpencodeMonitor({
     ...(options.opencodeUrl ? { url: options.opencodeUrl } : {}),
     ...(options.opencodePassword ? { password: options.opencodePassword } : {}),
+    // Saved config fills in when neither flag nor env names a target; it beats
+    // auto-discovery because the user typed it once deliberately.
+    ...(config.opencode ? { savedUrl: config.opencode.url, savedPassword: config.opencode.password } : {}),
     ...(options.opencodeProbeMs ? { intervalMs: options.opencodeProbeMs } : {}),
   })
   await monitor.start()

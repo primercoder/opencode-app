@@ -1111,7 +1111,8 @@ export default function WorkspaceScreen() {
   }, [hostId, projects, t])
 
   // Debounced check so typing a path tells the user whether it exists without
-  // creating anything. It also fills the drop-down with the typed directory.
+  // creating anything. Typed text is resolved under the home directory (the
+  // locked "~" prefix); a pasted absolute path is passed through as-is.
   useEffect(() => {
     if (!projectOpen) return
     const value = directoryInput.trim()
@@ -1120,13 +1121,14 @@ export default function WorkspaceScreen() {
       setDirectoryChecking(false)
       return
     }
+    const wire = value.startsWith("/") ? value : `~/${value}`
     let cancelled = false
     setDirectoryChecking(true)
     const timer = setTimeout(() => {
       void (async () => {
         try {
           const runtime = await ensureConnection(hostId)
-          const result = await new OpencodeClient(runtime).checkDirectory(value)
+          const result = await new OpencodeClient(runtime).checkDirectory(wire)
           if (!cancelled) setDirectoryCheck(result)
         } catch (cause) {
           if (!cancelled) {
@@ -1906,7 +1908,10 @@ export default function WorkspaceScreen() {
   return (
     <KeyboardAvoidingView
       style={[styles.screen, { paddingTop: insets.top }]}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      // Android already resizes the window for the keyboard (adjustResize);
+      // adding "height" here compensates twice and lifts the whole session
+      // screen whenever a sheet input opens the keyboard.
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
       keyboardVerticalOffset={0}
       {...drawerSwipe.panHandlers}
     >
@@ -2110,9 +2115,10 @@ export default function WorkspaceScreen() {
             ) : null}
           </View>
 
-          {/* Reserve the row height for the whole turn so the transcript
-              never jumps when the pill or the stop button appear. */}
-          {sessionId ? (
+          {/* Reserve the row height only while something is actually running:
+              pill (background tasks) or stop button (active turn). When the
+              session is idle the row disappears entirely. */}
+          {sessionId && (agentWorking || activities.length > 0) ? (
             <View style={styles.activitySlot}>
               {activities.length > 0 ? (
                 <Pressable
@@ -2136,7 +2142,9 @@ export default function WorkspaceScreen() {
                   onPress={confirmStop}
                   style={({ pressed }) => [styles.stopTaskButton, pressed && { opacity: 0.72 }]}
                 >
-                  <Icon name="stop" size={22} color="#FFFFFF" />
+                  {/* Outer circle, inner square: the stop glyph stays large
+                      inside a smaller circular button. */}
+                  <Icon name="stop" size={20} color="#FFFFFF" />
                 </Pressable>
               ) : null}
             </View>
@@ -2455,15 +2463,23 @@ export default function WorkspaceScreen() {
         height={panelHeight}
       >
         <View style={styles.directoryBar}>
-          <TextInput
-            value={directoryInput}
-            onChangeText={(value) => setDirectoryInput(value)}
-            placeholder={dirHome ?? t("directoryPlaceholder")}
-            placeholderTextColor={colors.faint}
-            autoCapitalize="none"
-            autoCorrect={false}
-            style={styles.directoryInput}
-          />
+          <View style={styles.directoryInputBox}>
+            {/* Locked home prefix: the user types only the part after "~/",
+                so the target always stays under the home directory and the
+                prefix cannot be deleted by accident. */}
+            <Text style={styles.directoryPrefix}>~</Text>
+            <TextInput
+              value={directoryInput}
+              // A pasted absolute or ~/ path is normalized into the suffix;
+              // the "~" itself is rendered by the locked prefix next to it.
+              onChangeText={(value) => setDirectoryInput(value.replace(/^~\/?/, ""))}
+              placeholder="/"
+              placeholderTextColor={colors.faint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.directoryInput}
+            />
+          </View>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t("newSession")}
@@ -2474,7 +2490,12 @@ export default function WorkspaceScreen() {
               directoryCheck?.valid !== true
             }
             onPress={() => {
-              const target = directoryCheck?.valid && directoryCheck.path ? directoryCheck.path : directoryInput.trim()
+              // Prefer the host-verified canonical path; the fallback mirrors
+              // the check: absolute input passes through, typed text resolves
+              // under the locked "~" prefix.
+              const raw = directoryInput.trim()
+              const fallback = raw.startsWith("/") ? raw : `~/${raw}`
+              const target = directoryCheck?.valid && directoryCheck.path ? directoryCheck.path : fallback
               void createSessionIn(target)
             }}
             style={({ pressed }) => [
@@ -2486,31 +2507,11 @@ export default function WorkspaceScreen() {
               pressed && { opacity: 0.6 },
             ]}
           >
+            {/* Validity is expressed by this button alone: dim while
+                checking/invalid, full color when the path is usable. */}
             <Icon name="plus" size={19} color={colors.accent} />
           </Pressable>
         </View>
-
-        {directoryInput.trim() ? (
-          <Text
-            style={[
-              styles.directoryHint,
-              directoryCheck?.valid
-                ? { color: colors.success }
-                : directoryCheck
-                  ? { color: colors.danger }
-                  : undefined,
-            ]}
-            numberOfLines={2}
-          >
-            {directoryChecking
-              ? t("directoryChecking")
-              : directoryCheck?.valid
-                ? `${t("newSessionDirectory")} · ~/${directoryCheck.relative ?? ""}`
-                : directoryCheck?.error
-                  ? t("directoryInvalid", { message: directoryCheck.error })
-                  : ""}
-          </Text>
-        ) : null}
 
         {directoryError ? (
           <Text style={[styles.directoryHint, { color: colors.danger }]}>{directoryError}</Text>
@@ -3019,18 +3020,20 @@ function ActivityRow(props: {
   return (
     <View style={styles.optionRow}>
       <Icon name={icon} size={17} color={colors.muted} />
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded }}
-        onPress={() => setExpanded((current) => !current)}
-        style={{ flex: 1 }}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <View style={{ flex: 1 }}>
+        {/* Only the header row toggles. Details live outside the pressable so
+            tapping or scrolling the expanded content never collapses it. */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          onPress={() => setExpanded((current) => !current)}
+          style={({ pressed }) => [styles.activityRowHeader, pressed && { opacity: 0.7 }]}
+        >
           <Text style={styles.optionTitle} numberOfLines={1}>
             {props.activity.label}
           </Text>
           <Icon name={expanded ? "chevronDown" : "chevronRight"} size={13} color={colors.faint} />
-        </View>
+        </Pressable>
         <Text style={styles.optionBody}>{props.activity.kind}</Text>
         {expanded && lines.length > 0 ? (
           <View style={{ marginTop: 6, gap: 3 }}>
@@ -3045,7 +3048,7 @@ function ActivityRow(props: {
             ))}
           </View>
         ) : null}
-      </Pressable>
+      </View>
       {/* A background shell cannot be interrupted through the session API
           (stopActivity is a no-op for shells), so it gets no stop button
           instead of one that silently does nothing. */}
@@ -3486,7 +3489,7 @@ const workspaceStyles = (colors: Palette) =>
       height: 44,
       justifyContent: "center",
       paddingLeft: 14,
-      paddingRight: 64,
+      paddingRight: 62,
       zIndex: 4,
     },
     activityPill: {
@@ -3501,13 +3504,15 @@ const workspaceStyles = (colors: Palette) =>
       alignSelf: "flex-start",
     },
     activityText: { fontSize: 12, fontWeight: "600", color: colors.muted },
+    // Slightly smaller circle than the slot height and nudged off the reserved
+    // row's edges, with a square stop glyph inside ("外圆内方").
     stopTaskButton: {
       position: "absolute",
       right: 14,
-      top: 0,
-      width: 44,
-      height: 44,
-      borderRadius: 22,
+      top: 3,
+      width: 38,
+      height: 38,
+      borderRadius: 19,
       alignItems: "center",
       justifyContent: "center",
       backgroundColor: colors.danger,
@@ -3621,15 +3626,29 @@ const workspaceStyles = (colors: Palette) =>
       marginTop: 4,
       marginBottom: 2,
     },
-    directoryInput: {
+    // Input box with the locked "~" home prefix rendered to its left.
+    directoryInputBox: {
       flex: 1,
-      height: 42,
-      paddingHorizontal: 11,
-      paddingVertical: 0,
+      flexDirection: "row",
+      alignItems: "center",
+      height: 38,
       borderRadius: 10,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
       backgroundColor: colors.surface,
+      paddingHorizontal: 10,
+    },
+    directoryPrefix: {
+      fontSize: 13,
+      fontFamily: "monospace",
+      color: colors.muted,
+      marginRight: 2,
+    },
+    directoryInput: {
+      flex: 1,
+      height: 38,
+      paddingHorizontal: 2,
+      paddingVertical: 0,
       fontSize: 13,
       fontFamily: "monospace",
       color: colors.text,
@@ -3637,23 +3656,23 @@ const workspaceStyles = (colors: Palette) =>
     directoryHint: { fontSize: 11.5, lineHeight: 17, color: colors.faint, marginTop: 4 },
     directoryTree: { marginTop: 8, gap: 1 },
     directoryChevron: {
-      width: 26,
-      height: 26,
+      width: 24,
+      height: 24,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 6,
+    },
+    directoryAdd: {
+      width: 28,
+      height: 28,
       alignItems: "center",
       justifyContent: "center",
       borderRadius: 7,
-    },
-    directoryAdd: {
-      width: 30,
-      height: 30,
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: 8,
       backgroundColor: colors.accentSoft,
     },
     directoryAddButton: {
-      width: 40,
-      height: 40,
+      width: 38,
+      height: 38,
       alignItems: "center",
       justifyContent: "center",
       borderRadius: 10,
@@ -3665,14 +3684,19 @@ const workspaceStyles = (colors: Palette) =>
       flexDirection: "row",
       alignItems: "center",
       gap: 6,
-      paddingVertical: 8,
-      paddingHorizontal: 4,
-      minHeight: 36,
+      paddingVertical: 5,
+      minHeight: 30,
     },
     directoryRowText: { flex: 1, fontSize: 13.5, color: colors.text },
     optionRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
     optionTitle: { fontSize: 14.5, fontWeight: "500", color: colors.text },
     optionBody: { fontSize: 11.5, color: colors.faint, marginTop: 2 },
+    activityRowHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingVertical: 2,
+    },
     activityDetail: {
       fontSize: 12,
       lineHeight: 17,

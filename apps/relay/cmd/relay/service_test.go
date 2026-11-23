@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -230,5 +231,83 @@ func TestServiceInstallUpdatesRunningUnit(t *testing.T) {
 	}
 	if !strings.Contains(string(calls), "daemon-reload") || !strings.Contains(string(calls), "restart") {
 		t.Fatalf("expected daemon-reload + restart, got:\n%s", string(calls))
+	}
+}
+
+func TestServeConfigFilePersistence(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Explicit flags are persisted to <data-dir>/relay-config.json.
+	first, err := parseServeFlags([]string{"--data-dir", dataDir, "--listen", "127.0.0.1:18510", "--public-url", "ws://203.0.113.10:18510/ws", "--max-hosts", "7", "--max-clients", "5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.listen != "127.0.0.1:18510" || first.publicURL != "ws://203.0.113.10:18510/ws" || first.maxHosts != 7 || first.maxClients != 5 {
+		t.Fatalf("explicit flags lost: %+v", first)
+	}
+	data, err := os.ReadFile(configFilePath(dataDir))
+	if err != nil {
+		t.Fatalf("config file not written: %v", err)
+	}
+	if !strings.Contains(string(data), `"listen": "127.0.0.1:18510"`) {
+		t.Fatalf("config file missing listen: %s", string(data))
+	}
+
+	// A bare run (only --data-dir) picks up everything from the file.
+	second, err := parseServeFlags([]string{"--data-dir", dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.listen != "127.0.0.1:18510" || second.publicURL != "ws://203.0.113.10:18510/ws" || second.maxHosts != 7 || second.maxClients != 5 {
+		t.Fatalf("saved config not applied: %+v", second)
+	}
+
+	// An explicit flag overrides the file and updates the file.
+	third, err := parseServeFlags([]string{"--data-dir", dataDir, "--max-hosts", "9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.maxHosts != 9 {
+		t.Fatalf("explicit override lost: %+v", third)
+	}
+	after, err := parseServeFlags([]string{"--data-dir", dataDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.maxHosts != 9 || after.listen != "127.0.0.1:18510" {
+		t.Fatalf("file not updated by override: %+v", after)
+	}
+
+	// A broken config file must not take the relay down silently with a
+	// confusing flag error; it reports the file it could not parse.
+	if err := os.WriteFile(configFilePath(dataDir), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = parseServeFlags([]string{"--data-dir", dataDir})
+	if err == nil || !strings.Contains(err.Error(), configFileName) {
+		t.Fatalf("expected config parse error naming the file, got: %v", err)
+	}
+}
+
+func TestAdminParsesFlagsAfterSubcommand(t *testing.T) {
+	// Go's flag package stops at the first positional argument; runAdmin must
+	// lift the subcommand out so "admin status --data-dir X" honours X.
+	command := ""
+	args := []string{"status", "--data-dir", "/tmp/x"}
+	switch args[0] {
+	case "status", "hosts", "clients", "rooms", "revoke":
+		command = args[0]
+		args = args[1:]
+	}
+	flags := flag.NewFlagSet("admin", flag.ContinueOnError)
+	dataDir := flags.String("data-dir", "./data", "data directory")
+	if err := flags.Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	if command != "status" {
+		t.Fatalf("command = %q", command)
+	}
+	if *dataDir != "/tmp/x" {
+		t.Fatalf("flag after subcommand dropped: %q", *dataDir)
 	}
 }

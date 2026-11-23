@@ -34,6 +34,9 @@ const INFO_TIMEOUT_MS = 5_000
 export async function resolveOpencodeTarget(input?: {
   url?: string
   password?: string
+  /** Saved config target, consulted after flags and env, before discovery. */
+  savedUrl?: string
+  savedPassword?: string
 }): Promise<OpencodeTarget> {
   if (input?.url) {
     if (!input.password) throw new Error("opencode password is required with --opencode-url")
@@ -43,6 +46,9 @@ export async function resolveOpencodeTarget(input?: {
     const password = process.env.OPENCODE_PASSWORD ?? process.env.OPENCODE_SERVER_PASSWORD
     if (!password) throw new Error("OPENCODE_PASSWORD is required with OPENCODE_SERVER_URL")
     return probeOpencode({ url: normalizeUrl(process.env.OPENCODE_SERVER_URL), password })
+  }
+  if (input?.savedUrl && input.savedPassword) {
+    return probeOpencode({ url: normalizeUrl(input.savedUrl), password: input.savedPassword })
   }
 
   const registration = await readServiceRegistration()
@@ -70,6 +76,9 @@ export class OpencodeMonitor {
     private readonly options: {
       url?: string
       password?: string
+      /** Saved config target used when neither flag nor env is set. */
+      savedUrl?: string
+      savedPassword?: string
       intervalMs?: number
     } = {},
   ) {}
@@ -155,6 +164,11 @@ export class OpencodeMonitor {
       const password = process.env.OPENCODE_PASSWORD ?? process.env.OPENCODE_SERVER_PASSWORD
       if (!password) throw new Error("OPENCODE_PASSWORD is required with OPENCODE_SERVER_URL")
       return { url: normalizeUrl(process.env.OPENCODE_SERVER_URL), password }
+    }
+    // Explicitly configured and persisted via `start --opencode-url ...`:
+    // user intent beats auto-discovery of the opencode service registration.
+    if (this.options.savedUrl && this.options.savedPassword) {
+      return { url: normalizeUrl(this.options.savedUrl), password: this.options.savedPassword }
     }
     return readServiceRegistration()
   }

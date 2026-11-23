@@ -26,14 +26,12 @@ Release 资源文件名包含操作系统和 CPU 架构。
 
 | 文件 | 平台 | 架构 | 用途 |
 |---|---|---|---|
-| `ocremote-1.0.4-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
-| `ocremote-1.0.4-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
-| `ocremote-host-1.0.4-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
-| `ocremote-host-1.0.4-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
-| `ocremote-relay-1.0.4-linux-amd64` | Linux | x86_64 | 中继二进制 |
-| `ocremote-relay-1.0.4-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
-| `ocremote-relay-1.0.4-linux-arm64` | Linux | arm64 | 中继二进制 |
-| `ocremote-relay-1.0.4-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
+| `ocremote-1.0.5-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
+| `ocremote-1.0.5-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
+| `ocremote-host-1.0.5-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
+| `ocremote-host-1.0.5-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
+| `ocremote-relay-1.0.5-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
+| `ocremote-relay-1.0.5-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
 
 `SHA256SUMS` 可校验全部资源。当前 APK 仍使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。
 
@@ -42,7 +40,7 @@ Release 资源文件名包含操作系统和 CPU 架构。
 ### 同一局域网：只开直连
 
 ```bash
-tar xzf ocremote-host-1.0.4-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-1.0.5-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -79,7 +77,7 @@ cd ocremote
 ### 安装与配对
 
 ```bash
-adb install ocremote-1.0.4-android-arm64-v8a.apk
+adb install ocremote-1.0.5-android-arm64-v8a.apk
 ```
 
 1. 打开 OC Remote，点右上角 **+**。
@@ -127,7 +125,7 @@ adb install ocremote-1.0.4-android-arm64-v8a.apk
 ### 安装与运行
 
 ```bash
-tar xzf ocremote-host-1.0.4-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-1.0.5-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ```
@@ -218,7 +216,7 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 
 中继是 Go 单文件程序，只转发加密帧，不运行 opencode、ASR 或模型逻辑。默认使用 `ws://` + Noise NK，不需要证书即可服务公网 IP；TLS 仍可按需叠加。
 
-### 启动
+### 启动与配置文件
 
 ```bash
 ./ocremote-relay --data-dir /opt/ocremote/relay/data \
@@ -237,6 +235,8 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 | `--max-clients` | `3` | 每个主机房间可连接的手机数量 |
 | `--tls-cert` / `--tls-key` | 无 | 可选 TLS 证书 |
 | `--log-level` | `info` | 日志级别 |
+
+配置持久化在 `<data-dir>/relay-config.json`：带参数启动时自动把生效配置写入该文件；之后裸运行（例如系统服务单元只传 `--data-dir`）会读取它，无需重复传参。优先级为命令行参数 > 环境变量 > 配置文件 > 内置默认——带任一参数重启一次即可完成改配置。
 
 | 文件 | 内容 |
 |---|---|
