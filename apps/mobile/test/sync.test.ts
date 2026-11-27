@@ -8,6 +8,8 @@ import {
   messageIds,
   normalizeSession,
   pageLeavesGap,
+  reconcileTranscript,
+  sessionRefreshKinds,
   sessionRunning,
   shouldFollow,
 } from "../src/features/session/sync.ts"
@@ -83,6 +85,45 @@ describe("message gap detection", () => {
   test("gap healing is bounded", () => {
     expect(MAX_GAP_PAGES).toBeGreaterThan(0)
     expect(MAX_GAP_PAGES).toBeLessThanOrEqual(10)
+  })
+
+  test("walks a short page's cursor to fill a reconnect gap", async () => {
+    const cached = { messages: [message("m1", 1), message("m2", 2)], olderCursor: "cached-older" }
+    const result = await reconcileTranscript(async (cursor) => {
+      if (cursor === "older") return { data: [message("m3", 3), message("m2", 2)] }
+      return { data: [message("m4", 4)], cursor: { next: "older" } }
+    }, cached)
+    expect(result.messages.map((item) => item.id)).toEqual(["m1", "m2", "m3", "m4"])
+    expect(result.olderCursor).toBe("cached-older")
+  })
+
+  test("keeps an older cursor and a continuous window when the cache is too far behind", async () => {
+    const newest = 100
+    const result = await reconcileTranscript(async (cursor) => {
+      const number = cursor ? Number(cursor) : newest
+      return { data: [message(`m${number}`, number)], cursor: { next: String(number - 1) } }
+    }, { messages: [message("m1")], olderCursor: "stale" })
+    expect(result.messages.map((item) => item.id)).toEqual(
+      Array.from({ length: MAX_GAP_PAGES + 1 }, (_, index) => `m${newest - MAX_GAP_PAGES + index}`),
+    )
+    expect(result.olderCursor).toBe(String(newest - MAX_GAP_PAGES - 1))
+  })
+
+  test("reports a failed gap fetch instead of publishing separated pages", async () => {
+    const cached = { messages: [message("m1")], olderCursor: undefined }
+    await expect(reconcileTranscript(async (cursor) => {
+      if (cursor) throw new Error("network interruption")
+      return { data: [message("m9")], cursor: { next: "older" } }
+    }, cached)).rejects.toThrow("network interruption")
+    expect(cached.messages.map((item) => item.id)).toEqual(["m1"])
+  })
+
+  test("reconciles shell and interruption events without polling for every token", () => {
+    expect(sessionRefreshKinds("session.text.delta")).toEqual([])
+    expect(sessionRefreshKinds("session.reasoning.delta")).toEqual([])
+    expect(sessionRefreshKinds("session.shell.ended")).toEqual(["session", "message", "activity"])
+    expect(sessionRefreshKinds("session.execution.interrupted")).toEqual(["session", "message", "activity"])
+    expect(sessionRefreshKinds("experimental.job.updated")).toEqual(["session", "activity"])
   })
 })
 

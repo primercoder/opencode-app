@@ -15,7 +15,7 @@ import (
 )
 
 // Process-lifetime plumbing: pid-file singleton, background daemonization and
-// user-level service management. The relay must behave like the host CLI:
+// system-level service management. The relay must behave like the host CLI:
 // `--daemon` detaches, `service install` writes a system-level unit (systemd
 // on Linux, a LaunchDaemon on macOS) that keeps the *foreground* process alive, so
 // autostart recovery belongs to the supervisor and is never nested inside a
@@ -43,7 +43,8 @@ func pidAlive(pid int) bool {
 	}
 	// Signal 0 probes for existence without actually signalling. EPERM would
 	// mean the process exists but belongs to another user — still "alive".
-	return syscall.Kill(pid, 0) == nil
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // checkPidFile enforces the singleton: a live foreign pid is an error, a stale
@@ -260,10 +261,8 @@ func runServiceStatus(args []string) error {
 	}
 }
 
-// runServiceInstall writes (or overwrites) the user-level unit from the
-// current launch flags, so re-running install with new flags updates the
-// service configuration. When the unit is already active it is reloaded and,
-// if the service is running, restarted so the change takes effect.
+// runServiceInstall stores the serving options in the data directory and
+// reloads systemd. An active unit restarts with the new configuration.
 func runServiceInstall(args []string) error {
 	cfg, err := parseServeFlags(args)
 	if err != nil {
@@ -290,6 +289,18 @@ func runServiceInstall(args []string) error {
 	}
 	unitCfg := *cfg
 	unitCfg.dataDir = absData
+	for _, path := range []*string{&unitCfg.certFile, &unitCfg.keyFile, &unitCfg.adminSocket} {
+		if *path == "" {
+			continue
+		}
+		*path, err = filepath.Abs(*path)
+		if err != nil {
+			return fmt.Errorf("resolve service path: %w", err)
+		}
+	}
+	if err := unitCfg.saveFileConfig(); err != nil {
+		return fmt.Errorf("save service config: %w", err)
+	}
 
 	kind := currentServiceKind()
 	var path string
@@ -304,7 +315,7 @@ func runServiceInstall(args []string) error {
 		}
 		// Apply the new configuration: reload units; restart when running.
 		reloaded, running, applyErr := systemctlApply()
-		if applyErr != nil && !reloaded {
+		if applyErr != nil {
 			return fmt.Errorf("systemctl failed: %w", applyErr)
 		}
 		fmt.Printf("service installed: %s\n", path)
@@ -412,11 +423,11 @@ PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
-`, systemdQuote(append([]string{exe, "serve"}, cfg.execArgs()...)), cfg.dataDir)
+`, systemdQuote([]string{exe, "serve", "--data-dir", cfg.dataDir}), strings.ReplaceAll(cfg.dataDir, "%", "%%"))
 }
 
 func launchdPlistText(exe string, cfg *serveConfig) string {
-	args := append([]string{exe, "serve"}, cfg.execArgs()...)
+	args := []string{exe, "serve", "--data-dir", cfg.dataDir}
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -448,6 +459,7 @@ func launchdPlistText(exe string, cfg *serveConfig) string {
 func systemdQuote(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
+		arg = strings.NewReplacer("%", "%%", "$", "$$").Replace(arg)
 		if strings.ContainsAny(arg, " \t\"'\\") {
 			quoted = append(quoted, `"`+strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(arg)+`"`)
 			continue

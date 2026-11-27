@@ -38,6 +38,19 @@ describe("running activities", () => {
     expect(runningActivities([toolMessage("running", now - 4 * 60_000)], [], { busy: false, now })).toEqual([])
   })
 
+  test("uses the server's active jobs and shells instead of stale transcripts", () => {
+    const freshTool = toolMessage("running", now - 100)
+    const shell = { ...shellMessage("running", now - 200), shellID: "sh_live" }
+    expect(runningActivities([freshTool, shell], [], {
+      busy: false, now, jobs: [], runningShellIds: new Set(),
+    })).toEqual([])
+    const jobs = [{ id: "job_1", kind: "shell", status: "running", shellID: "sh_live", command: "sleep 100" }]
+    const list = runningActivities([shell], [], {
+      busy: false, now, jobs, runningShellIds: new Set(["sh_live"]),
+    })
+    expect(list.map((activity) => [activity.kind, activity.label])).toEqual([["job", "sleep 100"]])
+  })
+
   test("keeps a tool that just started even if the turn already ended", () => {
     const list = runningActivities([toolMessage("running", now - 100)], [], { busy: false, now })
     expect(list).toHaveLength(1)

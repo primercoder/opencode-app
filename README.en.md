@@ -54,12 +54,12 @@ Release assets name the operating system and CPU architecture in the filename.
 
 | Asset | OS | CPU / target | Use |
 |---|---|---|---|
-| `ocremote-1.0.5-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
-| `ocremote-1.0.5-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
-| `ocremote-host-1.0.5-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
-| `ocremote-host-1.0.5-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
-| `ocremote-relay-1.0.5-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
-| `ocremote-relay-1.0.5-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
+| `ocremote-1.0.6-android-arm64-v8a.apk` | Android | arm64-v8a | Real phones and tablets |
+| `ocremote-1.0.6-android-x86_64.apk` | Android | x86_64 | Emulators and x86_64 devices |
+| `ocremote-host-1.0.6-linux-x64.tar.gz` | Linux | x86_64 | Host companion; bundled Bun + sherpa-onnx |
+| `ocremote-host-1.0.6-linux-arm64.tar.gz` | Linux | arm64 | Host companion; bundled arm64 Bun + sherpa-onnx |
+| `ocremote-relay-1.0.6-linux-amd64.tar.gz` | Linux | x86_64 | Relay binary + README |
+| `ocremote-relay-1.0.6-linux-arm64.tar.gz` | Linux | arm64 | Relay binary + README |
 
 `SHA256SUMS` verifies every asset. The release APKs are currently signed with
 the Expo debug keystore; replace it with a production keystore before
@@ -70,7 +70,7 @@ distributing them to end users.
 ### Same LAN: direct only
 
 ```bash
-tar xzf ocremote-host-1.0.5-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-1.0.6-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -108,11 +108,11 @@ phones. Routes are independent and can be changed while the host runs:
 
 Use the APK matching the device:
 
-- `ocremote-1.0.5-android-arm64-v8a.apk` for real Android devices.
-- `ocremote-1.0.5-android-x86_64.apk` for an x86_64 emulator.
+- `ocremote-1.0.6-android-arm64-v8a.apk` for real Android devices.
+- `ocremote-1.0.6-android-x86_64.apk` for an x86_64 emulator.
 
 ```bash
-adb install ocremote-1.0.5-android-arm64-v8a.apk
+adb install ocremote-1.0.6-android-arm64-v8a.apk
 ```
 
 ### Add a host
@@ -139,6 +139,16 @@ visits reopen the last session you were reading.
   skills, dictation engine.
 - Background tasks: running tools, shells and subagents; view or stop supported
   tasks.
+
+Pairing returns to the host list. A new host opens to an empty workspace. Later visits reopen the last session for that host, with the empty workspace as the fallback if the session was deleted.
+
+Tap **New session** to use a known OpenCode project, browse from the host's home directory, or enter a path within that directory. The app validates the path before creating a session.
+
+While reading history, use **Jump to latest** to resume following new output. After reconnecting, the phone fetches missing history. If the sync fails, the existing transcript stays visible with a **Retry** action.
+
+Tap **Background tasks** to expand task details. **Stop** interrupts the current agent, child sessions and cancellable background tasks. Cancel queued messages separately above the composer. OpenCode cleans up temporary output when it terminates a shell. Output already recorded in the session stays in the transcript.
+
+The workspace shows host and OpenCode availability separately. It resumes syncing when OpenCode returns.
 
 ### Commands
 
@@ -182,7 +192,7 @@ box and is never sent automatically.
 The Linux x64/arm64 archives are self-contained (Bun and sherpa-onnx included):
 
 ```bash
-tar xzf ocremote-host-1.0.5-linux-x64.tar.gz   # use linux-arm64 on arm64
+tar xzf ocremote-host-1.0.6-linux-x64.tar.gz   # use linux-arm64 on arm64
 cd ocremote
 ./ocremote start
 ```
@@ -372,8 +382,7 @@ One relay per data directory (pid-file singleton); a second start fails with
 Autostart ships as a **system-level service** (written to `/etc/systemd/system`
 on Linux, a LaunchDaemon on macOS), owned by PID 1 and independent of any
 login session — the relay keeps running after you log out of SSH and starts on
-boot. `service install` freezes the current flags into the unit; re-running
-install while the service is running updates the configuration and restarts.
+boot. `service install` writes the effective settings to `relay-config.json`, which the service reads at startup. On Linux, reinstalling restarts an active service. After editing the config file, apply it with `systemctl restart ocremote-relay.service`.
 Installing and uninstalling require root:
 
 ```bash
@@ -464,9 +473,9 @@ bunx expo run:android
 
 cd apps/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-1.0.5-linux-amd64 ./cmd/relay
+  -o ../../dist/ocremote-relay-1.0.6-linux-amd64 ./cmd/relay
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
-  -o ../../dist/ocremote-relay-1.0.5-linux-arm64 ./cmd/relay
+  -o ../../dist/ocremote-relay-1.0.6-linux-arm64 ./cmd/relay
 
 cd apps/mobile
 bunx expo prebuild --platform android --clean
@@ -518,6 +527,21 @@ Credentials are stored in Android SecureStore, not in the repository:
 - `ocremote.device.<hostId>` — device id and token.
 - `ocremote.relay.<relay-url>` — relay subject id and secret.
 
+### Emulator and network checks
+
+Use an isolated OpenCode 2.x server for write tests. This audit used the [OpenCode 2.4.2 API](https://opencode.ai/docs/api). Start the relay and Toxiproxy with a separate data directory:
+
+```bash
+RELAY_DEV_DATA_DIR="$(mktemp -d)" docker compose -f docker-compose.dev.yml up -d --build
+curl -fsS http://127.0.0.1:8474/proxies -H 'Content-Type: application/json' \
+  -d '{"name":"relay","listen":"0.0.0.0:26379","upstream":"relay:8443"}'
+adb reverse tcp:26379 tcp:26379
+```
+
+Run `./ocremote relay 127.0.0.1:26379` on the test host and pair with its relay link. Use Toxiproxy to add latency, limit bandwidth, or disable and restore the relay proxy. Check that the transcript catches up and finished activities disappear. Use a local provider with paced output to reproduce scrolling during a live OpenCode turn. [Project issues](https://github.com/primercoder/opencode-app/issues?q=is%3Aissue)
+
+The audit used Android API 35 x86_64 and OpenCode 2.4.2. With 220 ± 30 ms of downstream latency and a 96 KB/s limit in Toxiproxy, the relay connection recovered and returned all 75 test records across two pages. Emulator checks covered pairing, directory validation, session restoration and fallback, scroll position during streaming, task details, stopping active work, and resync after restarting OpenCode.
+
 ## Troubleshooting
 
 **Phone cannot reach the host directly**
@@ -558,3 +582,5 @@ Credentials are stored in Android SecureStore, not in the repository:
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). The Noise and
 protected-record implementation contains portions adapted from Paseo.
+
+Release notes: [docs/releases/v1.0.6.md](docs/releases/v1.0.6.md).

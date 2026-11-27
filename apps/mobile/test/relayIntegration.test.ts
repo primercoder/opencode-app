@@ -131,7 +131,22 @@ describe("relay v4 end to end", () => {
     const recovered = await runtime.request({ method: "GET", path: "/api/info" })
     expect(recovered.status).toBe(200)
     expect(JSON.parse(recovered.body).version).toBe("relay-2.2.7")
-  }, 90_000)
+
+    // The relay can accept clients before the host has recovered its socket.
+    // ROOM_FULL in that window must retry with the existing device credentials.
+    await host.setRelay(null)
+    for (let attempt = 0; attempt < 60 && runtime.lastError?.code !== "RELAY_ROOM_FULL"; attempt += 1) {
+      await Bun.sleep(250)
+    }
+    expect(runtime.lastError?.code).toBe("RELAY_ROOM_FULL")
+    expect(runtime.lastError?.kind).toBe("network")
+    await host.setRelay(relayConfig)
+    for (let attempt = 0; attempt < 60 && runtime.state !== "ready"; attempt += 1) {
+      await Bun.sleep(250)
+    }
+    expect(runtime.state).toBe("ready")
+    expect((await runtime.request({ method: "GET", path: "/api/info" })).status).toBe(200)
+  }, 120_000)
 })
 
 async function enrollClient(link: string, room: string): Promise<{ subjectId: string; secret: string; relayKey: string }> {

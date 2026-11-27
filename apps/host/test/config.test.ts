@@ -63,6 +63,10 @@ describe("host route configuration", () => {
     const offer = parsePairingOffer(routes[0]!.offer)
     expect(offer.transports.map((transport) => transport.kind)).toEqual(["lan"])
 
+    await expect(host.setDirect({ hostname: "0.0.0.0", port: opencode.port! })).rejects.toThrow()
+    expect(host.direct()?.port).toBe(direct?.port)
+    expect((await fetch(`http://127.0.0.1:${direct?.port}/health`)).ok).toBe(true)
+
     await host.setDirect(null)
     expect(host.direct()).toBeUndefined()
     await expect(host.pairingRoutes()).rejects.toThrow(/no phone-reachable transport/u)

@@ -44,7 +44,7 @@
             <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
           </button>
           <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub repository" rel="noreferrer"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" /></svg></a>
-          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">Download 1.0.5 <span class="arrow">↓</span></a>
+          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">Download 1.0.6 <span class="arrow">↓</span></a>
           <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="site-menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button>
         </div>
       </div>
@@ -53,7 +53,7 @@
     <main id="main">
       <section class="page-hero">
         <div class="wrap">
-          <p class="eyebrow"><span class="dot"></span>QUICK START · 1.0.5</p>
+          <p class="eyebrow"><span class="dot"></span>QUICK START · 1.0.6</p>
           <h1>Connect to opencode in three steps.</h1>
           <p class="lede">Run the host next to opencode, operate it from the phone, and add a relay only when you leave the LAN. Commands below use Linux x64; swap the archive name for arm64 when needed.</p>
         </div>
@@ -63,7 +63,7 @@
         <div class="wrap prose-grid">
           <aside class="sticky-note">
             <h2>Before you start</h2>
-            <p>opencode 2.x is running; the phone and computer share a network, or you have a relay ready; the APK matches the phone ABI.</p>
+            <p>Install OpenCode 2.x on the computer. Keep the phone and computer on the same network or make a relay available to both. Choose the APK for your phone’s CPU architecture.</p>
             <a class="inline-cta" href="https://github.com/primercoder/opencode-app/releases/latest">Get the latest release <span>↗</span></a>
             <div class="callout" style="margin-top: 22px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16v.1" /></svg>A relay is optional. Prefer direct LAN: one less network boundary and one less service to maintain.</div>
           </aside>
@@ -71,18 +71,19 @@
             <article class="step">
               <span class="step-num">01</span><h3>Start the host</h3>
               <p>Extract the host archive and run it. The host reads the local opencode service registration; the opencode password stays on the computer.</p>
-              <div class="code-block"><div class="code-head"><i></i><i></i><i></i><span>HOST · LINUX X64</span><button class="copy" type="button" data-copy-target="host-x64">Copy</button></div><pre id="host-x64">tar xzf ocremote-host-1.0.5-linux-x64.tar.gz
+              <div class="code-block"><div class="code-head"><i></i><i></i><i></i><span>HOST · LINUX X64</span><button class="copy" type="button" data-copy-target="host-x64">Copy</button></div><pre id="host-x64">tar xzf ocremote-host-1.0.6-linux-x64.tar.gz
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
 ./ocremote pair</pre></div>
-              <p>On arm64 use <code>ocremote-host-1.0.5-linux-arm64.tar.gz</code>. It runs in the background by default; manage it with <code>./ocremote status</code>, <code>clients</code> and <code>stop</code>.</p>
+              <p>The OC Remote host can start before OpenCode. The workspace shows host and OpenCode availability separately and resumes syncing when OpenCode returns.</p>
+              <p>On arm64 use <code>ocremote-host-1.0.6-linux-arm64.tar.gz</code>. It runs in the background by default; manage it with <code>./ocremote status</code>, <code>clients</code> and <code>stop</code>.</p>
             </article>
             <article class="step">
               <span class="step-num">02</span><h3>Install and pair the phone</h3>
               <p>Use <code>android-arm64-v8a.apk</code> on a real device and <code>android-x86_64.apk</code> on an x86_64 emulator. Open the app, tap <strong>+</strong>, then scan the host QR or paste the pairing link.</p>
-              <div class="code-block"><div class="code-head"><i></i><i></i><i></i><span>ANDROID</span><button class="copy" type="button" data-copy-target="phone-install">Copy</button></div><pre id="phone-install">adb install ocremote-1.0.5-android-arm64-v8a.apk</pre></div>
-              <p>Compare the host fingerprint before connecting. Pair codes are single-use and expire after five minutes by default. The device token is stored in Android SecureStore.</p>
+              <div class="code-block"><div class="code-head"><i></i><i></i><i></i><span>ANDROID</span><button class="copy" type="button" data-copy-target="phone-install">Copy</button></div><pre id="phone-install">adb install ocremote-1.0.6-android-arm64-v8a.apk</pre></div>
+              <p>Compare the host fingerprint before connecting. Pair codes are single-use and expire after five minutes by default. Pairing returns to the host list and stores the device token in Android SecureStore. On the first visit, open the session drawer to choose an existing session or create one in a directory under the host’s home.</p>
             </article>
             <article class="step">
               <span class="step-num">03</span><h3>Add a relay only when needed</h3>
@@ -107,7 +108,7 @@ cd ocremote
               <tr><td><strong>Direct port</strong></td><td><code>8787</code></td><td>Phone and host on the same LAN</td></tr>
               <tr><td><strong>Relay port</strong></td><td><code>8443</code></td><td>Noise NK authentication; TLS optional</td></tr>
               <tr><td><strong>Host config</strong></td><td><code>~/.config/ocremote/</code></td><td>identity.json, config.json; mode 0600</td></tr>
-              <tr><td><strong>Relay data</strong></td><td><code>./data/</code></td><td>relay.db, relay-identity.json, admin.sock; optional tls/</td></tr>
+              <tr><td><strong>Relay data</strong></td><td><code>./data/</code></td><td>relay-config.json, relay.db, relay-identity.json, admin.sock; optional tls/</td></tr>
               <tr><td><strong>Speech models</strong></td><td><code>~/.local/share/ocremote/models/</code></td><td>Host SenseVoice; phone Whisper is separate</td></tr>
             </tbody></table>
           </div>

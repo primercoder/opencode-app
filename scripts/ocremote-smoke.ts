@@ -32,10 +32,17 @@ const host = await startHost({
   opencodePassword: service.password,
 })
 
+const direct = host.direct()
+if (!direct) {
+  await host.close()
+  await rm(home, { recursive: true, force: true })
+  throw new Error("temporary LAN listener did not start")
+}
+
 const runtime = new HostRuntime({
   hostId: host.identity.hostId,
   hostPublicKey: host.identity.publicKey,
-  candidates: [`ws://127.0.0.1:${host.port}/ws`],
+  candidates: [`ws://127.0.0.1:${direct.port}/ws`],
   pairCode: await host.issuePairCode(),
   autoReconnect: false,
 })

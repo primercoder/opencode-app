@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"ocremote/relay/internal/relay"
 )
 
 func TestCheckPidFileSingleton(t *testing.T) {
@@ -135,7 +137,7 @@ func TestRequireRoot(t *testing.T) {
 	}
 }
 
-func TestSystemdUnitAndLaunchdPlistFreezeFlags(t *testing.T) {
+func TestSystemdUnitAndLaunchdPlistReadSavedConfig(t *testing.T) {
 	cfg := &serveConfig{
 		dataDir:    "/var/lib/ocremote-relay",
 		listen:     "0.0.0.0:8443",
@@ -146,10 +148,8 @@ func TestSystemdUnitAndLaunchdPlistFreezeFlags(t *testing.T) {
 	}
 	unit := systemdUnitText("/usr/local/bin/ocremote-relay", cfg)
 	for _, want := range []string{
-		"ExecStart=/usr/local/bin/ocremote-relay serve",
-		"--listen 0.0.0.0:8443",
-		"--public-url ws://203.0.113.10:8443/ws",
-		"--max-hosts 4",
+		"ExecStart=/usr/local/bin/ocremote-relay serve --data-dir /var/lib/ocremote-relay",
+		"WorkingDirectory=/var/lib/ocremote-relay",
 		"Restart=on-failure",
 		"RestartSec=3",
 		"WantedBy=multi-user.target",
@@ -158,15 +158,16 @@ func TestSystemdUnitAndLaunchdPlistFreezeFlags(t *testing.T) {
 			t.Fatalf("unit missing %q:\n%s", want, unit)
 		}
 	}
-	if strings.Contains(unit, "--daemon") {
-		t.Fatal("service unit must run the relay in the foreground, not --daemon")
+	if strings.Contains(unit, "--daemon") || strings.Contains(unit, "--listen") {
+		t.Fatal("service unit must start in the foreground and load serving options from the data directory")
 	}
 
 	plist := launchdPlistText("/usr/local/bin/ocremote-relay", cfg)
 	for _, want := range []string{
 		"<string>/usr/local/bin/ocremote-relay</string>",
 		"<string>serve</string>",
-		"<string>0.0.0.0:8443</string>",
+		"<string>--data-dir</string>",
+		"<string>/var/lib/ocremote-relay</string>",
 		"<key>RunAtLoad</key>",
 		"<key>KeepAlive</key>",
 		"<string>/var/lib/ocremote-relay/relay.log</string>",
@@ -245,6 +246,9 @@ func TestServeConfigFilePersistence(t *testing.T) {
 	if first.listen != "127.0.0.1:18510" || first.publicURL != "ws://203.0.113.10:18510/ws" || first.maxHosts != 7 || first.maxClients != 5 {
 		t.Fatalf("explicit flags lost: %+v", first)
 	}
+	if err := first.saveFileConfig(); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(configFilePath(dataDir))
 	if err != nil {
 		t.Fatalf("config file not written: %v", err)
@@ -269,6 +273,9 @@ func TestServeConfigFilePersistence(t *testing.T) {
 	}
 	if third.maxHosts != 9 {
 		t.Fatalf("explicit override lost: %+v", third)
+	}
+	if err := third.saveFileConfig(); err != nil {
+		t.Fatal(err)
 	}
 	after, err := parseServeFlags([]string{"--data-dir", dataDir})
 	if err != nil {
@@ -309,5 +316,34 @@ func TestAdminParsesFlagsAfterSubcommand(t *testing.T) {
 	}
 	if *dataDir != "/tmp/x" {
 		t.Fatalf("flag after subcommand dropped: %q", *dataDir)
+	}
+}
+
+func TestAdminRevokeWithOneSubjectArgument(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "relay.db")
+	store, err := relay.OpenStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, _, err := store.EnrollHost("audit-host", "Test host", 3)
+	if closeErr := store.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runAdmin([]string{"revoke", "--data-dir", dir, subject.ID}); err != nil {
+		t.Fatal(err)
+	}
+	store, err = relay.OpenStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	got, ok := store.Subject(subject.ID)
+	if !ok || got.RevokedAt == 0 {
+		t.Fatalf("subject was not revoked: %+v", got)
 	}
 }

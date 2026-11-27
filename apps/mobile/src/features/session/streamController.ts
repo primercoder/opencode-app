@@ -74,6 +74,7 @@ export class SessionStreamController {
     if (
       type === "session.execution.succeeded" ||
       type === "session.execution.failed" ||
+      type === "session.execution.interrupted" ||
       type === "session.execution.cancelled" ||
       type === "session.execution.ended"
     ) {

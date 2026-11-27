@@ -72,7 +72,7 @@ export function useSessionIndex(hostId: string | undefined, enabled: boolean) {
     void load()
     let timer: ReturnType<typeof setTimeout> | undefined
     const unsubscribe = subscribeHostEvents(hostId, (event) => {
-      if (!event.type || !/^(session|message)\./u.test(event.type)) return
+      if (!event.type || !/^(?:server\.connected$|session\.(?:execution\.|idle$|created$|deleted$|renamed$|archived$|unarchived$|moved$|forked$))/u.test(event.type)) return
       if (timer) clearTimeout(timer)
       timer = setTimeout(() => void load({ silent: true }), 800)
     })

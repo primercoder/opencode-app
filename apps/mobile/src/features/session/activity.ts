@@ -1,4 +1,4 @@
-import { sessionBusy, toMillis, type ModelInfo, type SessionInfo, type SessionMessage } from "@/opencode/client"
+import { sessionBusy, toMillis, type BackgroundJob, type ModelInfo, type SessionInfo, type SessionMessage } from "@/opencode/client"
 
 export type RunningActivity =
   | {
@@ -20,12 +20,22 @@ export type RunningActivity =
       status?: string
       started?: number
       detail?: string
+      shellId?: string
     }
   | {
       kind: "subagent"
       key: string
       label: string
       sessionId: string
+      started?: number
+      detail?: string
+    }
+  | {
+      kind: "job"
+      key: string
+      label: string
+      jobId: string
+      status: string
       started?: number
       detail?: string
     }
@@ -67,15 +77,22 @@ function toolDetail(input: unknown): string | undefined {
 export function runningActivities(
   messages: SessionMessage[],
   children: SessionInfo[],
-  options: { busy?: boolean; now?: number } = {},
+  options: { busy?: boolean; now?: number; runningShellIds?: ReadonlySet<string>; jobs?: BackgroundJob[] } = {},
 ): RunningActivity[] {
   const activities: RunningActivity[] = []
   const now = options.now ?? Date.now()
   const busy = options.busy ?? false
+  const jobs = options.jobs ?? []
+  const jobShellIds = new Set(jobs.map((job) => job.shellID))
+  const jobChildIds = new Set(jobs.map((job) => job.childSessionID))
 
   for (const message of messages) {
     if (message.type === "shell" && message.status === "running") {
-      if (!busy) {
+      const shellId = message.shellID
+      if (shellId && jobShellIds.has(shellId)) continue
+      if (options.runningShellIds && shellId) {
+        if (!options.runningShellIds.has(shellId)) continue
+      } else if (!busy) {
         const started = toMillis(message.time?.created)
         if (started > 0 && now - started > SHELL_STALE_MS) continue
       }
@@ -84,6 +101,7 @@ export function runningActivities(
         key: message.id,
         label: message.command ?? "shell",
         sessionId: message.shellID ?? message.id,
+        shellId,
         status: message.status,
         started: toMillis(message.time?.created) || undefined,
         detail: message.description ?? message.command,
@@ -95,6 +113,9 @@ export function runningActivities(
       const status = block.state?.status ?? "running"
       if (status !== "running" && status !== "streaming" && status !== "pending") continue
       if (!busy) {
+        // OpenCode reports detached work as jobs. A cached foreground tool
+        // cannot still be running after an idle turn with a current job list.
+        if (options.jobs) continue
         const started = toMillis(block.time?.created) || toMillis(message.time?.created)
         if (started > 0 && now - started > TOOL_STALE_MS) continue
         // A live tool without a timestamp while the turn already ended is a
@@ -115,7 +136,7 @@ export function runningActivities(
   }
 
   for (const child of children) {
-    if (!sessionBusy(child)) continue
+    if (!sessionBusy(child) || jobChildIds.has(child.id)) continue
     activities.push({
       kind: "subagent",
       key: child.id,
@@ -123,6 +144,18 @@ export function runningActivities(
       sessionId: child.id,
       started: toMillis(child.time?.busy) || toMillis(child.time?.created) || undefined,
       detail: child.agent ? `agent: ${child.agent}` : undefined,
+    })
+  }
+
+  for (const job of jobs) {
+    activities.push({
+      kind: "job",
+      key: job.id,
+      jobId: job.id,
+      label: job.title || job.command || job.description || job.kind,
+      status: job.status,
+      started: job.time?.started,
+      detail: job.command || job.description || job.path || job.agent,
     })
   }
   return activities

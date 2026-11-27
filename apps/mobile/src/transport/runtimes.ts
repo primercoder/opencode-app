@@ -22,13 +22,13 @@ export async function ensureConnection(hostId: string, options: { force?: boolea
   if (options.force) closeRuntime(hostId)
 
   const existing = runtimes.get(hostId)
-  if (existing?.state === "ready") {
-    ensureEventStream(hostId, existing)
-    return existing
-  }
+  if (existing?.state === "ready") return existing
 
   const pendingConnection = pending.get(hostId)
   if (pendingConnection) return pendingConnection
+  // The existing runtime owns its reconnect backoff and event stream. Requests
+  // during an outage must not replace it or discard the screen's subscribers.
+  if (existing) throw existing.lastError ?? new HostError("network", "host is reconnecting")
 
   const promise = openConnection(hostId)
   pending.set(hostId, promise)
@@ -192,9 +192,11 @@ async function openConnection(hostId: string): Promise<HostRuntime> {
   try {
     await runtime.connect()
   } catch (error) {
-    runtimes.delete(hostId)
-    runtime.disconnect()
     const failure = error instanceof HostError ? error : new HostError("network", error instanceof Error ? error.message : "连接失败")
+    if (failure.kind !== "network" && failure.kind !== "timeout") {
+      runtimes.delete(hostId)
+      runtime.disconnect()
+    }
     useConnections.getState().patch(hostId, {
       status: "error",
       error: { kind: failure.kind, message: failure.message, ...(failure.code ? { code: failure.code } : {}) },
@@ -202,7 +204,6 @@ async function openConnection(hostId: string): Promise<HostRuntime> {
     throw failure
   }
 
-  ensureEventStream(hostId, runtime)
   await useHosts.getState().touchHost(hostId, transportKind(host.transports, runtime.activeCandidate))
   const session = runtime.session
   useConnections.getState().patch(hostId, {
@@ -220,7 +221,6 @@ function ensureEventStream(hostId: string, runtime?: HostRuntime): HostEventStre
   const existing = eventStreams.get(hostId)
   if (existing) return existing
   const stream = new HostEventStream(active)
-  stream.start()
   eventStreams.set(hostId, stream)
   return stream
 }

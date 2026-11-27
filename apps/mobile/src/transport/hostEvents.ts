@@ -28,6 +28,7 @@ export type HostEventSource = {
  */
 export class HostEventStream {
   private running = false
+  private generation = 0
   private abort: AbortController | undefined
   private readonly listeners = new Set<(event: OpencodeEvent) => void>()
   private errorListeners = new Set<(error: Error) => void>()
@@ -37,7 +38,7 @@ export class HostEventStream {
   start(): void {
     if (this.running) return
     this.running = true
-    void this.loop()
+    void this.loop(++this.generation)
   }
 
   stop(): void {
@@ -48,7 +49,11 @@ export class HostEventStream {
 
   subscribe(listener: (event: OpencodeEvent) => void): () => void {
     this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
+    this.start()
+    return () => {
+      this.listeners.delete(listener)
+      if (this.listeners.size === 0) this.stop()
+    }
   }
 
   onError(listener: (error: Error) => void): () => void {
@@ -56,9 +61,10 @@ export class HostEventStream {
     return () => this.errorListeners.delete(listener)
   }
 
-  private async loop(): Promise<void> {
+  private async loop(generation: number): Promise<void> {
+    const isCurrent = () => this.running && this.generation === generation
     let failures = 0
-    while (this.running) {
+    while (isCurrent()) {
       if (this.source.state !== "ready") {
         await delay(1_000)
         continue
@@ -76,14 +82,15 @@ export class HostEventStream {
           signal: controller.signal,
           timeoutMs: 0,
           onChunk: (text) => {
+            if (!isCurrent()) return
             streamed = true
             failures = 0
             for (const raw of parser.push(text)) this.dispatch(raw.data)
           },
         })
-        for (const raw of parser.flush()) this.dispatch(raw.data)
+        if (isCurrent()) for (const raw of parser.flush()) this.dispatch(raw.data)
       } catch (error) {
-        if (!this.running) return
+        if (!isCurrent()) return
         if (controller.signal.aborted) return
         const failure = error instanceof Error ? error : new Error("event stream failed")
         for (const listener of this.errorListeners) listener(failure)
@@ -91,7 +98,7 @@ export class HostEventStream {
         if (this.abort === controller) this.abort = undefined
       }
 
-      if (!this.running) return
+      if (!isCurrent()) return
       // Back off when the stream keeps failing without delivering data, so an
       // unreachable host does not cause a reconnect every second.
       failures = streamed ? 0 : failures + 1

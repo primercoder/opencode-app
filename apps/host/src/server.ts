@@ -208,12 +208,8 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
     if (server) await server.stop(true)
   }
 
-  const startDirect = async (direct: DirectConfig): Promise<DirectStatus> => {
-    if (directStatus && directStatus.hostname === direct.hostname && directStatus.port === direct.port) {
-      return directStatus
-    }
-    await stopDirect()
-    const server = Bun.serve<unknown>({
+  const bindDirect = (direct: DirectConfig) =>
+    Bun.serve<unknown>({
       hostname: direct.hostname,
       port: direct.port,
       fetch(request, current) {
@@ -261,6 +257,32 @@ export async function startHost(options: HostOptions = {}): Promise<Host> {
         },
       },
     })
+
+  const startDirect = async (direct: DirectConfig): Promise<DirectStatus> => {
+    const previous = directStatus
+    if (previous && previous.hostname === direct.hostname && previous.port === direct.port) return previous
+
+    // Different ports can coexist until the new bind succeeds. Changing the
+    // interface on the same port may require releasing that port first.
+    const rebind = previous?.port === direct.port
+    if (rebind) await stopDirect()
+    let server: Bun.Server<unknown>
+    try {
+      server = bindDirect(direct)
+    } catch (error) {
+      if (rebind && previous) {
+        try {
+          directServer = bindDirect(previous)
+          directStatus = previous
+          ctx.lanUrls = previous.urls
+        } catch (restoreError) {
+          throw new AggregateError([error, restoreError], "Could not change or restore the direct listener")
+        }
+      }
+      throw error
+    }
+    if (!rebind) await stopDirect()
+
     const actualPort = server.port ?? direct.port
     directServer = server
     directStatus = {

@@ -18,7 +18,7 @@
 | 语音 | 手机 Whisper、主机 SenseVoice、Android 系统识别三选一或自动回退 |
 | 连接 | 局域网直连或自建中继；Noise NK 认证；可选 TLS；配对码一次性有效；支持设备撤销 |
 
-opencode 始终只监听 `127.0.0.1`。主机读取本机服务注册信息，opencode 密码不会离开电脑。
+适用于 OpenCode 2.x 的 `/api` 服务。本轮在 OpenCode 2.4.2 上验证。OpenCode 可只监听 `127.0.0.1`，OC Remote 主机从本机服务注册信息获取连接配置。手机连接的是 OC Remote 主机，OpenCode 密码留在电脑上。
 
 ## 下载
 
@@ -26,12 +26,12 @@ Release 资源文件名包含操作系统和 CPU 架构。
 
 | 文件 | 平台 | 架构 | 用途 |
 |---|---|---|---|
-| `ocremote-1.0.5-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
-| `ocremote-1.0.5-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
-| `ocremote-host-1.0.5-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
-| `ocremote-host-1.0.5-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
-| `ocremote-relay-1.0.5-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
-| `ocremote-relay-1.0.5-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
+| `ocremote-1.0.6-android-arm64-v8a.apk` | Android | arm64-v8a | 真机、平板 |
+| `ocremote-1.0.6-android-x86_64.apk` | Android | x86_64 | 模拟器、x86_64 设备 |
+| `ocremote-host-1.0.6-linux-x64.tar.gz` | Linux | x86_64 | 主机端，自带 Bun 和 sherpa-onnx |
+| `ocremote-host-1.0.6-linux-arm64.tar.gz` | Linux | arm64 | 主机端，自带 arm64 Bun 和 sherpa-onnx |
+| `ocremote-relay-1.0.6-linux-amd64.tar.gz` | Linux | x86_64 | 中继 + 说明 |
+| `ocremote-relay-1.0.6-linux-arm64.tar.gz` | Linux | arm64 | 中继 + 说明 |
 
 `SHA256SUMS` 可校验全部资源。当前 APK 仍使用 Expo debug keystore 签名，正式分发前需要替换生产 keystore。
 
@@ -40,7 +40,7 @@ Release 资源文件名包含操作系统和 CPU 架构。
 ### 同一局域网：只开直连
 
 ```bash
-tar xzf ocremote-host-1.0.5-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-1.0.6-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ./ocremote direct 0.0.0.0:8787
@@ -77,14 +77,14 @@ cd ocremote
 ### 安装与配对
 
 ```bash
-adb install ocremote-1.0.5-android-arm64-v8a.apk
+adb install ocremote-1.0.6-android-arm64-v8a.apk
 ```
 
 1. 打开 OC Remote，点右上角 **+**。
 2. 扫描主机二维码，或选择 **粘贴链接**。
 3. 核对手机上显示的主机指纹与电脑一致。
 4. 点 **连接并配对**。中继线路会自动登记，不需要手动粘贴中继邀请。
-5. 设备令牌和中继凭据保存在 Android SecureStore。
+5. 配对成功后返回主机列表。首次进入新主机时显示空白工作区，之后恢复上次打开的会话。会话被删除后会回到空白工作区。设备令牌和中继凭据保存在 Android SecureStore。
 
 主机设置里的 **添加连接方式** 只保存两类线路：直连和中继。再次添加同一类型会覆盖旧线路，不会堆叠；最多各一条。扫码入口使用全屏相机，避免嵌套弹层导致无法识别。
 
@@ -98,7 +98,13 @@ adb install ocremote-1.0.5-android-arm64-v8a.apk
 | 输入区 | 消息、语音、排队提示、发送/停止 |
 | 底部状态栏 | Agent、模型、思考深度、上下文用量；点按打开会话设置 |
 
-从屏幕左侧向右滑可以跟手拉出会话抽屉，向左滑回退。
+从屏幕左侧向右滑可以拉出会话抽屉。点 **新建会话** 后可选最近的 OpenCode 项目，也可从家目录逐级展开，或输入家目录内的相对路径和绝对路径。手机会在创建前显示路径校验结果。
+
+阅读历史时，会话保留当前阅读位置。点 **回到最新内容** 可继续跟随流式输出。网络恢复后，手机会补拉漏掉的记录。如果同步失败，会保留已有记录并显示 **重试**。
+
+点 **后台任务** 可展开任务详情。全局 **停止** 可停止当前 Agent、子会话和可取消的后台任务。排队消息在输入框上方单独取消。OpenCode 会清理被终止 Shell 的临时输出，已写入会话记录的内容仍可查看。
+
+主机在线与 OpenCode 可用是两个状态。OpenCode 停止或重启时，工作区提示服务不可用，服务恢复后自动同步。
 
 ### 命令
 
@@ -125,7 +131,7 @@ adb install ocremote-1.0.5-android-arm64-v8a.apk
 ### 安装与运行
 
 ```bash
-tar xzf ocremote-host-1.0.5-linux-x64.tar.gz   # arm64 使用 linux-arm64
+tar xzf ocremote-host-1.0.6-linux-x64.tar.gz   # arm64 使用 linux-arm64
 cd ocremote
 ./ocremote start
 ```
@@ -236,7 +242,7 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 | `--tls-cert` / `--tls-key` | 无 | 可选 TLS 证书 |
 | `--log-level` | `info` | 日志级别 |
 
-配置持久化在 `<data-dir>/relay-config.json`：带参数启动时自动把生效配置写入该文件；之后裸运行（例如系统服务单元只传 `--data-dir`）会读取它，无需重复传参。优先级为命令行参数 > 环境变量 > 配置文件 > 内置默认——带任一参数重启一次即可完成改配置。
+配置持久化在 `<data-dir>/relay-config.json`：带参数启动时自动把生效配置写入该文件；之后裸运行（例如系统服务单元只传 `--data-dir`）会读取它。优先级为命令行参数、环境变量、配置文件、内置默认，按顺序查找。
 
 | 文件 | 内容 |
 |---|---|
@@ -293,7 +299,7 @@ x64 和 arm64 归档都自带对应架构的 Bun 与 sherpa-onnx，无需额外�
 
 同一数据目录同时只允许一个中继（pid 文件单例）；重复启动会报 `another relay is already running`。
 
-开机自启用**系统级服务**（Linux 写入 `/etc/systemd/system`，macOS 为 LaunchDaemon），由 PID 1 托管，不依赖任何登录会话——退出 SSH 或 root 登出后中继继续运行，开机也会自动启动。install 时当前启动参数会被固化进服务单元；服务已运行时再次 install 会更新配置并自动重启。安装与卸载需要 root：
+开机自启用**系统级服务**（Linux 为 systemd，macOS 为 LaunchDaemon）。`service install` 将生效配置写入 `relay-config.json`，服务启动时读取该文件。Linux 上重新安装会重启已运行的服务。编辑配置文件后可用 `systemctl restart ocremote-relay.service` 应用修改。安装与卸载需要 root。
 
 ```bash
 sudo ./ocremote-relay service install --data-dir ./data \
@@ -361,6 +367,21 @@ cd apps/relay && go run ./cmd/relay
 cd apps/mobile && bunx expo run:android
 ```
 
+### 模拟器和弱网验收
+
+在测试机上使用独立的 OpenCode 实例和中继数据目录。以下命令启动 Docker 中继和 Toxiproxy，将模拟器的本机端口转发到测试机：
+
+```bash
+RELAY_DEV_DATA_DIR="$(mktemp -d)" docker compose -f docker-compose.dev.yml up -d --build
+curl -fsS http://127.0.0.1:8474/proxies -H 'Content-Type: application/json' \
+  -d '{"name":"relay","listen":"0.0.0.0:26379","upstream":"relay:8443"}'
+adb reverse tcp:26379 tcp:26379
+```
+
+为**测试主机**运行 `./ocremote relay 127.0.0.1:26379`，使用 `./ocremote pair` 输出的中继链接配对。验收时可以在 Toxiproxy 增加延迟、限制带宽，或将 `relay` 代理切换为禁用再恢复。检查会话能否续接和补齐、已结束任务是否消失。使用真实 OpenCode 服务验证接口，用定时输出的本地模型验证流式滚动。验收用例对应 [GitHub Issues #1–#10](https://github.com/primercoder/opencode-app/issues?q=is%3Aissue) 和 [OpenCode API](https://opencode.ai/docs/api)。
+
+本轮使用 Android API 35 x86_64 和 OpenCode 2.4.2。在 Toxiproxy 下行延迟 220 ± 30 毫秒、限速 96 KB/s 的配置下恢复中继连接，核对了跨两页的 75 条记录。模拟器覆盖配对、目录校验、恢复或回退到空白会话、流式历史定位、任务详情和停止，以及 OpenCode 恢复后的自动同步。
+
 ## 故障排查
 
 | 现象 | 处理 |
@@ -376,3 +397,5 @@ cd apps/mobile && bunx expo run:android
 ## 许可证
 
 Apache-2.0。见 [`LICENSE`](LICENSE) 和 [`NOTICE`](NOTICE)。Noise 与受保护记录实现包含改编自 Paseo 的部分。
+
+本次 Release 说明见 [docs/releases/v1.0.6.md](docs/releases/v1.0.6.md)。

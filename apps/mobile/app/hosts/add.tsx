@@ -36,7 +36,7 @@ export default function AddHostScreen() {
   const [offer, setOffer] = useState<PairingOffer | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [stage, setStage] = useState<PairingStage | null>(null)
-  const [mode, setMode] = useState<"scan" | "paste">("scan")
+  const [mode, setMode] = useState<"scan" | "paste">(urlParam ? "paste" : "scan")
   const [scanLocked, setScanLocked] = useState(false)
   const [resolving, setResolving] = useState(false)
   const [permission, requestPermission] = useCameraPermissions()
@@ -56,7 +56,6 @@ export default function AddHostScreen() {
     try {
       const resolved = await resolvePairingInput(value)
       setOffer(parsePairingOffer(resolved))
-      setMode("scan")
     } catch (cause) {
       setOffer(null)
       setError(cause instanceof Error ? cause.message : t("pairingFailed"))
@@ -121,11 +120,13 @@ export default function AddHostScreen() {
           ]}
           onChange={(value) => {
             setMode(value)
+            if (busy) return
+            setOffer(null)
             setError(null)
           }}
         />
 
-        {mode === "scan" ? (
+        {!offer && (mode === "scan" ? (
           <View style={{ marginTop: 14, gap: 10 }}>
             {permission?.granted ? (
               <View style={styles.scannerWrap}>
@@ -143,23 +144,9 @@ export default function AddHostScreen() {
                   }
                   style={styles.scanner}
                 />
-                {!offer ? (
-                  <View style={styles.scanOverlay} pointerEvents="none">
-                    <View style={styles.scanFrame} />
-                  </View>
-                ) : (
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => {
-                      setOffer(null)
-                      setScanLocked(false)
-                    }}
-                    style={styles.rescan}
-                  >
-                    <Icon name="refresh" size={14} color={colors.accent} />
-                    <Text style={{ fontSize: 12.5, color: colors.accent, fontWeight: "600" }}>{t("rescan")}</Text>
-                  </Pressable>
-                )}
+                <View style={styles.scanOverlay} pointerEvents="none">
+                  <View style={styles.scanFrame} />
+                </View>
                 {resolving ? (
                   <View style={styles.resolving}>
                     <ActivityIndicator color="#FFFFFF" />
@@ -201,10 +188,22 @@ export default function AddHostScreen() {
             <Text style={styles.hint}>{t("pasteHint")}</Text>
             <Button label={t("parseLink")} size="sm" variant="outline" disabled={busy || !url.trim()} onPress={() => void parseText(url)} />
           </View>
-        )}
+        ))}
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
+        {offer && !busy ? (
+          <Button
+            label={mode === "scan" ? t("rescan") : t("pasteLink")}
+            variant="outline"
+            size="sm"
+            onPress={() => {
+              setOffer(null)
+              setScanLocked(false)
+              setError(null)
+            }}
+          />
+        ) : null}
         {offer ? (
           <Card style={{ marginTop: 14, padding: 16, gap: 8 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -331,18 +330,7 @@ const addStyles = (colors: Palette) =>
       borderWidth: 2,
       borderColor: "rgba(255,255,255,0.9)",
     },
-    rescan: {
-      position: "absolute",
-      bottom: 12,
-      alignSelf: "center",
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      backgroundColor: colors.bg,
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-      borderRadius: 999,
-    },
+
     resolving: {
       position: "absolute",
       top: 0,

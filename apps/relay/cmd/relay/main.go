@@ -21,7 +21,7 @@ import (
 	"ocremote/relay/internal/relay"
 )
 
-const version = "1.0.5"
+const version = "1.0.6"
 
 func main() {
 	var err error
@@ -160,7 +160,6 @@ type serveConfig struct {
 	logLevel    string
 	daemon      bool
 	daemonized  bool
-	rawArgs     []string
 
 	// explicit records which flags the user actually passed on the command
 	// line; only those are persisted back to the config file.
@@ -187,9 +186,7 @@ type relayFileConfig struct {
 	LogLevel    string `json:"logLevel,omitempty"`
 }
 
-// execArgs renders the flags that must survive a re-exec or a service unit.
-// It intentionally drops --daemon/--daemonized: those describe *how* the
-// process was started, not what it serves.
+// execArgs renders the serving flags for a detached re-exec.
 func (c *serveConfig) execArgs() []string {
 	args := []string{
 		"--data-dir", c.dataDir,
@@ -230,7 +227,7 @@ func (c *serveConfig) validate() error {
 // runServe and by `service install`.
 func parseServeFlags(args []string) (*serveConfig, error) {
 	flags := flag.NewFlagSet("ocremote-relay", flag.ContinueOnError)
-	cfg := &serveConfig{rawArgs: args, explicit: map[string]bool{}}
+	cfg := &serveConfig{explicit: map[string]bool{}}
 	flags.StringVar(&cfg.dataDir, "data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
 	flags.StringVar(&cfg.listen, "listen", env("RELAY_LISTEN", ":8443"), "listen address")
 	flags.StringVar(&cfg.publicURL, "public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
@@ -256,11 +253,6 @@ func parseServeFlags(args []string) (*serveConfig, error) {
 	// passing a flag overrides it for this run and updates the file.
 	if err := cfg.applyFileConfig(); err != nil {
 		return nil, err
-	}
-	if cfg.explicitAny() {
-		if err := cfg.saveFileConfig(); err != nil {
-			return nil, fmt.Errorf("save config: %w", err)
-		}
 	}
 	return cfg, nil
 }
@@ -337,11 +329,16 @@ func (c *serveConfig) saveFileConfig() error {
 	if err := os.MkdirAll(c.dataDir, 0o755); err != nil {
 		return err
 	}
-	tmp := configFilePath(c.dataDir) + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+	file, err := os.CreateTemp(c.dataDir, ".relay-config-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, configFilePath(c.dataDir))
+	defer os.Remove(file.Name())
+	_, writeErr := file.Write(append(data, '\n'))
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), configFilePath(c.dataDir))
 }
 
 func isEnvSet(name string) bool {
@@ -371,11 +368,12 @@ func runServe(args []string) error {
 	logger := newLogger(cfg.logLevel)
 	slog.SetDefault(logger)
 
-	if cfg.publicURL == "" {
-		cfg.publicURL = derivePublicURL(cfg.listen, cfg.certFile != "")
-		if strings.Contains(cfg.publicURL, "://127.0.0.1") || strings.Contains(cfg.publicURL, "://localhost") {
+	publicURL := cfg.publicURL
+	if publicURL == "" {
+		publicURL = derivePublicURL(cfg.listen, cfg.certFile != "")
+		if strings.Contains(publicURL, "://127.0.0.1") || strings.Contains(publicURL, "://localhost") {
 			if !cfg.daemonized {
-				fmt.Fprintf(os.Stderr, "warning: --public-url is not set; phone invites will use %s. Pass the public IP or domain for remote hosts.\n", cfg.publicURL)
+				fmt.Fprintf(os.Stderr, "warning: --public-url is not set; phone invites will use %s. Pass the public IP or domain for remote hosts.\n", publicURL)
 			}
 		}
 	}
@@ -384,7 +382,7 @@ func runServe(args []string) error {
 			DataDir:  cfg.dataDir,
 			CertFile: cfg.certFile,
 			KeyFile:  cfg.keyFile,
-			Host:     relay.TLSHostFromURL(cfg.publicURL, cfg.listen),
+			Host:     relay.TLSHostFromURL(publicURL, cfg.listen),
 		}); err != nil {
 			return fmt.Errorf("relay TLS: %w", err)
 		}
@@ -397,21 +395,21 @@ func runServe(args []string) error {
 		return fmt.Errorf("write pid file: %w", err)
 	}
 
+	defer os.Remove(pidPath)
+
 	store, err := relay.OpenStore(filepath.Join(cfg.dataDir, "relay.db"))
 	if err != nil {
-		_ = os.Remove(pidPath)
 		return err
 	}
 	defer store.Close()
 
 	relayKey, err := relay.LoadOrCreateRelayKey(cfg.dataDir)
 	if err != nil {
-		_ = os.Remove(pidPath)
 		return fmt.Errorf("relay identity: %w", err)
 	}
 	server := relay.New(relay.Config{
 		Store:      store,
-		PublicURL:  cfg.publicURL,
+		PublicURL:  publicURL,
 		RelayKey:   relayKey,
 		MaxHosts:   cfg.maxHosts,
 		MaxClients: cfg.maxClients,
@@ -428,7 +426,6 @@ func runServe(args []string) error {
 	}
 	adminServer, listener, err := server.ServeAdmin(socket)
 	if err != nil {
-		_ = os.Remove(pidPath)
 		return fmt.Errorf("admin socket: %w", err)
 	}
 	defer func() {
@@ -436,6 +433,17 @@ func runServe(args []string) error {
 		_ = listener.Close()
 		_ = os.Remove(socket)
 	}()
+
+	network, err := net.Listen("tcp", cfg.listen)
+	if err != nil {
+		return err
+	}
+	defer network.Close()
+	if cfg.explicitAny() {
+		if err := cfg.saveFileConfig(); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -446,13 +454,12 @@ func runServe(args []string) error {
 		_ = httpServer.Shutdown(shutdown)
 		server.Close()
 	}()
-	defer os.Remove(pidPath)
 
 	hosts, _ := store.ActiveHostCount()
 	fmt.Printf("ocremote-relay %s\n", version)
 	fmt.Printf("relay id   %s\n", store.RelayID())
 	fmt.Printf("listen     %s\n", cfg.listen)
-	fmt.Printf("ws url     %s\n", cfg.publicURL)
+	fmt.Printf("ws url     %s\n", publicURL)
 	if cfg.certFile == "" {
 		fmt.Printf("tls        off (Noise NK still encrypts auth and control frames)\n")
 	} else {
@@ -464,14 +471,14 @@ func runServe(args []string) error {
 	fmt.Printf("admin      %s\n", socket)
 	fmt.Println()
 
-	slog.Info("ocremote relay listening", "addr", cfg.listen, "publicUrl", cfg.publicURL, "relayId", store.RelayID(), "tls", cfg.certFile != "", "maxHosts", cfg.maxHosts, "maxClients", cfg.maxClients)
+	slog.Info("ocremote relay listening", "addr", cfg.listen, "publicUrl", publicURL, "relayId", store.RelayID(), "tls", cfg.certFile != "", "maxHosts", cfg.maxHosts, "maxClients", cfg.maxClients)
 	slog.Info("relay admin socket ready", "path", socket)
 
 	var serveErr error
 	if cfg.certFile != "" {
-		serveErr = httpServer.ListenAndServeTLS(cfg.certFile, cfg.keyFile)
+		serveErr = httpServer.ServeTLS(network, cfg.certFile, cfg.keyFile)
 	} else {
-		serveErr = httpServer.ListenAndServe()
+		serveErr = httpServer.Serve(network)
 	}
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return serveErr
@@ -493,8 +500,8 @@ func runAdmin(args []string) error {
 	}
 	flags := flag.NewFlagSet("admin", flag.ContinueOnError)
 	dataDir := flags.String("data-dir", env("RELAY_DATA_DIR", "./data"), "data directory")
-	socket := flags.String("admin-socket", env("RELAY_ADMIN_SOCKET", ""), "admin Unix socket")
-	publicURL := flags.String("public-url", env("RELAY_PUBLIC_URL", ""), "public ws(s) URL")
+	flags.String("admin-socket", "", "admin Unix socket")
+	flags.String("public-url", "", "public ws(s) URL")
 	jsonOut := flags.Bool("json", false, "print JSON")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -507,11 +514,21 @@ func runAdmin(args []string) error {
 		command = rest[0]
 		rest = rest[1:]
 	}
-	if *socket == "" {
-		*socket = filepath.Join(*dataDir, "admin.sock")
+	configArgs := []string{"--data-dir", *dataDir}
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "admin-socket" || f.Name == "public-url" {
+			configArgs = append(configArgs, "--"+f.Name, f.Value.String())
+		}
+	})
+	cfg, err := parseServeFlags(configArgs)
+	if err != nil {
+		return err
+	}
+	if cfg.adminSocket == "" {
+		cfg.adminSocket = filepath.Join(*dataDir, "admin.sock")
 	}
 
-	client, running, err := newAdminClient(*socket)
+	client, running, err := newAdminClient(cfg.adminSocket)
 	if err != nil {
 		return err
 	}
@@ -521,10 +538,10 @@ func runAdmin(args []string) error {
 			return fmt.Errorf("relay is not running and data store could not be opened: %w", err)
 		}
 		defer store.Close()
-		if *publicURL == "" {
-			*publicURL = derivePublicURL(":8443", false)
+		if cfg.publicURL == "" {
+			cfg.publicURL = derivePublicURL(cfg.listen, cfg.certFile != "")
 		}
-		client = &directAdmin{store: store, publicURL: *publicURL}
+		client = &directAdmin{store: store, config: cfg}
 	}
 
 	switch command {
@@ -556,10 +573,10 @@ func runAdmin(args []string) error {
 		}
 		return printValue(data, true)
 	case "revoke":
-		if len(rest) < 2 {
+		if len(rest) != 1 {
 			return errors.New("revoke needs a subject id")
 		}
-		subject, err := client.revoke(rest[1])
+		subject, err := client.revoke(rest[0])
 		if err != nil {
 			return err
 		}
@@ -703,8 +720,8 @@ func (a *httpAdmin) revoke(subjectID string) (any, error) {
 }
 
 type directAdmin struct {
-	store     *relay.Store
-	publicURL string
+	store  *relay.Store
+	config *serveConfig
 }
 
 func (a *directAdmin) status() (map[string]any, error) {
@@ -730,11 +747,11 @@ func (a *directAdmin) status() (map[string]any, error) {
 	return map[string]any{
 		"relayId":      a.store.RelayID(),
 		"v":            3,
-		"wsUrl":        a.publicURL,
+		"wsUrl":        a.config.publicURL,
 		"hosts":        hosts,
-		"maxHosts":     envInt("RELAY_MAX_HOSTS", 3),
+		"maxHosts":     a.config.maxHosts,
 		"clients":      clients,
-		"maxClients":   envInt("RELAY_MAX_CLIENTS", 3),
+		"maxClients":   a.config.maxClients,
 		"rooms":        rooms,
 		"offline":      true,
 		"protocolNote": "relay is not running; limits are shown from the saved configuration",

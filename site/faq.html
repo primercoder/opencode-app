@@ -44,7 +44,7 @@
             <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
           </button>
           <a class="icon-link" href="https://github.com/primercoder/opencode-app" aria-label="GitHub 仓库" rel="noreferrer"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .8a11.4 11.4 0 0 0-3.6 22.2c.6.1.8-.2.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.6-1.3-5.6-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.6 3.7 18.6 4 18.6 4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.9 5.6-5.6 5.9.4.4.8 1.1.8 2.2v3.1c0 .4.2.7.8.6A11.4 11.4 0 0 0 12 .8Z" /></svg></a>
-          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 1.0.5 <span class="arrow">↓</span></a>
+          <a class="btn btn-primary btn-small" href="https://github.com/primercoder/opencode-app/releases/latest">下载 1.0.6 <span class="arrow">↓</span></a>
           <button class="nav-toggle" type="button" aria-label="打开导航" aria-expanded="false" aria-controls="site-menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button>
         </div>
       </div>
@@ -106,6 +106,14 @@
                   <p>消息会进入队列，当前任务结束后自动发送。输入框上方可以看到排队数量，也可以取消排队项。</p>
                 </details>
                 <details>
+                  <summary>弱网恢复后，如何补齐会话记录？</summary>
+                  <p>手机会通过 OpenCode 分页重新同步。已有记录会保留，失败时可点<strong>重试</strong>。翻阅历史时，点<strong>回到最新内容</strong>可继续跟随流式输出。</p>
+                </details>
+                <details>
+                  <summary>在哪里看任务详情或停止任务？</summary>
+                  <p>点<strong>后台任务</strong>后展开任务行。会话中的<strong>停止</strong>可中断当前 Agent、子会话和可取消的后台任务。要取消排队消息，请使用输入框上方的队列。</p>
+                </details>
+                <details>
                   <summary>其他终端改了 Agent 或模型，手机需要刷新吗？</summary>
                   <p>不需要。手机会通过事件流刷新当前会话，状态栏和设置面板会自动更新；其他端也能收到手机发起的变更事件。</p>
                 </details>
@@ -125,7 +133,7 @@
                 </details>
                 <details>
                   <summary>还可以使用 TLS 吗？</summary>
-                  <p>可以。TLS 是可选传输层，Noise NK 认证和加密控制帧不依赖它。使用公共 CA 时不需要额外配置；只有自签 <code>wss://</code> 才需要给主机传 <code>--relay-ca</code>，并在 Android 系统信任库安装 CA。</p>
+                  <p>可以。TLS 是可选传输层，Noise NK 认证和加密控制帧不依赖它。使用公共 CA 时不需要额外配置；只有自签 <code>wss://</code> 才需要给主机传 <code>ocremote relay --ca</code>，并在 Android 系统信任库安装 CA。</p>
                 </details>
                 <details>
                   <summary>中继能看到我的代码吗？</summary>
@@ -143,7 +151,7 @@
                 </details>
                 <details>
                   <summary>主机端有 arm64 包吗？</summary>
-                  <p>有。<code>ocremote-host-1.0.5-linux-arm64.tar.gz</code> 内置 arm64 Bun 和 sherpa-onnx；x64 主机使用对应的 <code>linux-x64</code> 包。</p>
+                  <p>有。<code>ocremote-host-1.0.6-linux-arm64.tar.gz</code> 内置 arm64 Bun 和 sherpa-onnx；x64 主机使用对应的 <code>linux-x64</code> 包。</p>
                 </details>
                 <details>
                   <summary>怎么校验下载文件？</summary>

@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { RelayConfig } from "./config.ts"
 
-export const HOST_VERSION = "1.0.5"
+export const HOST_VERSION = "1.0.6"
 
 export type HostState = {
   pid: number
@@ -122,9 +122,9 @@ export async function control<T>(request: ControlCommand, timeoutMs = 4_000): Pr
   } catch {
     return undefined
   }
-  if (!response.ok) return undefined
   const payload = (await response.json()) as ControlResult
   if (!payload.ok) throw new Error(payload.error)
+  if (!response.ok) return undefined
   return payload.data as T
 }
 

@@ -22,6 +22,20 @@ export type Page<T> = {
   cursor?: PageCursor
 }
 
+export type BackgroundJob = {
+  id: string
+  kind: string
+  status: string
+  title?: string
+  time?: { started?: number }
+  shellID?: string
+  command?: string
+  childSessionID?: string
+  description?: string
+  agent?: string
+  path?: string
+}
+
 export type ServerInfo = {
   version?: string
   hostname?: string
@@ -303,6 +317,26 @@ export class OpencodeClient {
 
   async runShell(sessionId: string, command: string): Promise<void> {
     await this.raw<unknown>("POST", `/api/session/${encodeURIComponent(sessionId)}/shell`, { command })
+  }
+
+  async listRunningShells(directory: string): Promise<Array<{ id: string }>> {
+    const result = await this.raw<{ data: Array<{ id: string }> }>("GET", withDirectory("/api/shell", directory))
+    return result.data
+  }
+
+  async stopShell(shellId: string, directory: string): Promise<void> {
+    const path = withDirectory(`/api/shell/${encodeURIComponent(shellId)}`, directory)
+    await this.raw("DELETE", path)
+  }
+
+  async listRunningJobs(sessionId: string): Promise<BackgroundJob[]> {
+    const params = new URLSearchParams({ sessionID: sessionId, status: "running", descendants: "true" })
+    const result = await this.raw<{ data: BackgroundJob[] }>("GET", `/api/experimental/job?${params}`)
+    return result.data
+  }
+
+  async cancelJob(jobId: string): Promise<void> {
+    await this.raw("POST", `/api/experimental/job/${encodeURIComponent(jobId)}/cancel`)
   }
 
   async compactSession(sessionId: string): Promise<void> {

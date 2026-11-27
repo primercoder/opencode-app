@@ -9,7 +9,7 @@ services:
       RELAY_MAX_HOSTS: "3"
       RELAY_MAX_CLIENTS: "3"
     volumes:
-      - ./apps/relay/data:/data
+      - ${RELAY_DEV_DATA_DIR:-./apps/relay/data}:/data
     expose:
       - "8443"
     mem_limit: 128m

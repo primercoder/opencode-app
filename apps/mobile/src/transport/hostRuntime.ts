@@ -548,11 +548,11 @@ export class HostRuntime {
       this.handshakeTimeoutMs,
     )
     if (result.welcome.t === "relay.error") {
-      throw new HostError(
-        "auth",
-        stringValue(result.welcome.message) || "relay authentication failed",
-        { code: stringValue(result.welcome.code) || "RELAY_AUTH_FAILED" },
-      )
+      const code = stringValue(result.welcome.code) || "RELAY_AUTH_FAILED"
+      // Relay v3 uses ROOM_FULL when the room has no live host or has hit
+      // capacity. Either condition can clear without new credentials.
+      throw new HostError(code === "RELAY_ROOM_FULL" ? "network" : "auth",
+        stringValue(result.welcome.message) || "relay authentication failed", { code })
     }
   }
 

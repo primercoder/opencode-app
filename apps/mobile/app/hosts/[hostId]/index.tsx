@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
   BackHandler,
   Easing,
   FlatList,
@@ -34,6 +35,7 @@ import {
   toMillis,
   type AgentInfo,
   type AssistantContent,
+  type BackgroundJob,
   type CommandInfo,
   type DirectoryCheck,
   type DirectoryListing,
@@ -49,7 +51,7 @@ import {
 } from "@/opencode/client"
 import type { FormAnswers } from "@/opencode/forms"
 import { appendReviewText, buildReviewPrompt, type ReviewComment } from "@/opencode/review"
-import { contextUsage, formatTokens, markSessionStopped, runningActivities, type RunningActivity } from "@/features/session/activity"
+import { contextUsage, formatTokens, runningActivities, type RunningActivity } from "@/features/session/activity"
 import { describeError, isMissingSession } from "@/features/session/errors"
 import {
   CORE_COMMANDS,
@@ -67,11 +69,11 @@ import {
   type SessionSnapshot,
 } from "@/features/session/sessionCache"
 import {
-  MAX_GAP_PAGES,
   mergeMessages,
-  messageIds,
-  pageLeavesGap,
+  reconcileTranscript,
+  sessionRefreshKinds,
   shouldFollow,
+  type SessionRefreshKind,
 } from "@/features/session/sync"
 import { SessionStreamController, STREAM_FRAME_MS } from "@/features/session/streamController"
 import { invalidateSessionIndex } from "@/features/sessions/useSessionIndex"
@@ -88,7 +90,6 @@ import {
   usePreferences,
   type VoiceEnginePreference,
 } from "@/stores/preferences"
-import { useForeground } from "@/lib/useForeground"
 import { clearLastSession, loadLastSession, saveLastSession } from "@/storage/lastSession"
 import { useTheme, useThemedStyles, type Palette } from "@/theme"
 import { useConnections } from "@/stores/connections"
@@ -129,6 +130,11 @@ export default function WorkspaceScreen() {
   const host = useHosts((state) => state.hosts.find((item) => item.id === hostId))
   const connection = useConnections((state) => (hostId ? state.byHost[hostId] : undefined))
   const ready = connection?.status === "ready"
+  const [foreground, setForeground] = useState(AppState.currentState !== "background")
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => setForeground(state === "active"))
+    return () => subscription.remove()
+  }, [])
   // Once the screen has been ready, a later drop must NOT swap the whole
   // workspace for the offline screen: the auto-reconnect cycle used to unmount
   // the transcript on every attempt, which both flickered a full-screen
@@ -148,6 +154,9 @@ export default function WorkspaceScreen() {
   const [session, setSession] = useState<SessionInfo | null>(null)
   const [messages, setMessages] = useState<SessionMessage[] | null>(null)
   const [children, setChildren] = useState<SessionInfo[]>([])
+  const [jobState, setJobState] = useState<{ id: string; jobs: BackgroundJob[] }>()
+  const [shellState, setShellState] = useState<{ id: string; ids: Set<string> }>()
+  const [stopping, setStopping] = useState(false)
   const [inbox, setInbox] = useState<InboxItem[]>([])
   const [liveState, setLiveState] = useState<{ sessionId?: string; messages: SessionMessage[] }>({ messages: [] })
   const liveMessages = liveState.sessionId === sessionId ? liveState.messages : EMPTY_MESSAGES
@@ -174,6 +183,7 @@ export default function WorkspaceScreen() {
   const [directoryError, setDirectoryError] = useState<string | null>(null)
   const [directoryCheck, setDirectoryCheck] = useState<DirectoryCheck | null>(null)
   const [directoryChecking, setDirectoryChecking] = useState(false)
+  const [directoryTreeOpen, setDirectoryTreeOpen] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerDragging, setDrawerDragging] = useState(false)
   const drawerProgress = useRef(new Animated.Value(0)).current
@@ -212,16 +222,18 @@ export default function WorkspaceScreen() {
   const loadOlderRef = useRef<() => void>(() => undefined)
   const streamStartRef = useRef<(() => void) | undefined>(undefined)
   const messagesRef = useRef<SessionMessage[] | null>(null)
-  const messageIdsRef = useRef<Set<string>>(new Set())
-  const newestMessageIdRef = useRef<string | undefined>(undefined)
-  const scrollHeightRef = useRef({ content: 0, viewport: 0 })
+  const transcriptRevision = useRef(0)
+  const [historySyncError, setHistorySyncError] = useState(false)
+  const childrenRef = useRef(children)
+  childrenRef.current = children
+  const newestMessageRef = useRef<SessionMessage | undefined>(undefined)
   const followingRef = useRef(true)
   const jumpingRef = useRef(false)
   // The jump button dot means "new output arrived while you were scrolled
   // away". It used to light up on any upward scroll and persisted across
   // sessions, which read as phantom unread content.
   const [hasNewContent, setHasNewContent] = useState(false)
-  const lastSeenNewestRef = useRef<string | undefined>(undefined)
+  const lastSeenNewestRef = useRef<SessionMessage | undefined>(undefined)
   const statusGesture = useRef({ x: 0, y: 0, scrolled: false })
 
   const setDraftFor = useCallback(
@@ -303,22 +315,20 @@ export default function WorkspaceScreen() {
     return () => subscription.remove()
   }, [closeDrawer])
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const sessionIdRef = useRef(sessionId)
   const messagesSessionIdRef = useRef<string | undefined>(undefined)
   sessionIdRef.current = sessionId
   messagesRef.current = messages
   const messagesForSession = messagesSessionIdRef.current === sessionId ? messages : null
-  messageIdsRef.current = messageIds(messagesForSession ?? [])
 
   useEffect(() => {
     if (!hydrated) void hydrate()
   }, [hydrated, hydrate])
 
   useEffect(() => {
-    if (!hostId || !hydrated) return
+    if (!hostId || !hydrated || !foreground) return
     void ensureConnection(hostId).catch(() => undefined)
-  }, [hostId, hydrated])
+  }, [foreground, hostId, hydrated])
 
   useEffect(() => {
     if (!ready) return
@@ -425,16 +435,6 @@ export default function WorkspaceScreen() {
     setOpencodeError(handshakeOpencode.error ?? null)
   }, [handshakeOpencode])
 
-  useEffect(() => {
-    if (!ready) return
-    return subscribeHostEvents(hostId, (event) => {
-      if (event.type !== "host.opencode") return
-      const state = asRecord((event as { state?: unknown }).state)
-      setOpencodeOnline(state.available === true)
-      setOpencodeError(typeof state.error === "string" ? state.error : null)
-    })
-  }, [hostId, ready])
-
   const hostTranscribe =
     connection?.session?.asr?.host?.available === true
       ? async (wav: Uint8Array, durationMs: number): Promise<string> => {
@@ -534,10 +534,42 @@ export default function WorkspaceScreen() {
   useEffect(
     () => () => {
       if (noticeTimer.current) clearTimeout(noticeTimer.current)
-      if (loadTimer.current) clearTimeout(loadTimer.current)
     },
     [],
   )
+
+  const refreshTranscript = useCallback(async (id: string, client: OpencodeClient) => {
+    const revision = ++transcriptRevision.current
+    const isCurrent = () => sessionIdRef.current === id && transcriptRevision.current === revision
+    const cached = messagesSessionIdRef.current === id ? messagesRef.current : null
+    try {
+      const result = await reconcileTranscript(
+        (cursor) => client.listMessages(id, cursor ? { cursor } : { limit: 60, order: "desc" }),
+        { messages: cached ?? [], olderCursor: cached ? olderCursorRef.current : undefined },
+      )
+      if (!isCurrent()) return
+      messagesSessionIdRef.current = id
+      messagesRef.current = result.messages
+      olderCursorRef.current = result.olderCursor
+      setMessages(result.messages)
+      setOlderCursor(result.olderCursor)
+      setHistorySyncError(false)
+    } catch (cause) {
+      if (isCurrent()) setHistorySyncError(true)
+      throw cause
+    }
+  }, [])
+
+  const refreshActivities = useCallback(async (id: string, client: OpencodeClient, directory?: string) => {
+    await Promise.allSettled([
+      client.listRunningJobs(id).then((jobs) => {
+        if (sessionIdRef.current === id) setJobState({ id, jobs })
+      }),
+      directory && client.listRunningShells(directory).then((shells) => {
+        if (sessionIdRef.current === id) setShellState({ id, ids: new Set(shells.map((shell) => shell.id)) })
+      }),
+    ])
+  }, [])
 
   const loadSession = useCallback(
     async (id: string, options: { initial?: boolean } = {}) => {
@@ -553,28 +585,22 @@ export default function WorkspaceScreen() {
       try {
         const runtime = await ensureConnection(hostId)
         const client = new OpencodeClient(runtime)
-        const [detail, page, pendingPermissions, pendingForms, queued, childPage] = await Promise.all([
+        const [detail, , pendingPermissions, pendingForms, queued, childPage] = await Promise.all([
           client.getSession(id),
-          client.listMessages(id, { limit: 60, order: "desc" }),
-          client.listPermissions(id).catch(() => []),
-          client.listForms(id).catch(() => []),
-          client.listInbox(id).catch(() => []),
-          client.listSessions({ parentID: id, limit: 50, order: "desc" }).catch(() => ({ data: [] as SessionInfo[] })),
+          refreshTranscript(id, client).catch(() => undefined),
+          client.listPermissions(id).catch(() => undefined),
+          client.listForms(id).catch(() => undefined),
+          client.listInbox(id).catch(() => undefined),
+          client.listSessions({ parentID: id, limit: 50, order: "desc" }).catch(() => undefined),
         ])
         if (sessionIdRef.current !== id) return
         messagesSessionIdRef.current = id
         setSession(detail)
-        setPermissions(pendingPermissions)
-        setForms(pendingForms)
-        setInbox(queueOnly(queued))
-        setChildren(childPage.data)
-        const latest = [...page.data].reverse()
-        if (options.initial) {
-          setMessages(latest)
-          setOlderCursor(page.data.length >= 60 ? page.cursor?.next : undefined)
-        } else {
-          setMessages((current) => mergeMessages(latest, current ?? []))
-        }
+        if (pendingPermissions) setPermissions(pendingPermissions)
+        if (pendingForms) setForms(pendingForms)
+        if (queued) setInbox(queueOnly(queued))
+        if (childPage) setChildren(childPage.data)
+        void refreshActivities(id, client, detail.location?.directory)
       } catch (cause) {
         if (sessionIdRef.current !== id) return
         setError(describeError(cause, t))
@@ -582,11 +608,13 @@ export default function WorkspaceScreen() {
         if (sessionIdRef.current === id) setLoadingSession(false)
       }
     },
-    [hostId, t],
+    [hostId, refreshActivities, refreshTranscript, t],
   )
 
   const applyCachedSession = useCallback((cached: SessionSnapshot) => {
     setSession(cached.session)
+    messagesRef.current = cached.messages
+    olderCursorRef.current = cached.olderCursor
     setMessages(cached.messages)
     setOlderCursor(cached.olderCursor)
     setInbox(cached.inbox)
@@ -599,10 +627,10 @@ export default function WorkspaceScreen() {
   }, [])
 
   const cacheCurrentSession = useCallback(() => {
-    if (!sessionId || !session || !messages) return
+    if (!sessionId || session?.id !== sessionId || !messagesForSession) return
     writeSessionCache(hostId, sessionId, {
       session,
-      messages,
+      messages: messagesForSession,
       ...(olderCursor ? { olderCursor } : {}),
       inbox,
       children,
@@ -610,13 +638,15 @@ export default function WorkspaceScreen() {
       forms,
       offset: messageOffsetRef.current,
     })
-  }, [children, forms, hostId, inbox, messages, olderCursor, permissions, session, sessionId])
+  }, [children, forms, hostId, inbox, messagesForSession, olderCursor, permissions, session, sessionId])
 
   useEffect(() => {
     cacheCurrentSession()
   }, [cacheCurrentSession])
 
   useEffect(() => {
+    transcriptRevision.current += 1
+    setHistorySyncError(false)
     if (!sessionId) {
       messagesSessionIdRef.current = undefined
       setSession(null)
@@ -638,6 +668,8 @@ export default function WorkspaceScreen() {
       return
     }
     messagesSessionIdRef.current = sessionId
+    messagesRef.current = null
+    olderCursorRef.current = undefined
     setSession(null)
     setMessages(null)
     setOlderCursor(undefined)
@@ -650,34 +682,11 @@ export default function WorkspaceScreen() {
     void loadSession(sessionId, { initial: true })
   }, [applyCachedSession, hostId, loadSession, sessionId])
 
-  /** Fetches older pages until the newest page overlaps what we already have. */
-  const healGap = useCallback(
-    async (id: string, client: OpencodeClient, latest: SessionMessage[], existing: SessionMessage[], cursor?: string) => {
-      let known = mergeMessages(existing, [])
-      let next: string | undefined = cursor
-      let fetched = 0
-      let collected = latest
-      while (next && fetched < MAX_GAP_PAGES) {
-        fetched += 1
-        const page = await client.listMessages(id, { limit: 60, cursor: next }).catch(() => undefined)
-        if (!page) break
-        const older = [...page.data].reverse()
-        if (older.length === 0) break
-        collected = [...older, ...collected]
-        if (older.some((message) => messageIdsRef.current.has(message.id))) break
-        next = page.data.length >= 60 ? page.cursor?.next : undefined
-      }
-      if (sessionIdRef.current !== id) return
-      known = mergeMessages(collected, messagesRef.current ?? existing)
-      messagesSessionIdRef.current = id
-      setMessages(known)
-      setOlderCursor((current) => current ?? next)
-    },
-    [],
-  )
+  const sessionDirectoryRef = useRef(session?.location?.directory)
+  sessionDirectoryRef.current = session?.location?.directory
 
   const refreshFromEvents = useCallback(
-    async (id: string, kinds: Set<string>) => {
+    async (id: string, kinds: Set<SessionRefreshKind>) => {
       try {
         const runtime = await ensureConnection(hostId)
         const client = new OpencodeClient(runtime)
@@ -702,24 +711,9 @@ export default function WorkspaceScreen() {
           )
         }
         if (kinds.has("message")) {
-          tasks.push(
-            client.listMessages(id, { limit: 40, order: "desc" }).then(async (page) => {
-              if (sessionIdRef.current !== id) return
-              const latest = [...page.data].reverse()
-              const existing = messagesRef.current ?? []
-              // A page that shares no id with the transcript means events were
-              // lost (weak network, reconnect). Walk backwards until the
-              // transcript overlaps, otherwise the phone silently shows a
-              // truncated turn.
-              if (pageLeavesGap(existing, latest)) {
-                await healGap(id, client, latest, existing, page.data.length >= 40 ? page.cursor?.next : undefined)
-                return
-              }
-              messagesSessionIdRef.current = id
-              setMessages((current) => mergeMessages(latest, current ?? []))
-            }),
-          )
+          tasks.push(refreshTranscript(id, client))
         }
+        if (kinds.has("activity")) tasks.push(refreshActivities(id, client, sessionDirectoryRef.current))
         if (kinds.has("permission")) {
           tasks.push(
             client
@@ -745,25 +739,36 @@ export default function WorkspaceScreen() {
         // The next event or foreground sync retries.
       }
     },
-    [hostId],
+    [hostId, refreshActivities, refreshTranscript],
   )
 
   useEffect(() => {
     if (!ready || !hostId) return
     let timer: ReturnType<typeof setTimeout> | undefined
-    const pendingKinds = new Set<string>()
-    const scheduleRefresh = (delayMs = 0) => {
-      if (timer || !sessionIdRef.current) return
-      // Refresh immediately: batching only merges events that land in the
-      // same tick, so bursts cost one fetch while single events stay live.
-      // A previous 2s content throttle traded latency for battery and made
-      // the transcript feel stale; smooth sync wins per product feedback.
+    const pendingKinds = new Set<SessionRefreshKind>()
+    let pendingSession: string | undefined
+    let refreshing = false
+    let disposed = false
+    const scheduleRefresh = () => {
+      if (disposed || timer || refreshing || pendingKinds.size === 0) return
       timer = setTimeout(() => {
         timer = undefined
+        const id = pendingSession
         const kinds = new Set(pendingKinds)
         pendingKinds.clear()
-        if (sessionIdRef.current) void refreshFromEvents(sessionIdRef.current, kinds)
-      }, Math.max(0, delayMs))
+        if (!id || sessionIdRef.current !== id) return
+        refreshing = true
+        void refreshFromEvents(id, kinds).finally(() => {
+          refreshing = false
+          scheduleRefresh()
+        })
+      }, 180)
+    }
+    const enqueueRefresh = (id: string, kinds: SessionRefreshKind[]) => {
+      if (pendingSession !== id) pendingKinds.clear()
+      pendingSession = id
+      for (const kind of kinds) pendingKinds.add(kind)
+      scheduleRefresh()
     }
     const unsubscribe = subscribeHostEvents(hostId, (event) => {
       const type = event.type
@@ -774,13 +779,8 @@ export default function WorkspaceScreen() {
         // current state once so events missed while offline are not lost.
         invalidateSessionIndex(hostId)
         setCatalogRevision((value) => value + 1)
-        if (sessionIdRef.current) {
-          pendingKinds.add("session")
-          pendingKinds.add("message")
-          pendingKinds.add("permission")
-          pendingKinds.add("form")
-          scheduleRefresh()
-        }
+        const id = sessionIdRef.current
+        if (id) enqueueRefresh(id, sessionRefreshKinds(type))
         return
       }
 
@@ -818,74 +818,46 @@ export default function WorkspaceScreen() {
         invalidateSessionIndex(hostId)
       }
 
-      if (!sessionIdRef.current) return
+      const id = sessionIdRef.current
+      if (!id) return
       const eventSession = eventSessionID(event)
-      if (eventSession && eventSession !== sessionIdRef.current) return
+      if (eventSession && eventSession !== id) {
+        if (
+          type === "session.created" ||
+          (/^session\.(?:execution\.|idle$)/u.test(type) && childrenRef.current.some((child) => child.id === eventSession))
+        ) {
+          enqueueRefresh(id, ["session", "activity"])
+        }
+        return
+      }
 
-      streamRef.current.ingest(event)
-      // Wake the presentation timer only when there is output to animate.
-      streamStartRef.current?.()
-      // OpenCode 2 streams content as `session.text.delta`,
-      // `session.reasoning.*`, `session.tool.*` and `session.step.*` events,
-      // not only as `message.*` events. Treat every session event as a content
-      // change so the transcript refreshes while the agent is working instead
-      // of only after leaving and re-entering the screen.
-      const shellEvent = type.startsWith("shell.")
-      const contentEvent =
-        /^(?:message\.|session\.(?:text|reasoning|tool|step|assistant|compaction)\.)/u.test(type) ||
-        type === "session.synthetic" ||
-        type === "session.skill.activated" ||
-        shellEvent
-      const sessionEvent = (type.startsWith("session.") || shellEvent) && !contentEvent
-      const kind = contentEvent
-        ? "message"
-        : sessionEvent
-          ? "session"
-          : type.startsWith("permission.")
-            ? "permission"
-            : type.startsWith("form.")
-              ? "form"
-              : undefined
-      if (!kind) return
-      pendingKinds.add(kind)
-      // Content deltas are already rendered by the live stream controller, so
-      // reconciling with the server can wait. Control-plane events (session,
-      // permissions, forms) are small and stay responsive.
-      // Content events refresh immediately: the live stream controller renders
-      // tokens, but the authoritative server state should land without a
-      // multi-second lag. Smooth sync beats the old 2s battery throttle.
-      scheduleRefresh(0)
+      const controller = streamRef.current
+      controller.ingest(event)
+      if (controller.hasWork()) streamStartRef.current?.()
+      enqueueRefresh(id, sessionRefreshKinds(type))
     })
     return () => {
+      disposed = true
       unsubscribe()
       if (timer) clearTimeout(timer)
     }
   }, [hostId, notify, ready, refreshFromEvents, t])
 
-  useForeground(
-    useCallback(() => {
-      // Coming back from the background: only reconnect if the socket actually
-      // dropped. A forced reconnect on every foreground switch dropped the SSE
-      // stream and re-fetched everything, which is both slow and power-hungry.
-      void ensureConnection(hostId)
-        .then(() => (sessionIdRef.current ? loadSession(sessionIdRef.current) : undefined))
-        .catch(() => undefined)
-    }, [hostId, loadSession]),
-  )
-
   const loadOlder = async () => {
     if (!sessionId || !olderCursor || loadingOlderRef.current) return
     const id = sessionId
+    const revision = transcriptRevision.current
     loadingOlderRef.current = true
     setLoadingOlder(true)
     try {
       const runtime = await ensureConnection(hostId)
-      const page = await new OpencodeClient(runtime).listMessages(id, { limit: 60, cursor: olderCursor })
-      if (sessionIdRef.current !== id) return
-      messagesSessionIdRef.current = id
-      const older = [...page.data].reverse()
-      setMessages((current) => mergeMessages(older, current ?? []))
-      setOlderCursor(page.data.length >= 60 ? page.cursor?.next : undefined)
+      const page = await new OpencodeClient(runtime).listMessages(id, { cursor: olderCursor })
+      if (sessionIdRef.current !== id || transcriptRevision.current !== revision) return
+      const merged = mergeMessages(page.data, messagesRef.current ?? [])
+      messagesRef.current = merged
+      olderCursorRef.current = page.cursor?.next
+      setMessages(merged)
+      setOlderCursor(page.cursor?.next)
     } catch (cause) {
       if (sessionIdRef.current === id) setError(describeError(cause, t))
     } finally {
@@ -926,11 +898,11 @@ export default function WorkspaceScreen() {
       if (nextFollowing) {
         // Back at the newest end: everything is seen, and the jump animation
         // must not re-light the dot with the offset captured mid-flight.
-        lastSeenNewestRef.current = newestMessageIdRef.current
+        lastSeenNewestRef.current = newestMessageRef.current
         setHasNewContent(false)
       } else {
         // Leaving the bottom arms the marker with what is currently visible.
-        lastSeenNewestRef.current = newestMessageIdRef.current
+        lastSeenNewestRef.current = newestMessageRef.current
         setHasNewContent(false)
       }
     }
@@ -946,7 +918,6 @@ export default function WorkspaceScreen() {
   }) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
     messageOffsetRef.current = contentOffset.y
-    scrollHeightRef.current = { content: contentSize.height, viewport: layoutMeasurement.height }
     if (sessionId) updateSessionOffset(hostId, sessionId, contentOffset.y)
     applyScrollState(contentOffset.y)
     // Inverted list: scrolling towards older messages increases contentOffset.y.
@@ -979,8 +950,7 @@ export default function WorkspaceScreen() {
    * text in place, then a manual scrollToOffset would shift it again, which is
    * exactly the residual bounce reported while reading history.
    */
-  const handleContentSizeChange = (_width: number, height: number) => {
-    scrollHeightRef.current.content = height
+  const handleContentSizeChange = () => {
     const restore = restoreOffsetRef.current
     if (restore !== undefined) {
       restoreOffsetRef.current = undefined
@@ -995,6 +965,8 @@ export default function WorkspaceScreen() {
     followingRef.current = true
     setFollowing(true)
     setShowJump(false)
+    lastSeenNewestRef.current = newestMessageRef.current
+    setHasNewContent(false)
     messageOffsetRef.current = 0
     if (sessionId) updateSessionOffset(hostId, sessionId, 0)
     listRef.current?.scrollToOffset({ offset: 0, animated: true })
@@ -1027,16 +999,20 @@ export default function WorkspaceScreen() {
 
   const restoredSession = useRef(false)
   useEffect(() => {
-    if (restoredSession.current || params.session || params.new === "1" || !ready || !hydrated) return
-    restoredSession.current = true
+    if (restoredSession.current || params.session || params.new === "1" || !ready || !hydrated || opencodeOnline === false) return
     let cancelled = false
     void (async () => {
       const last = await loadLastSession(hostId)
-      if (!last || cancelled || sessionIdRef.current) return
+      if (cancelled || sessionIdRef.current) return
+      if (!last) {
+        restoredSession.current = true
+        return
+      }
       try {
         const runtime = await ensureConnection(hostId)
         await new OpencodeClient(runtime).getSession(last)
         if (cancelled || sessionIdRef.current) return
+        restoredSession.current = true
         setSessionId(last)
         router.setParams({ session: last })
       } catch (cause) {
@@ -1045,13 +1021,16 @@ export default function WorkspaceScreen() {
         // session screen and forget it. A network/opencode failure must not
         // discard the memory, otherwise a momentarily stopped opencode would
         // reset the user's last session.
-        if (isMissingSession(cause)) await clearLastSession(hostId)
+        if (isMissingSession(cause)) {
+          restoredSession.current = true
+          await clearLastSession(hostId)
+        }
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [hostId, hydrated, params.new, params.session, ready])
+  }, [hostId, hydrated, opencodeOnline, params.new, params.session, ready])
 
   /** Loads one directory level from the host. Works while opencode is down. */
   const loadTreeListing = useCallback(
@@ -1091,6 +1070,7 @@ export default function WorkspaceScreen() {
     setDirectoryCheck(null)
     setDirectoryInput("")
     setExpandedDirs([])
+    setDirectoryTreeOpen(false)
     setTreeListings({})
     setTreeLoading({})
     try {
@@ -1123,6 +1103,7 @@ export default function WorkspaceScreen() {
     }
     const wire = value.startsWith("/") ? value : `~/${value}`
     let cancelled = false
+    setDirectoryCheck(null)
     setDirectoryChecking(true)
     const timer = setTimeout(() => {
       void (async () => {
@@ -1160,7 +1141,7 @@ export default function WorkspaceScreen() {
     setProjectError(null)
     setDirectoryError(null)
     try {
-      if (!opencodeOnline) {
+      if (opencodeOnline === false) {
         setProjectError(t("opencodeOfflineBody"))
         return
       }
@@ -1206,8 +1187,11 @@ export default function WorkspaceScreen() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`${t("createInDirectory")} ${path || (dirHome ?? "")}`}
-          disabled={creating || !opencodeOnline}
-          onPress={() => void createSessionIn(path)}
+          disabled={creating || !opencodeOnline || readOnly || !(path || dirHome)}
+          onPress={() => {
+            const target = path || dirHome
+            if (target) void createSessionIn(target)
+          }}
           hitSlop={6}
           style={({ pressed }) => [
             styles.directoryAdd,
@@ -1234,23 +1218,6 @@ export default function WorkspaceScreen() {
         )}
       </View>
     )
-  }
-
-  const createSession = async (project: ProjectInfo) => {
-    if (creating) return
-    setCreating(true)
-    setProjectError(null)
-    try {
-      const runtime = await ensureConnection(hostId)
-      const created = await new OpencodeClient(runtime).createSession({ location: { directory: project.canonical } })
-      invalidateSessionIndex(hostId)
-      setProjectOpen(false)
-      selectSession(created.id)
-    } catch (cause) {
-      setProjectError(describeError(cause, t))
-    } finally {
-      setCreating(false)
-    }
   }
 
   const loadOptions = useCallback(
@@ -1439,17 +1406,28 @@ export default function WorkspaceScreen() {
   }
 
   const sessionBusyNow = session ? sessionBusy(session) : false
+  const shellIds = shellState?.id === sessionId ? shellState?.ids : undefined
+  const jobs = jobState?.id === sessionId ? jobState?.jobs : undefined
   const activities = useMemo(
     () =>
       session
-        ? runningActivities(messagesForSession ?? [], children, { busy: sessionBusyNow || children.some(sessionBusy) })
+        ? runningActivities(messagesForSession ?? [], children, { busy: sessionBusyNow, runningShellIds: shellIds, jobs })
         : [],
-    [children, messagesForSession, session, sessionBusyNow],
+    [children, jobs, messagesForSession, session, sessionBusyNow, shellIds],
   )
   // A background task keeps the header busy, but the session's own turn is the
   // only thing the main stop button should act on.
   const agentWorking = sessionBusyNow || children.some(sessionBusy)
-  const active = agentWorking || activities.length > 0 || inbox.length > 0
+  const active = ready && opencodeOnline !== false && (agentWorking || activities.length > 0)
+  const runningTargets = [
+    ...(sessionBusyNow && sessionId ? [sessionId] : []),
+    ...children.filter((child) => sessionBusy(child) && !jobs?.some((job) => job.childSessionID === child.id)).map((child) => child.id),
+  ]
+  const cancellable = activities.filter((activity) =>
+    activity.kind === "job" || (activity.kind === "shell" && activity.shellId && session?.location?.directory),
+  )
+  const canStop = ready && opencodeOnline !== false && !readOnly && !stopping
+  const showStop = runningTargets.length > 0 || cancellable.length > 0
 
   const send = async () => {
     const text = draft.trim()
@@ -1504,7 +1482,7 @@ export default function WorkspaceScreen() {
       // Comments first, then the text the user typed in the session composer.
       const finalReview = reviewPrompt ? appendReviewText(reviewPrompt, text) : null
       const promptText = finalReview ? finalReview.text : text
-      const queued = active
+      const queued = sessionBusyNow
       const optimistic: SessionMessage | null = queued
         ? null
         : { id: `local_${Date.now()}`, type: "user", text: promptText, time: { created: Date.now() } }
@@ -1528,34 +1506,55 @@ export default function WorkspaceScreen() {
     }
   }
 
-  const stop = async () => {
-    if (!sessionId) return
-    const target = sessionId
-    // Optimistically clear the running indicators so a slow or failed refresh
-    // cannot leave the stop button and activity pill stuck on screen.
-    setSession((current) => (current && current.id === target ? markSessionStopped(current) : current))
-    setChildren((current) => current.map((child) => (sessionBusy(child) ? markSessionStopped(child) : child)))
-    setLiveState((current) => (current.sessionId === target ? { sessionId: target, messages: [] } : current))
+  const stopTasks = async (targets: string[], tasks: RunningActivity[]) => {
+    if (!sessionId || !canStop) return
+    const id = sessionId
+    const directory = session?.location?.directory
+    setStopping(true)
     try {
-      const runtime = await ensureConnection(hostId)
-      await new OpencodeClient(runtime).interrupt(target)
+      const client = new OpencodeClient(await ensureConnection(hostId))
+      // A background subagent is stopped through its job. Other active
+      // sessions, including ordinary children, use the interrupt endpoint.
+      const results = await Promise.allSettled([
+        ...targets.map((target) => client.interrupt(target)),
+        ...tasks.flatMap((activity) => {
+          if (activity.kind === "job") return [client.cancelJob(activity.jobId)]
+          if (activity.kind === "shell" && activity.shellId && directory) {
+            return [client.stopShell(activity.shellId, directory)]
+          }
+          return []
+        }),
+      ])
+      if (sessionIdRef.current !== id) return
+      await loadSession(id)
+      const failure = results.find((result) => result.status === "rejected")
+      if (failure) notify(describeError(failure.reason, t))
     } catch (cause) {
-      setError(describeError(cause, t))
+      notify(describeError(cause, t))
+    } finally {
+      setStopping(false)
     }
-    // Confirm with the server even after an error: the session may already be
-    // idle, and the refresh is what re-syncs the real state.
-    await loadSession(target).catch(() => undefined)
   }
 
   const confirmStop = () => {
-    // Must match the conditions that show a stop button: `active` also covers
-    // sessions that are idle but still report a background task, where the
-    // stricter agentWorking check silently swallowed the tap.
-    if (!active || readOnly || !sessionId) return
+    if (!showStop || !canStop) return
     Alert.alert(t("stopTaskTitle"), t("stopTaskBody"), [
       { text: t("cancel"), style: "cancel" },
-      { text: t("stop"), style: "destructive", onPress: () => void stop() },
+      { text: t("stop"), style: "destructive", onPress: () => void stopTasks(runningTargets, cancellable) },
     ])
+  }
+
+  const stopActivity = (activity: RunningActivity) => {
+    if (activity.kind === "job" || activity.kind === "shell") {
+      void stopTasks([], [activity])
+    } else if (activity.kind === "subagent") {
+      void stopTasks([activity.sessionId], [])
+    } else if (sessionId) {
+      Alert.alert(t("stopTaskTitle"), t("stopToolBody"), [
+        { text: t("cancel"), style: "cancel" },
+        { text: t("stop"), style: "destructive", onPress: () => void stopTasks([sessionId], []) },
+      ])
+    }
   }
 
   const compactContext = () => {
@@ -1625,7 +1624,7 @@ export default function WorkspaceScreen() {
         })
         return
       case "stop":
-        void stop()
+        confirmStop()
         return
     }
   }
@@ -1688,34 +1687,6 @@ export default function WorkspaceScreen() {
       commands: commandChoices.filter((command) => command.category === category),
     }))
     .filter((group) => group.commands.length > 0)
-
-  const stopActivity = async (activity: RunningActivity) => {
-    if (activity.kind === "shell") return
-    const target = activity.kind === "subagent" ? activity.sessionId : sessionId
-    // Clear the pill immediately: a stuck tool or subagent must not survive a
-    // successful stop just because the follow-up refresh is slow.
-    if (activity.kind === "subagent") {
-      setChildren((current) => current.map((child) => (child.id === target ? markSessionStopped(child) : child)))
-    }
-    try {
-      if (target) {
-        const runtime = await ensureConnection(hostId)
-        await new OpencodeClient(runtime).interrupt(target)
-      }
-    } catch (cause) {
-      setError(describeError(cause, t))
-    }
-    if (activity.kind === "subagent") {
-      setActivityOpen(false)
-      if (sessionId) await loadSession(sessionId).catch(() => undefined)
-      return
-    }
-    // Tools belong to the current session; interrupt and also refresh it.
-    if (sessionId) {
-      setSession((current) => (current ? markSessionStopped(current) : current))
-      await loadSession(sessionId).catch(() => undefined)
-    }
-  }
 
   const cancelQueued = async (item: InboxItem) => {
     if (!sessionId) return
@@ -1784,17 +1755,16 @@ export default function WorkspaceScreen() {
     return mergeAssistantRuns([...combined, ...liveById.values()]).reverse()
   }, [liveMessages, messages, sessionId])
   oldestMessageIdRef.current = displayMessages[displayMessages.length - 1]?.id
-  newestMessageIdRef.current = displayMessages[0]?.id
-  // The jump-button dot tracks the newest message id: it lights up only when
-  // the newest content actually changed while scrolled away, and resets on
-  // session switches so one session's output never marks another as unread.
+  newestMessageRef.current = displayMessages[0]
   useEffect(() => {
     if (followingRef.current) {
-      lastSeenNewestRef.current = newestMessageIdRef.current
+      lastSeenNewestRef.current = newestMessageRef.current
       setHasNewContent(false)
       return
     }
-    if (newestMessageIdRef.current && newestMessageIdRef.current !== lastSeenNewestRef.current) {
+    const newest = newestMessageRef.current
+    const seen = lastSeenNewestRef.current
+    if (newest && (newest.id !== seen?.id || messageWeight(newest) > messageWeight(seen))) {
       setHasNewContent(true)
     }
   }, [displayMessages, sessionId])
@@ -2118,7 +2088,7 @@ export default function WorkspaceScreen() {
           {/* Reserve the row height only while something is actually running:
               pill (background tasks) or stop button (active turn). When the
               session is idle the row disappears entirely. */}
-          {sessionId && (agentWorking || activities.length > 0) ? (
+          {sessionId && (showStop || activities.length > 0) ? (
             <View style={styles.activitySlot}>
               {activities.length > 0 ? (
                 <Pressable
@@ -2135,10 +2105,12 @@ export default function WorkspaceScreen() {
                   <Icon name="chevronRight" size={14} color={colors.faint} />
                 </Pressable>
               ) : null}
-              {agentWorking && !readOnly ? (
+              {showStop && !readOnly ? (
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={t("stopTaskTitle")}
+                  disabled={!canStop}
+                  accessibilityState={{ disabled: !canStop }}
                   onPress={confirmStop}
                   style={({ pressed }) => [styles.stopTaskButton, pressed && { opacity: 0.72 }]}
                 >
@@ -2150,6 +2122,14 @@ export default function WorkspaceScreen() {
             </View>
           ) : null}
 
+          {historySyncError && ready && opencodeOnline !== false && sessionId ? (
+            <View style={styles.opencodeBar}>
+              <Text style={styles.opencodeBarText}>{t("historySyncFailed")}</Text>
+              <Pressable accessibilityRole="button" hitSlop={8} onPress={() => void loadSession(sessionId)}>
+                <Text style={styles.opencodeBarAction}>{t("retry")}</Text>
+              </Pressable>
+            </View>
+          ) : null}
           {error && opencodeOnline !== false ? <Text style={styles.error}>{error}</Text> : null}
 
           <PendingDock
@@ -2442,7 +2422,7 @@ export default function WorkspaceScreen() {
 
       <SessionDrawer
         visible={drawerOpen}
-        active={drawerOpen || drawerDragging}
+        active={foreground && (drawerOpen || drawerDragging)}
         progress={drawerProgress}
         width={drawerWidth}
         hostId={hostId}
@@ -2463,17 +2443,33 @@ export default function WorkspaceScreen() {
         height={panelHeight}
       >
         <View style={styles.directoryBar}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("homeDirectory")}
+            accessibilityState={{ expanded: directoryTreeOpen }}
+            onPress={() => {
+              setDirectoryTreeOpen(!directoryTreeOpen)
+              if (!directoryTreeOpen && !expandedDirs.includes("")) toggleDir("")
+            }}
+            style={styles.directoryAddButton}
+          >
+            <Icon name={directoryTreeOpen ? "chevronDown" : "chevronRight"} size={19} color={colors.muted} />
+          </Pressable>
           <View style={styles.directoryInputBox}>
             {/* Locked home prefix: the user types only the part after "~/",
                 so the target always stays under the home directory and the
                 prefix cannot be deleted by accident. */}
-            <Text style={styles.directoryPrefix}>~</Text>
+            {!directoryInput.startsWith("/") ? <Text style={styles.directoryPrefix}>~/</Text> : null}
             <TextInput
               value={directoryInput}
               // A pasted absolute or ~/ path is normalized into the suffix;
               // the "~" itself is rendered by the locked prefix next to it.
-              onChangeText={(value) => setDirectoryInput(value.replace(/^~\/?/, ""))}
-              placeholder="/"
+              onChangeText={(value) => {
+                setDirectoryCheck(null)
+                setDirectoryInput(value.replace(/^~\/?/, ""))
+              }}
+              accessibilityLabel={t("newSessionDirectory")}
+              placeholder={t("directoryPlaceholder")}
               placeholderTextColor={colors.faint}
               autoCapitalize="none"
               autoCorrect={false}
@@ -2483,41 +2479,33 @@ export default function WorkspaceScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t("newSession")}
-            disabled={
-              creating ||
-              !directoryInput.trim() ||
-              directoryChecking ||
-              directoryCheck?.valid !== true
-            }
+            disabled={creating || !opencodeOnline || readOnly || directoryChecking || !directoryCheck?.valid || !directoryCheck.path}
             onPress={() => {
-              // Prefer the host-verified canonical path; the fallback mirrors
-              // the check: absolute input passes through, typed text resolves
-              // under the locked "~" prefix.
-              const raw = directoryInput.trim()
-              const fallback = raw.startsWith("/") ? raw : `~/${raw}`
-              const target = directoryCheck?.valid && directoryCheck.path ? directoryCheck.path : fallback
-              void createSessionIn(target)
+              if (directoryCheck?.valid && directoryCheck.path) void createSessionIn(directoryCheck.path)
             }}
             style={({ pressed }) => [
               styles.directoryAddButton,
-              (creating ||
-                !directoryInput.trim() ||
-                directoryChecking ||
-                directoryCheck?.valid !== true) && { opacity: 0.35 },
+              (creating || !opencodeOnline || readOnly || directoryChecking || !directoryCheck?.valid || !directoryCheck.path) && { opacity: 0.35 },
               pressed && { opacity: 0.6 },
             ]}
           >
-            {/* Validity is expressed by this button alone: dim while
-                checking/invalid, full color when the path is usable. */}
             <Icon name="plus" size={19} color={colors.accent} />
           </Pressable>
         </View>
 
+        {directoryChecking ? <Text style={styles.directoryHint}>{t("directoryChecking")}</Text> : null}
+        {directoryCheck?.valid === false ? (
+          <Text accessibilityLiveRegion="polite" style={[styles.directoryHint, { color: colors.danger }]}>
+            {t("directoryInvalid", { message: directoryCheck.error ?? t("directoryEmpty") })}
+          </Text>
+        ) : null}
         {directoryError ? (
           <Text style={[styles.directoryHint, { color: colors.danger }]}>{directoryError}</Text>
         ) : null}
 
-        <View style={styles.directoryTree}>{renderDirRows("", dirHome ? basename(dirHome) : t("homeDirectory"), 0)}</View>
+        {directoryTreeOpen ? (
+          <View style={styles.directoryTree}>{renderDirRows("", dirHome ? basename(dirHome) : t("homeDirectory"), 0)}</View>
+        ) : null}
 
         <View style={styles.panelDivider} />
         {projectError ? <Text style={{ fontSize: 12.5, color: colors.danger, marginBottom: 8 }}>{projectError}</Text> : null}
@@ -2530,8 +2518,8 @@ export default function WorkspaceScreen() {
             <Pressable
               key={project.id}
               accessibilityRole="button"
-              disabled={creating}
-              onPress={() => void createSession(project)}
+              disabled={creating || !opencodeOnline || readOnly}
+              onPress={() => void createSessionIn(project.canonical)}
               style={({ pressed }) => [styles.optionRow, pressed && { opacity: 0.7 }]}
             >
               <Icon name="folder" size={18} color={colors.muted} />
@@ -2552,11 +2540,25 @@ export default function WorkspaceScreen() {
       <BottomSheet visible={activityOpen} title={t("backgroundTasks")} onClose={() => setActivityOpen(false)} height={panelHeight}>
         {activities.length === 0 ? <Text style={styles.sheetMuted}>{t("backgroundNone")}</Text> : null}
         {activities.map((activity) => (
-          <ActivityRow key={activity.key} activity={activity} onStop={() => void stopActivity(activity)} stopLabel={t("backgroundStop")} />
+          <ActivityRow
+            key={activity.key}
+            activity={activity}
+            {...(!readOnly && (activity.kind !== "shell" || (activity.shellId && session?.location?.directory))
+              ? { onStop: () => stopActivity(activity) }
+              : {})}
+            stopDisabled={!canStop}
+            stopLabel={t("backgroundStop")}
+          />
         ))}
-        {active ? (
+        {showStop && !readOnly ? (
           <View style={{ marginTop: 10 }}>
-            <Button label={t("stop")} size="sm" variant="danger" onPress={() => void stop()} />
+            <Button
+              label={t("stop")}
+              size="sm"
+              variant="danger"
+              disabled={!canStop}
+              onPress={() => void stopTasks(runningTargets, cancellable)}
+            />
           </View>
         ) : null}
       </BottomSheet>
@@ -2996,7 +2998,8 @@ function RunningDot() {
  */
 function ActivityRow(props: {
   activity: RunningActivity
-  onStop: () => void
+  onStop?: () => void
+  stopDisabled: boolean
   stopLabel: string
 }) {
   const { colors } = useTheme()
@@ -3049,11 +3052,8 @@ function ActivityRow(props: {
           </View>
         ) : null}
       </View>
-      {/* A background shell cannot be interrupted through the session API
-          (stopActivity is a no-op for shells), so it gets no stop button
-          instead of one that silently does nothing. */}
-      {props.activity.kind !== "shell" ? (
-        <Button label={props.stopLabel} size="sm" variant="outline" onPress={props.onStop} />
+      {props.onStop ? (
+        <Button label={props.stopLabel} size="sm" variant="outline" disabled={props.stopDisabled} onPress={props.onStop} />
       ) : null}
     </View>
   )
